@@ -39,9 +39,9 @@ import org.lwjgl.glfw.GLFW;
  */
 public final class PearlCatch extends Module {
 
-    private final NumberSetting lookPitch = num("lookPitch", "Look-up pitch", 50, 90, 1, 84);
-    private final NumberSetting gapMin = num("gapMin", "Pearl->wind delay min ms", 5, 200, 1, 15);
-    private final NumberSetting gapMax = num("gapMax", "Pearl->wind delay max ms", 5, 300, 1, 45);
+    private final NumberSetting lookPitch = num("lookPitch", "Look-up pitch", 50, 90, 1, 90);
+    private final NumberSetting gapMin = num("gapMin", "Pearl->wind delay min ms", 5, 500, 5, 200);
+    private final NumberSetting gapMax = num("gapMax", "Pearl->wind delay max ms", 5, 600, 5, 260);
     private final NumberSetting restoreMin = num("restMin", "Restore delay min ms", 20, 500, 5, 60);
     private final NumberSetting restoreMax = num("restMax", "Restore delay max ms", 20, 800, 5, 160);
     private final BooleanSetting windCharge = bool("wind", "Finish with wind charge", true);
@@ -132,12 +132,14 @@ public final class PearlCatch extends Module {
 
     private void turnStage(MinecraftClient client, ClientPlayerEntity self) {
         // Visible rotation to the up-look point.
+        // Keep the current yaw and tilt straight up (the clip: pearl and wind charge both
+        // thrown vertically, so the wind charge meets the rising pearl on the same line).
+        double upPitch = -lookPitch.get();
         RotationManager.request(RotationRequest
-                .to(MathUtil.yawTo(self.getEyePos(), lookPoint),
-                        MathUtil.pitchTo(self.getEyePos(), lookPoint))
-                .speed(45, 95).jitter(0.4).silent(false)
+                .to(self.getYaw(), upPitch)
+                .speed(45, 95).jitter(0.2).silent(false)
                 .expiresAfter(4).build());
-        if (!RotationManager.isAimedAt(lookPoint, 8.0)) {
+        if (Math.abs(self.getPitch() - upPitch) > 3.0) {
             if (++lookTicks > 20) {
                 beginRestore(client); // look never converged (blocked?), abort cleanly
             }
