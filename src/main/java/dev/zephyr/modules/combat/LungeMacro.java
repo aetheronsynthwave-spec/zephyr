@@ -5,6 +5,7 @@ import dev.zephyr.core.ModuleCategory;
 import dev.zephyr.core.settings.BooleanSetting;
 import dev.zephyr.core.settings.NumberSetting;
 import dev.zephyr.core.util.ItemUtil;
+import dev.zephyr.core.combat.SwapManager;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.component.DataComponentTypes;
@@ -17,10 +18,11 @@ import org.lwjgl.glfw.GLFW;
  * LungeMacro - one key, one attribute-swapped spear jab.
  *
  * <p>In 1.21.11 a spear's left-click is a piercing jab (its own attack, not a normal entity
- * hit), and that jab is what fires the Lunge enchantment. On the bind this module, inside a
- * single client tick: selects the hotbar spear, performs the jab, and re-selects your
- * current item. The server runs the jab with the spear (Lunge launch + spear damage) while
- * you visibly keep holding your weapon.
+ * hit), and that jab is what fires the Lunge enchantment. On the bind this module selects
+ * the hotbar spear and performs the jab in one pre-movement stage, then re-selects your
+ * item on a later tick (SwapManager allows one slot change per tick). With "prime" on, the
+ * no-cooldown item gets its own tick first: prime (tick N) -> spear + jab (tick
+ * N + primeTicks) -> back (later). Never a same-tick multi-slot burst.
  *
  * <p>The bind is a trigger, not a toggle: enable the module, then press the key to lunge.
  */
@@ -32,7 +34,7 @@ public final class LungeMacro extends Module {
     private final NumberSetting backTicks = num("backTicks", "Swap-back ticks", 1, 10, 1, 2);
     /** Your routine: shield (no cooldown item) first, then the spear jab, then back to it. */
     private final BooleanSetting prime = bool("prime", "Switch to no-cooldown item first", true);
-    private final NumberSetting primeTicks = num("primeTicks", "Ticks on that item first", 0, 10, 1, 1);
+    private final NumberSetting primeTicks = num("primeTicks", "Ticks on that item first", 1, 10, 1, 1);
     private final BooleanSetting returnOriginal = bool("returnOriginal", "Return to original item after", false);
 
     private int primeWait = -1;
@@ -87,12 +89,12 @@ public final class LungeMacro extends Module {
 
     @Override
     public void onTick(MinecraftClient client) {
-        if (returnWait >= 0 && client.player != null && !dev.zephyr.core.combat.SwapManager.pending()) {
-            // "Return to original item": after the spear swap-back has finished.
-            if (returnWait-- <= 0) {
-                if (originalSlot != -1) {
-                    dev.zephyr.core.combat.SwapManager.select(client, originalSlot);
-                }
+        if (returnWait >= 0 && client.player != null && !SwapManager.pending()) {
+            // "Return to original item": after the spear swap-back has finished. A refused
+            // select (slot already changed this tick) keeps returnWait at 0 and retries.
+            if (returnWait > 0) {
+                returnWait--;
+            } else if (originalSlot == -1 || SwapManager.select(client, originalSlot)) {
                 originalSlot = -1;
                 returnWait = -1;
             }
@@ -119,16 +121,18 @@ public final class LungeMacro extends Module {
         if (prime.get()) {
             int p = findPrimeSlot(self);
             if (p != -1) {
-                originalSlot = self.getInventory().getSelectedSlot();
-                if (p != originalSlot) {
-                    dev.zephyr.core.combat.SwapManager.select(client, p);
+                int current = self.getInventory().getSelectedSlot();
+                if (p != current) {
+                    if (!SwapManager.select(client, p)) {
+                        pending = true; // slot budget used this tick: retry the press next tick
+                        return;
+                    }
+                    originalSlot = current;
+                    // The jab needs its own tick: prime + spear in one tick is a two-slot burst.
+                    primeWait = Math.max(1, primeTicks.get().intValue());
+                    return;
                 }
-                primeWait = primeTicks.get().intValue();
-                if (primeWait <= 0) {
-                    primeWait = -1;
-                    jab(client);
-                }
-                return;
+                originalSlot = current; // already on the prime item: jab right away
             }
         }
         jab(client);
@@ -152,28 +156,32 @@ public final class LungeMacro extends Module {
         if (jab == null) {
             return;
         }
-        // Lunging from behind a raised shield (the hand routine): drop the block for the jab,
-        // then raise it again right after if right-click is still held.
-        boolean wasBlocking = self.isUsingItem();
-        Hand blockHand = self.getActiveHand();
-        if (wasBlocking) {
+        if (self.getInventory().getSelectedSlot() != slot && SwapManager.changedThisTick()) {
+            primeWait = 0; // slot already changed this tick: jab on the next pre-movement stage
+            return;
+        }
+        // Lunging from behind a raised shield (the hand routine): drop the block for the jab.
+        // Vanilla re-raises it by itself: handleInputEvents calls doItemUse again while
+        // right-click is held and the player is no longer using an item.
+        if (self.isUsingItem()) {
             client.interactionManager.stopUsingItem(self);
         }
-        // Shield -> spear (jab fires Lunge) -> back; the spear shows for a moment when
+        // Spear (jab fires Lunge) -> back on a later tick; the spear shows for a moment when
         // "Show spear swap" is on, exactly like doing it by hand.
         int back = showSwap.get() ? backTicks.get().intValue() : 0;
-        dev.zephyr.core.combat.SwapManager.withSwap(client, slot, back, () -> {
+        boolean jabbed = SwapManager.withSwap(client, slot, back, () -> {
             client.interactionManager.attackWithPiercingWeapon(jab);
             self.swingHand(Hand.MAIN_HAND);
-            return Boolean.TRUE;
+            return true;
         });
-        if (wasBlocking && client.options.useKey.isPressed() && back <= 0) {
-            client.interactionManager.interactItem(self, blockHand); // shield back up (same hand)
+        if (!jabbed) {
+            originalSlot = -1;
+            return;
         }
         lastLunge = now;
         lunges++;
         if (returnOriginal.get() && originalSlot != -1) {
-            returnWait = (showSwap.get() ? backTicks.get().intValue() : 0) + 2;
+            returnWait = 2; // counted only after the spear swap-back has completed
         } else {
             originalSlot = -1;
         }

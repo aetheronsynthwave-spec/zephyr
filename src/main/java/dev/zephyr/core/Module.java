@@ -14,7 +14,8 @@ import java.util.List;
  * Base class of every Zephyr subsystem. Lifecycle:
  * <ul>
  *   <li>{@link #onEnable}/{@link #onDisable} - world-attached state setup/teardown</li>
- *   <li>{@link #onTick} - once per client tick end, only while enabled</li>
+ *   <li>{@link #onTick} - once per client tick, in the pre-movement stage (after vanilla
+ *       input handling, before this tick's movement packet), only while enabled</li>
  *   <li>{@link #hudLabel} - plain-text suffix shown by the active-module HUD</li>
  * </ul>
  * Subclasses register {@link Setting}s via {@link #s(Setting)} so the config
@@ -205,6 +206,14 @@ public abstract class Module {
 
     public String name() {
         return name;
+    }
+
+    /**
+     * Short, player-facing explanation of what the module does (ClickGui tooltip, search,
+     * {@code /zephyr info}). Defaults to the shared {@link ModuleDescriptions} table.
+     */
+    public String description() {
+        return ModuleDescriptions.of(name);
     }
 
     public ModuleCategory category() {

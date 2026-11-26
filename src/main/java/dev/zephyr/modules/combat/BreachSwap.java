@@ -22,7 +22,10 @@ import net.minecraft.item.ItemStack;
  *
  * <p>Hook: {@code ClientPlayerInteractionManager#attackEntity} HEAD (see
  * MixinClientPlayerInteractionManager) calls {@link #beforeAttack}; the slot change is
- * sent before the attack packet, so the server applies the hit with the mace.
+ * sent before the attack packet, so the server applies the hit with the mace. The hook
+ * fires wherever the attack itself happens - vanilla {@code handleInputEvents} for your own
+ * clicks, the pre-movement stage for module hits - so the swap is always pre-movement.
+ * If SwapManager refuses the swap this tick, the original hit goes out unchanged.
  */
 public final class BreachSwap extends Module {
 
@@ -67,7 +70,8 @@ public final class BreachSwap extends Module {
 
     /**
      * Called at the start of every attack. Returns true when it already performed the
-     * swapped attack itself (the caller then skips the original one).
+     * swapped attack itself (the caller then skips the original one); false leaves the
+     * original attack alone, including when the slot change is refused this tick.
      */
     public boolean beforeAttack(MinecraftClient client, Entity target) {
         ClientPlayerEntity self = client.player;
@@ -79,12 +83,16 @@ public final class BreachSwap extends Module {
             return false;
         }
         int back = showSwap.get() ? backTicks.get().intValue() : 0;
-        SwapManager.withSwap(client, slot, back, () -> {
+        boolean swapped = SwapManager.withSwap(client, slot, back, () -> {
+            // Re-entrant call: SwapManager.inSwap() is true, so this hook lets it through,
+            // and vanilla's syncSelectedSlot() inside it has nothing left to send.
             client.interactionManager.attackEntity(self, target);
-            return Boolean.TRUE;
+            return true;
         });
-        swaps++;
-        return true;
+        if (swapped) {
+            swaps++;
+        }
+        return swapped;
     }
 
     @Override

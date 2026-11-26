@@ -189,7 +189,9 @@ public class AnchorMacro extends Module {
         } else {
             attempts = 0;
         }
-        InventoryManager.selectHotbar(client, slot);
+        if (!InventoryManager.selectHotbar(client, slot)) {
+            return; // slot change not possible this tick: place next tick, never with the wrong item
+        }
         CombatActions.interactBlock(client, RaycastValidator.placementHit(spot.down()));
         work = spot.toImmutable();
         lastStep = "place";
@@ -218,8 +220,10 @@ public class AnchorMacro extends Module {
         } else {
             attempts = 0;
         }
+        if (!InventoryManager.selectHotbar(client, slot)) {
+            return;
+        }
         glowBefore = count;
-        InventoryManager.selectHotbar(client, slot);
         CombatActions.interactBlock(client, new BlockHitResult(face, Direction.UP, work, false));
         lastStep = "charge";
     }
@@ -247,7 +251,9 @@ public class AnchorMacro extends Module {
         if (!aim(self, hit.getPos())) {
             return;
         }
-        InventoryManager.selectHotbar(client, slot);
+        if (!InventoryManager.selectHotbar(client, slot)) {
+            return;
+        }
         CombatActions.interactBlock(client, hit);
         lastStep = "shield";
         if (!world.getBlockState(cell).isAir() || ++attempts > 3) {
@@ -281,7 +287,9 @@ public class AnchorMacro extends Module {
         if (!aim(self, face)) {
             return;
         }
-        InventoryManager.selectHotbar(client, slot);
+        if (!InventoryManager.selectHotbar(client, slot)) {
+            return; // detonating with glowstone in hand would charge instead of explode
+        }
         CombatActions.interactBlock(client, new BlockHitResult(face, Direction.UP, work, false));
         lastStep = "detonated";
         shieldFor = null;

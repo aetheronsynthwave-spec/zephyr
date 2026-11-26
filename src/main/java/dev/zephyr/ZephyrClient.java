@@ -58,12 +58,13 @@ import java.util.Map;
 /**
  * Zephyr entrypoint. Wiring only - all behavior lives in the modules and core managers.
  *
- * <p>Tick responsibilities:
+ * <p>Tick stages (see {@link dev.zephyr.core.timing.TickPhase} for the vanilla order):
  * <ul>
- *   <li>keybind polling (GLFW edge detection per module bind)</li>
- *   <li>module tick dispatch</li>
- *   <li>rotation manager advancement</li>
- *   <li>render cache tick bump</li>
+ *   <li>{@code START_CLIENT_TICK}: tick id / action window open, keybind dispatch</li>
+ *   <li>pre-movement (before {@code ClientWorld#tickEntities}): swap-backs, module tick
+ *       dispatch, rotation advancement - every slot packet and attack is sent here</li>
+ *   <li>{@code END_CLIENT_TICK}: action window closed, render cache bump, test harness,
+ *       profiler report - nothing here sends gameplay packets</li>
  * </ul>
  */
 public final class ZephyrClient implements ClientModInitializer {
@@ -83,7 +84,8 @@ public final class ZephyrClient implements ClientModInitializer {
         config.load();
         ZephyrCommand.register();
 
-        ClientTickEvents.END_CLIENT_TICK.register(this::onClientTick);
+        ClientTickEvents.START_CLIENT_TICK.register(ZephyrClient::onClientTickStart);
+        ClientTickEvents.END_CLIENT_TICK.register(ZephyrClient::onClientTickEnd);
         dev.zephyr.ZephyrSelfTest.init();
         dev.zephyr.ZephyrGameTest.init();
 
@@ -109,9 +111,13 @@ public final class ZephyrClient implements ClientModInitializer {
             dev.zephyr.core.ZephyrProfiler.addHudRender(System.nanoTime() - t0);
         });
 
-        ClientPlayConnectionEvents.JOIN.register((handler, sender, client) -> RotationManager.invalidate());
+        ClientPlayConnectionEvents.JOIN.register((handler, sender, client) -> {
+            RotationManager.invalidate();
+            dev.zephyr.core.combat.SwapManager.reset();
+        });
         ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> {
             RotationManager.invalidate();
+            dev.zephyr.core.combat.SwapManager.reset();
             config.save();
         });
     }
@@ -139,6 +145,8 @@ public final class ZephyrClient implements ClientModInitializer {
         modules.register(new FastXP());
         modules.register(new PearlCatch());
         modules.register(new AutoLog());
+        modules.register(new dev.zephyr.modules.survival.AutoRespawn());
+        modules.register(new dev.zephyr.modules.survival.DurabilityAlert());
         // Movement
         modules.register(new NoDelay());
         modules.register(new NoPush());
@@ -147,6 +155,8 @@ public final class ZephyrClient implements ClientModInitializer {
         // Utility (ported from Donut Client)
         modules.register(new StaffDetector());
         modules.register(new SoundDetector());
+        modules.register(new dev.zephyr.modules.utility.AutoTool());
+        modules.register(new dev.zephyr.modules.utility.Zoom());
         modules.register(new Freecam());
         modules.register(new Fly());
         // Render & HUD
@@ -156,6 +166,9 @@ public final class ZephyrClient implements ClientModInitializer {
         modules.register(new dev.zephyr.modules.render.BaseFinder());
         modules.register(new dev.zephyr.modules.hud.ProgressBar());
         modules.register(new dev.zephyr.modules.hud.HotbarPrivacy());
+        modules.register(new dev.zephyr.modules.hud.InfoHud());
+        modules.register(new dev.zephyr.modules.hud.ArmorHud());
+        modules.register(new dev.zephyr.modules.hud.Keystrokes());
         modules.register(new dev.zephyr.modules.utility.NameHider());
         modules.register(new Esp());
         modules.register(new Tracers());
@@ -167,18 +180,43 @@ public final class ZephyrClient implements ClientModInitializer {
         modules.register(new ActiveHud());
     }
 
-    private void onClientTick(MinecraftClient client) {
-        RenderTick.advance();
-        dev.zephyr.ZephyrSelfTest.tick(client);
-        dev.zephyr.ZephyrGameTest.tick(client);
-        // Per-tick caches: exposure memo table + render caches all key off this tick.
-        dev.zephyr.core.combat.DamageCalculator.advanceTick();
+    /** Tick HEAD: open this tick's action window, then dispatch binds (toggles / triggers only). */
+    private static void onClientTickStart(MinecraftClient client) {
+        dev.zephyr.core.timing.TickPhase.beginTick();
         pollKeybinds(client);
-        dev.zephyr.core.combat.SwapManager.tick(client);
+    }
+
+    /**
+     * Pre-movement stage, called from MixinMinecraftClient right before
+     * {@code ClientWorld#tickEntities}. Order matters:
+     * <ol>
+     *   <li>due swap-backs first, so they use this tick's single slot change before any
+     *       module can ask for a different slot (no same-tick bounce)</li>
+     *   <li>modules: target selection, slot selection, attacks, interactions</li>
+     *   <li>rotation advancement last, so the rotation computed now rides this tick's
+     *       movement packet (sent moments later by {@code ClientPlayerEntity#tick})</li>
+     * </ol>
+     */
+    public static void onPreMovementTick(MinecraftClient client) {
+        if (modules == null) {
+            return;
+        }
+        dev.zephyr.core.timing.TickPhase.enterPreMovement();
         long t0 = System.nanoTime();
+        // Per-tick caches: exposure memo table keys off this tick.
+        dev.zephyr.core.combat.DamageCalculator.advanceTick();
+        dev.zephyr.core.combat.SwapManager.tick(client);
         modules.tick(client);
         RotationManager.tick(client);
         dev.zephyr.core.ZephyrProfiler.addTick(System.nanoTime() - t0);
+    }
+
+    /** Tick RETURN: after the movement and tick-end packets. Nothing here emits gameplay packets. */
+    private static void onClientTickEnd(MinecraftClient client) {
+        dev.zephyr.core.timing.TickPhase.endTick();
+        RenderTick.advance();
+        dev.zephyr.ZephyrSelfTest.tick(client);
+        dev.zephyr.ZephyrGameTest.tick(client);
         dev.zephyr.core.ZephyrProfiler.chatReport(client);
     }
 
@@ -187,7 +225,7 @@ public final class ZephyrClient implements ClientModInitializer {
      * Event-based, so even a tap shorter than one tick always fires, and keys shared by
      * several modules fire all of them exactly once.
      */
-    private void pollKeybinds(MinecraftClient client) {
+    private static void pollKeybinds(MinecraftClient client) {
         int code;
         while ((code = dev.zephyr.core.input.BindInput.poll()) != -1) {
             boolean screenOpen = client.currentScreen != null;

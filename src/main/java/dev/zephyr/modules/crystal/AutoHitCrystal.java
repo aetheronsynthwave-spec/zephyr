@@ -182,10 +182,14 @@ public final class AutoHitCrystal extends Module {
         }
         if (meleeHotbarSlot != -1
                 && InventoryManager.selectedHotbar(self) != meleeHotbarSlot) {
-            if (!InventoryManager.selectHotbar(client, meleeHotbarSlot)) {
-                meleeHotbarSlot = InventoryManager.selectedHotbar(self);
+            if (!dev.zephyr.core.combat.SwapManager.isValidSlot(meleeHotbarSlot)) {
+                meleeHotbarSlot = InventoryManager.selectedHotbar(self); // corrupt index: re-anchor
+            } else {
+                // A refusal only means "not this tick" (slot budget used): keep the sword
+                // slot and retry on the next pre-movement stage.
+                InventoryManager.selectHotbar(client, meleeHotbarSlot);
             }
-            return; // give the swap a tick to land server-side
+            return; // the hit goes out next tick, after the swap has landed server-side
         }
 
         // Leftover crystal from a previous cycle? It is free damage - take it.

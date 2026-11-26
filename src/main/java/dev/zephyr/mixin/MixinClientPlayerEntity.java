@@ -16,6 +16,9 @@ public abstract class MixinClientPlayerEntity {
 
     @Inject(method = "sendMovementPackets", at = @At("HEAD"))
     private void zephyr$preSendMovement(CallbackInfo ci) {
+        // From here on this tick's action window is closed: any slot packet or attack sent
+        // now would land after the movement packet (see TickPhase).
+        dev.zephyr.core.timing.TickPhase.movementPacketsStarted();
         RotationManager.beforeMovementPackets((ClientPlayerEntity) (Object) this);
     }
 

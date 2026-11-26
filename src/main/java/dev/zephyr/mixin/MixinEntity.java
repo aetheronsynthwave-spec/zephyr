@@ -10,6 +10,7 @@ import net.minecraft.entity.Entity;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.ModifyVariable;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
@@ -43,6 +44,26 @@ public abstract class MixinEntity {
             ZephyrEvents.LOOK_DELTA.fire(new ZephyrEvents.LookDelta(cursorDeltaX, cursorDeltaY));
             ci.cancel();
         }
+    }
+
+    /** Zoom: scale mouse look deltas down while zoomed (local player only). */
+    @ModifyVariable(method = "changeLookDirection", at = @At("HEAD"), ordinal = 0, argsOnly = true)
+    private double zephyr$zoomSensX(double cursorDeltaX) {
+        return cursorDeltaX * zephyr$zoomSensitivity();
+    }
+
+    @ModifyVariable(method = "changeLookDirection", at = @At("HEAD"), ordinal = 1, argsOnly = true)
+    private double zephyr$zoomSensY(double cursorDeltaY) {
+        return cursorDeltaY * zephyr$zoomSensitivity();
+    }
+
+    @org.spongepowered.asm.mixin.Unique
+    private double zephyr$zoomSensitivity() {
+        if ((Object) this != MinecraftClient.getInstance().player || ZephyrClient.modules() == null) {
+            return 1.0;
+        }
+        dev.zephyr.modules.utility.Zoom zoom = ZephyrClient.modules().get(dev.zephyr.modules.utility.Zoom.class);
+        return zoom == null ? 1.0 : zoom.sensitivityScale();
     }
 
     @Inject(method = "pushAwayFrom", at = @At("HEAD"), cancellable = true)

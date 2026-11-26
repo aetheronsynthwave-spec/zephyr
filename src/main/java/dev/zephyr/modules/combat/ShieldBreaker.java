@@ -40,8 +40,8 @@ public final class ShieldBreaker extends Module {
             return;
         }
         if (returnSlot >= 0) {
-            if (back.isDue()) {
-                InventoryManager.selectHotbar(client, returnSlot);
+            // Refused (another slot change already went out this tick) -> retry next tick.
+            if (back.isDue() && InventoryManager.selectHotbar(client, returnSlot)) {
                 returnSlot = -1;
             }
             return;
@@ -64,8 +64,8 @@ public final class ShieldBreaker extends Module {
             return;
         }
         int cur = InventoryManager.selectedHotbar(self);
-        if (cur != axe) {
-            InventoryManager.selectHotbar(client, axe);
+        if (cur != axe && !InventoryManager.selectHotbar(client, axe)) {
+            return; // axe not selectable this tick: never hit the shield with the wrong item
         }
         if (ItemUtil.attackCooldownProgress(self) >= 0.9f || cur != axe) {
             CombatActions.attackEntity(client, t);

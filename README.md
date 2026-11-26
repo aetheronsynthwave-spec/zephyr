@@ -1,6 +1,6 @@
 # Zephyr Client
 
-Open-source Fabric client mod for **Minecraft 1.21.11** (current version: v1.8.1).
+Open-source Fabric client mod for **Minecraft 1.21.11** (current version: v1.9.0).
 
 Licensed under the [MIT License](LICENSE).
 
@@ -17,5 +17,5 @@ and Fabric API 0.141.x for 1.21.11.
 
 ## History
 
-Every release is a tagged commit (`v1.4.0` ... `v1.8.1`). See `README.txt` for the per-version changelog
+Every release is a tagged commit (`v1.4.0` ... `v1.9.0`). See `README.txt` for the per-version changelog
 and module reference.

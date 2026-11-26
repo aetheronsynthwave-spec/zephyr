@@ -17,7 +17,9 @@
     "MixinLightmapTextureManager",
     "MixinClientPlayNetworkHandler",
     "MixinItemCooldownManager",
+    "MixinGameRenderer",
     "accessor.MinecraftClientAccessor",
+    "accessor.ClientPlayerInteractionManagerAccessor",
     "accessor.LivingEntityAccessor",
     "accessor.RenderPipelinesAccessor",
     "accessor.RenderLayerInvoker"

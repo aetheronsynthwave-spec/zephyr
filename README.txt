@@ -1,3 +1,23 @@
+Zephyr Client v1.9.0 - Minecraft 1.21.11 (Fabric)
+==================================================
+
+WHAT'S NEW IN v1.9.0
+--------------------
+* Every module now has a short description: hover a module in the ClickGui to
+  read it, search matches descriptions too, and /zephyr info <module> prints it.
+* Slot-switching / attack packet ordering cleanup: modules tick in a
+  pre-movement stage (before this tick's movement packet), hotbar changes go
+  through vanilla syncSelectedSlot (no duplicate slot packets), slot indices are
+  validated 0..8, and at most one slot change is sent per tick.
+* New modules:
+    Zoom            - hold C to zoom (smooth, lower sensitivity while zoomed)
+    AutoTool        - fastest hotbar tool while mining, then back
+    InfoHUD         - coords, nether/overworld coords, facing, speed, FPS, ping
+    ArmorHUD        - armour + held items with durability above the hotbar
+    Keystrokes      - WASD / mouse (with CPS) / jump overlay
+    DurabilityAlert - warning + sound before gear breaks
+    AutoRespawn     - auto-clicks Respawn and prints your death coordinates
+
 Zephyr Client v1.3.0 - Minecraft 1.21.11 (Fabric)
 ==================================================
 

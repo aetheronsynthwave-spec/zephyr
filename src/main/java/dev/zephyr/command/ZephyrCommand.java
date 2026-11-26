@@ -20,6 +20,7 @@ import net.minecraft.util.Formatting;
  * Barebones command surface. Everything is one flat namespace:
  * <pre>
  *   /zephyr list
+ *   /zephyr info &lt;module&gt;
  *   /zephyr toggle &lt;module&gt;
  *   /zephyr set &lt;module&gt; &lt;setting&gt; &lt;value&gt;
  *   /zephyr bind &lt;module&gt; &lt;keycode&gt;
@@ -39,6 +40,15 @@ public final class ZephyrCommand {
     private static LiteralArgumentBuilder<FabricClientCommandSource> build() {
         return ClientCommandManager.literal("zephyr")
                 .then(ClientCommandManager.literal("list").executes(ZephyrCommand::list))
+                .then(ClientCommandManager.literal("info")
+                        .then(ClientCommandManager.argument("module", StringArgumentType.word())
+                                .suggests((ctx, builder) -> {
+                                    for (Module m : ZephyrClient.modules().all()) {
+                                        builder.suggest(m.name());
+                                    }
+                                    return builder.buildFuture();
+                                })
+                                .executes(ZephyrCommand::info)))
                 .then(ClientCommandManager.literal("toggle")
                         .then(ClientCommandManager.argument("module", StringArgumentType.word())
                                 .suggests((ctx, builder) -> {
@@ -98,8 +108,31 @@ public final class ZephyrCommand {
     private static int list(CommandContext<FabricClientCommandSource> ctx) {
         for (Module m : ZephyrClient.modules().all()) {
             String state = m.isEnabled() ? Formatting.GREEN + "on" : Formatting.GRAY + "off";
-            ctx.getSource().sendFeedback(Text.literal(m.name() + " [" + state + "]  " + m.hudLabel()));
+            ctx.getSource().sendFeedback(Text.literal(m.name() + " [" + state + Formatting.RESET + "]  "
+                    + Formatting.GRAY + m.description()));
         }
+        return 1;
+    }
+
+    private static int info(CommandContext<FabricClientCommandSource> ctx) {
+        Module m = module(ctx);
+        if (m == null) {
+            reply(ctx, "no such module");
+            return 0;
+        }
+        String state = m.isEnabled() ? Formatting.GREEN + "on" : Formatting.GRAY + "off";
+        ctx.getSource().sendFeedback(Text.literal(Formatting.AQUA + m.name() + Formatting.RESET
+                + " (" + m.category().label() + ", " + state + Formatting.RESET + ")"));
+        String d = m.description();
+        ctx.getSource().sendFeedback(Text.literal(d.isEmpty() ? "No description." : d).formatted(Formatting.GRAY));
+        StringBuilder settings = new StringBuilder();
+        for (Setting<?> s : m.settings()) {
+            if (settings.length() > 0) {
+                settings.append(", ");
+            }
+            settings.append(s.id());
+        }
+        ctx.getSource().sendFeedback(Text.literal("Settings: " + settings).formatted(Formatting.DARK_GRAY));
         return 1;
     }
 

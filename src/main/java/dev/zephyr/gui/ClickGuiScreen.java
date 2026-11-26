@@ -192,7 +192,8 @@ public final class ClickGuiScreen extends Screen {
             return true;
         }
         String q = search.toLowerCase();
-        if (m.name().toLowerCase().contains(q) || m.category().label().toLowerCase().contains(q)) {
+        if (m.name().toLowerCase().contains(q) || m.category().label().toLowerCase().contains(q)
+                || m.description().toLowerCase().contains(q)) {
             return true;
         }
         for (Setting<?> st : m.settings()) {
@@ -278,6 +279,7 @@ public final class ClickGuiScreen extends Screen {
                     renderColumn(ctx, col, ease);
                 }
             }
+            renderDescriptionTooltip(ctx, ease);
             String hint = capturing != null
                     ? "Press a key or mouse button to bind  ·  Esc removes the bind  ·  Left-click cancels"
                     : "Left-click toggle  ·  Right-click settings  ·  Drag headers  ·  Ctrl + wheel resize";
@@ -339,6 +341,86 @@ public final class ClickGuiScreen extends Screen {
         if (!empty) {
             Ui.textRight(ctx, "Esc clears", x + w - 9, y + 5, 7.5f, Ui.alpha(Ui.TEXT_FAINT, ease), false);
         }
+    }
+
+    /** Hover a module row to see what it does (drawn last so it sits above every panel). */
+    private void renderDescriptionTooltip(DrawContext ctx, float ease) {
+        if (dragColumn != null || capturing != null) {
+            return;
+        }
+        Module hovered = null;
+        for (Row row : rows) {
+            if (row.header || row.setting != null || row.module == null
+                    || !row.inside(lastMouseGuiX, lastMouseGuiY)) {
+                continue;
+            }
+            Column col = row.column;
+            float bodyTop = col.y + HEADER_H;
+            if (lastMouseGuiY < bodyTop || lastMouseGuiY > bodyTop + bodyHeight(col)) {
+                continue; // row scrolled out of its panel
+            }
+            hovered = row.module;
+            break;
+        }
+        float show = anim("tip", hovered != null ? 1f : 0f, 14f);
+        if (hovered == null) {
+            return;
+        }
+        String text = hovered.description();
+        if (text.isEmpty() || show < 0.05f) {
+            return;
+        }
+        final float size = 8f;
+        final float maxW = 190f;
+        List<String> lines = wrap(text, size, maxW);
+        float w = 0;
+        for (String line : lines) {
+            w = Math.max(w, Ui.textWidth(line, size, false));
+        }
+        String title = hovered.name() + "  ·  " + hovered.category().label();
+        w = Math.max(w, Ui.textWidth(title, size, true)) + 16;
+        float h = 10 + 11 + lines.size() * 10 + 6;
+        float mx = (float) lastMouseGuiX;
+        float my = (float) lastMouseGuiY;
+        float x = mx + 12;
+        float y = my + 10;
+        if (x + w > guiWidth() - 4) {
+            x = mx - 12 - w;
+        }
+        if (y + h > guiHeight() - 4) {
+            y = guiHeight() - 4 - h;
+        }
+        float a = show * ease;
+        Ui.shadow(ctx, x, y, w, h, 7, 10, Ui.alpha(0x99000000, a));
+        Ui.roundRect(ctx, x, y, w, h, 7, Ui.alpha(Ui.BG_2, a));
+        Ui.roundRect(ctx, x + 6, y + 7, 2, 8, 1, Ui.alpha(Ui.ACCENT, a));
+        Ui.text(ctx, title, x + 12, y + 7, size, Ui.alpha(Ui.TEXT, a), true);
+        float ly = y + 7 + 13;
+        for (String line : lines) {
+            Ui.text(ctx, line, x + 8, ly, size, Ui.alpha(Ui.TEXT_DIM, a), false);
+            ly += 10;
+        }
+    }
+
+    /** Greedy word wrap at {@code maxW} gui pixels. */
+    private static List<String> wrap(String text, float size, float maxW) {
+        List<String> out = new ArrayList<>();
+        StringBuilder line = new StringBuilder();
+        for (String word : text.split(" ")) {
+            String candidate = line.length() == 0 ? word : line + " " + word;
+            if (line.length() > 0 && Ui.textWidth(candidate, size, false) > maxW) {
+                out.add(line.toString());
+                line.setLength(0);
+                line.append(word);
+            } else {
+                line.setLength(0);
+                line.append(candidate);
+            }
+        }
+        if (line.length() > 0) {
+            out.add(line.toString());
+        }
+        return out;
     }
 
     private static int countEnabled() {

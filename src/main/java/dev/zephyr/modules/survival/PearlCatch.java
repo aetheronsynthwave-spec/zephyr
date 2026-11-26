@@ -278,8 +278,8 @@ public final class PearlCatch extends Module {
         if (!stageTimer.isDue()) {
             return;
         }
-        if (returnSlot != -1) {
-            InventoryManager.selectHotbar(client, returnSlot);
+        if (returnSlot != -1 && !InventoryManager.selectHotbar(client, returnSlot)) {
+            return; // slot already changed this tick: restore on the next tick
         }
         stage = Stage.IDLE;
         stageTimer.invalidate();

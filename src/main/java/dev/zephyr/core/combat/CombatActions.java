@@ -1,6 +1,7 @@
 package dev.zephyr.core.combat;
 
 import dev.zephyr.core.rotation.RotationManager;
+import dev.zephyr.core.timing.TickPhase;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.entity.Entity;
 import net.minecraft.util.ActionResult;
@@ -12,6 +13,11 @@ import net.minecraft.util.Hand;
  * sequence) are exactly what a human click would produce. When a silent rotation is
  * active, the player's live rotation is swapped to the server rotation for the duration
  * of the interaction call - the interact packet therefore carries the aimed rotation.
+ *
+ * <p>Timing: every action is refused unless {@link TickPhase#actionWindowOpen()} - i.e. it
+ * is emitted inside the same tick and before that tick's movement packet, exactly where
+ * vanilla's {@code handleInputEvents} sends a human click. Module ticks run in the
+ * pre-movement stage, so in practice this only rejects calls from late hooks / frames.
  */
 public final class CombatActions {
 
@@ -26,7 +32,8 @@ public final class CombatActions {
 
     /** Melee/entity attack through the vanilla path (sets cooldown + sends swing). */
     public static boolean attackEntity(MinecraftClient client, Entity target) {
-        if (client.player == null || client.interactionManager == null || target == null) {
+        if (client.player == null || client.interactionManager == null || target == null
+                || !TickPhase.actionWindowOpen()) {
             return false;
         }
         // Exactly what vanilla doAttack does: attack packet, then the hand swing (which
@@ -47,12 +54,15 @@ public final class CombatActions {
 
     /**
      * Attribute swap: select {@code hotbarSlot}, attack, then return to the original slot
-     * after {@code backTicks} ticks (0 = same tick, invisible; 2-4 = a visible flash of the
-     * swapped item, like doing it by hand). The server applies the hit with the swapped
-     * item's attributes (mace smash, breach, spear) while your held weapon stays your weapon.
+     * {@code max(1, backTicks)} ticks later (1 = the next tick's pre-movement stage; 2-4 = a
+     * visible flash of the swapped item, like doing it by hand). The server applies the hit
+     * with the swapped item's attributes (mace smash, breach, spear). Packet order inside
+     * the tick: UpdateSelectedSlot -> attack -> swing -> movement.
+     *
+     * @return false (and nothing sent) if the slot is invalid or cannot change this tick
      */
     public static boolean attributeSwapAttack(MinecraftClient client, int hotbarSlot, Entity target, int backTicks) {
-        if (client.player == null || client.getNetworkHandler() == null || hotbarSlot < 0 || hotbarSlot > 8) {
+        if (client.player == null || client.getNetworkHandler() == null || !SwapManager.isValidSlot(hotbarSlot)) {
             return false;
         }
         return SwapManager.withSwap(client, hotbarSlot, backTicks, () -> attackEntity(client, target));
@@ -60,7 +70,7 @@ public final class CombatActions {
 
     /** Right-click a block (crystal/anchor/glowstone placement); swings like vanilla on success. */
     public static ActionResult interactBlock(MinecraftClient client, net.minecraft.util.hit.BlockHitResult hit) {
-        if (client.player == null || client.interactionManager == null) {
+        if (client.player == null || client.interactionManager == null || !TickPhase.actionWindowOpen()) {
             return ActionResult.FAIL;
         }
         ActionResult r = RotationManager.withServerRotation(() ->
@@ -71,7 +81,7 @@ public final class CombatActions {
 
     /** Item use (pearl throw, XP bottle); swings like vanilla on success. */
     public static ActionResult interactItem(MinecraftClient client) {
-        if (client.player == null || client.interactionManager == null) {
+        if (client.player == null || client.interactionManager == null || !TickPhase.actionWindowOpen()) {
             return ActionResult.FAIL;
         }
         ActionResult r = RotationManager.withServerRotation(() ->

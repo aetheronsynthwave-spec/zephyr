@@ -1,9 +1,9 @@
 package dev.zephyr.core.inventory;
 
+import dev.zephyr.core.combat.SwapManager;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.item.ItemStack;
-import net.minecraft.network.packet.c2s.play.UpdateSelectedSlotC2SPacket;
 import net.minecraft.screen.ScreenHandler;
 import net.minecraft.screen.slot.SlotActionType;
 
@@ -12,9 +12,10 @@ import java.util.function.Predicate;
 /**
  * Hotbar and screen-handler swap manager.
  *
- * <p>All inventory mutations go through the vanilla interaction path
- * ({@code clickSlot} / {@code UpdateSelectedSlotC2SPacket}), so every swap is exactly
- * what the server would accept from a human clicking - no illegal slot pokes.
+ * <p>All inventory mutations go through the vanilla interaction path: {@code clickSlot}
+ * for screen-handler swaps, and {@link SwapManager} (vanilla {@code syncSelectedSlot()})
+ * for hotbar selection, so every swap is exactly what the server would accept from a
+ * human - no illegal slot pokes, no duplicate slot packets.
  * Modules schedule swaps through the ms-timed FSMs rather than hammering packets.
  */
 public final class InventoryManager {
@@ -45,17 +46,16 @@ public final class InventoryManager {
         return -1;
     }
 
-    /** Selects a hotbar slot: client state first, then the server packet. */
+    /**
+     * Selects a hotbar slot on client and server. Delegates to {@link SwapManager#select},
+     * which validates 0..8, skips the packet when the server already has the slot, and
+     * refuses a second slot change in the same tick.
+     *
+     * @return true when the slot is now selected; false means "not this tick" - callers
+     *         must not use the item and should retry next tick
+     */
     public static boolean selectHotbar(MinecraftClient client, int slot) {
-        ClientPlayerEntity player = client.player;
-        if (player == null || slot < 0 || slot > 8) {
-            return false;
-        }
-        if (player.getInventory().getSelectedSlot() != slot) {
-            player.getInventory().setSelectedSlot(slot);
-            send(client, new UpdateSelectedSlotC2SPacket(slot));
-        }
-        return true;
+        return SwapManager.select(client, slot);
     }
 
     /** Currently selected hotbar index (0-8). */
@@ -91,11 +91,5 @@ public final class InventoryManager {
     /** @return stack currently in the selected hotbar slot. */
     public static ItemStack heldStack(ClientPlayerEntity player) {
         return player.getMainHandStack();
-    }
-
-    private static void send(MinecraftClient client, UpdateSelectedSlotC2SPacket packet) {
-        if (client.getNetworkHandler() != null) {
-            client.getNetworkHandler().sendPacket(packet);
-        }
     }
 }
