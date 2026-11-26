@@ -58,6 +58,8 @@ public final class AutoMace extends Module {
     /** Stage shown in the HUD while a Density 0-tick strike is armed. */
     private boolean armedZeroTick;
     private int ticksSinceStrike = Integer.MAX_VALUE;
+    /** A slam is building this tick (read by CombatCoordinator; AutoMace ticks first). */
+    private boolean slamPending;
     private int tickCounter;
 
     public AutoMace() {
@@ -65,9 +67,15 @@ public final class AutoMace extends Module {
         ZephyrEvents.GROUND_LAND.subscribe(this::onLand); // once, not per toggle
     }
 
+    /** True while a qualifying drop toward a target is in progress (other hitters hold off). */
+    public boolean slamPending() {
+        return slamPending;
+    }
+
     @Override
     protected void onDisable() {
         armedZeroTick = false;
+        slamPending = false;
         RotationManager.clear(0);
     }
 
@@ -105,11 +113,17 @@ public final class AutoMace extends Module {
         TargetManager.cleanup();
         if (target == null) {
             armedZeroTick = false;
+            slamPending = false;
             return;
         }
 
         double fall = self.fallDistance;
         double distToGround = DamageCalculator.distanceToGround(client.world, self);
+        slamPending = self.getVelocity().y < -0.08
+                && fall >= minFall.get() * 0.5
+                && self.getY() - target.getY() >= 0.75
+                && self.squaredDistanceTo(target) <= 36.0
+                && dev.zephyr.core.inventory.InventoryManager.findHotbarSlot(self, ItemUtil::isMace) != -1;
 
         if (mode.is("DENSITY")) {
             // Arm while a qualifying slam is incoming: integrate gravity+drag forward
@@ -145,6 +159,11 @@ public final class AutoMace extends Module {
     /** Shared pre-strike gates: hurt-time, cooldown, reach, rotation aim. */
     private boolean gateOk(MinecraftClient client, ClientPlayerEntity self, LivingEntity target, double fall) {
         if (target.hurtTime > maxHurtTime.get().intValue()) {
+            return false;
+        }
+        // A smash into a raised shield is fully blocked. With ShieldBreaker on, its axe hit
+        // opens the guard this tick and the slam lands next tick (stun slam).
+        if (dev.zephyr.core.combat.CombatCoordinator.shieldBlocks(target, self)) {
             return false;
         }
         double distSq = self.squaredDistanceTo(target);

@@ -26,6 +26,10 @@ public final class Tracers extends Module implements WorldRenderParticipant {
     private final BooleanSetting toBody = bool("body", "Aim at body (off = feet)", true);
     private final NumberSetting width = num("width", "Line width", 1.0, 6.0, 0.5, 1.5);
 
+    /** Per-frame scratch (render thread only). */
+    private final float[] rgb = new float[3];
+    private final double[] off = new double[3];
+
     public Tracers() {
         super("Tracers", ModuleCategory.RENDER, 0);
     }
@@ -38,13 +42,18 @@ public final class Tracers extends Module implements WorldRenderParticipant {
         float td = RenderUtil.tickProgress();
         Vec3d from = RenderUtil.crosshairOrigin();
         RenderUtil.lineWidth = width.get().floatValue();
+        boolean body = toBody.get();
+        boolean walls = throughWalls.get();
+        boolean byHealth = healthColor.get();
         for (LivingEntity e : EspTargets.collect(range.get(), players.get(), hostiles.get(), others.get(),
                 teammates.get())) {
-            Box b = EspTargets.box(e, td);
-            Vec3d to = toBody.get() ? b.getCenter() : new Vec3d((b.minX + b.maxX) / 2, b.minY, (b.minZ + b.maxZ) / 2);
-            float[] c = EspTargets.color(e, healthColor.get());
-            RenderUtil.drawLine(ctx.matrices(), ctx.consumers(), from, to, c[0], c[1], c[2], 0.9f,
-                    throughWalls.get());
+            Box b = e.getBoundingBox();
+            EspTargets.lerpOffset(e, td, off);
+            double tx = (b.minX + b.maxX) * 0.5 + off[0];
+            double ty = (body ? (b.minY + b.maxY) * 0.5 : b.minY) + off[1];
+            double tz = (b.minZ + b.maxZ) * 0.5 + off[2];
+            EspTargets.color(e, byHealth, rgb);
+            RenderUtil.drawLine(ctx.matrices(), ctx.consumers(), from, tx, ty, tz, rgb[0], rgb[1], rgb[2], 0.9f, walls);
         }
         RenderUtil.lineWidth = 2.0f;
     }

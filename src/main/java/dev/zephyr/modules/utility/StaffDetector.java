@@ -59,8 +59,8 @@ public final class StaffDetector extends Module {
             }
         }
         if (invisible.get()) {
-            for (Entity en : mc.world.getEntities()) {
-                if (en instanceof PlayerEntity p && p != mc.player && p.isInvisible() && !p.isSpectator()
+            for (PlayerEntity p : mc.world.getPlayers()) { // players only: no full-world walk
+                if (p != mc.player && p.isInvisible() && !p.isSpectator()
                         && p.squaredDistanceTo(mc.player) < 64 * 64
                         && p.getEquippedStack(net.minecraft.entity.EquipmentSlot.MAINHAND).isEmpty()) {
                     flag(mc, p.getGameProfile().name(), "is invisible nearby");

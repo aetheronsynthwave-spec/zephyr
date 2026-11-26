@@ -160,19 +160,30 @@ public final class RenderUtil {
 
     public static void drawBoxOutline(MatrixStack matrices, VertexConsumerProvider consumers,
                                       Box box, float r, float g, float b, float a, boolean seeThrough) {
+        drawBoxOutline(matrices, consumers, box.minX, box.minY, box.minZ, box.maxX, box.maxY, box.maxZ,
+                r, g, b, a, seeThrough);
+    }
+
+    /**
+     * Allocation-free box outline from raw world coordinates (ESP / BlockESP call this per
+     * entity / block per frame, so no Box objects are built just to be drawn).
+     */
+    public static void drawBoxOutline(MatrixStack matrices, VertexConsumerProvider consumers,
+                                      double bMinX, double bMinY, double bMinZ,
+                                      double bMaxX, double bMaxY, double bMaxZ,
+                                      float r, float g, float b, float a, boolean seeThrough) {
         // 1.21.11: the lines layer moved from RenderLayer.getLines() to RenderLayers.lines();
         // its vertex format carries a trailing line-width element.
         VertexConsumer lines = consumers.getBuffer(lineLayer(seeThrough));
         Matrix4f matrix = matrices.peek().getPositionMatrix();
 
-        // Static scratch (no per-box allocation - this runs per player per frame).
         // Corner index convention (matches BOX_EDGES): bit2=x, bit1=y, bit0=z.
         // 1.21.11 world-render matrices are CAMERA-RELATIVE: subtract the camera position
         // in double precision before narrowing to float, or everything lands off-screen.
         Vec3d cam = cameraPos();
-        final float minX = (float) (box.minX - cam.x), maxX = (float) (box.maxX - cam.x);
-        final float minY = (float) (box.minY - cam.y), maxY = (float) (box.maxY - cam.y);
-        final float minZ = (float) (box.minZ - cam.z), maxZ = (float) (box.maxZ - cam.z);
+        final float minX = (float) (bMinX - cam.x), maxX = (float) (bMaxX - cam.x);
+        final float minY = (float) (bMinY - cam.y), maxY = (float) (bMaxY - cam.y);
+        final float minZ = (float) (bMinZ - cam.z), maxZ = (float) (bMaxZ - cam.z);
         for (int[] edge : BOX_EDGES) {
             float x0 = (edge[0] & 4) == 0 ? minX : maxX;
             float y0 = (edge[0] & 2) == 0 ? minY : maxY;
@@ -214,11 +225,18 @@ public final class RenderUtil {
 
     public static void drawLine(MatrixStack matrices, VertexConsumerProvider consumers,
                                 Vec3d from, Vec3d to, float r, float g, float b, float a, boolean seeThrough) {
+        drawLine(matrices, consumers, from, to.x, to.y, to.z, r, g, b, a, seeThrough);
+    }
+
+    /** Allocation-free variant: the end point as raw world coordinates. */
+    public static void drawLine(MatrixStack matrices, VertexConsumerProvider consumers,
+                                Vec3d from, double toX, double toY, double toZ,
+                                float r, float g, float b, float a, boolean seeThrough) {
         VertexConsumer lines = consumers.getBuffer(lineLayer(seeThrough));
         Matrix4f matrix = matrices.peek().getPositionMatrix();
-        float dx = (float) (to.x - from.x);
-        float dy = (float) (to.y - from.y);
-        float dz = (float) (to.z - from.z);
+        float dx = (float) (toX - from.x);
+        float dy = (float) (toY - from.y);
+        float dz = (float) (toZ - from.z);
         float lenSq = dx * dx + dy * dy + dz * dz;
         float nx = 0f, ny = 1f, nz = 0f;
         if (lenSq > 1.0e-9f) {
@@ -231,7 +249,7 @@ public final class RenderUtil {
         // Tracer origin sits slightly in front of the eye so it is visible in first person.
         lines.vertex(matrix, (float) (from.x - cam.x), (float) (from.y - cam.y), (float) (from.z - cam.z))
                 .color(r, g, b, a).normal(nx, ny, nz).lineWidth(lineWidth);
-        lines.vertex(matrix, (float) (to.x - cam.x), (float) (to.y - cam.y), (float) (to.z - cam.z))
+        lines.vertex(matrix, (float) (toX - cam.x), (float) (toY - cam.y), (float) (toZ - cam.z))
                 .color(r, g, b, a).normal(nx, ny, nz).lineWidth(lineWidth);
     }
 

@@ -62,6 +62,10 @@ public final class TriggerBot extends Module {
                 return;
             }
         }
+        // Leave the hit to AutoMace (slam coming) or ShieldBreaker (raised shield).
+        if (dev.zephyr.core.combat.CombatCoordinator.meleeShouldYield(client, target)) {
+            return;
+        }
         if (armedOn != target) { // fresh reaction window per new crosshair target
             armedOn = target;
             timer.restart(reactMin.get(), Math.max(reactMin.get(), reactMax.get()));

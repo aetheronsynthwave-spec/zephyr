@@ -24,7 +24,17 @@ public final class ActiveHud extends Module {
     private final BooleanSetting showInfo = bool("info", "Show module info", true);
     private final NumberSetting scale = num("scale", "Scale", 0.6, 2.0, 0.05, 1.0);
 
-    private final Map<Module, Float> slide = new HashMap<>();
+    /*
+     * Per-module state indexed by position in ModuleManager.all() (stable after init).
+     * The old version boxed a Float per module per frame in a HashMap and re-measured
+     * text inside the sort comparator (O(n log n) textWidth + substring per frame).
+     */
+    private float[] slide = new float[0];
+    private float[] widths = new float[0];
+    private String[] labelSeen = new String[0];
+    private String[] infoOf = new String[0];
+    private boolean infoFlagSeen;
+    private int[] order = new int[0];
     private long lastNanos;
 
     public ActiveHud() {
@@ -57,21 +67,42 @@ public final class ActiveHud extends Module {
             y += 28;
         }
 
-        List<Module> list = new ArrayList<>();
-        for (Module m : ZephyrClient.modules().all()) {
+        List<Module> all = ZephyrClient.modules().all();
+        ensureCapacity(all.size());
+        boolean showInfoNow = showInfo.get();
+        if (showInfoNow != infoFlagSeen) {
+            java.util.Arrays.fill(labelSeen, null); // info toggled: re-measure everything
+            infoFlagSeen = showInfoNow;
+        }
+        int n = 0;
+        for (int i = 0; i < all.size(); i++) {
+            Module m = all.get(i);
             float target = m.isEnabled() && m != this ? 1f : 0f;
-            float v = Ui.approach(slide.getOrDefault(m, 0f), target, 12f, dt);
-            slide.put(m, v);
+            float v = Ui.approach(slide[i], target, 12f, dt);
+            slide[i] = v;
             if (v > 0.01f) {
-                list.add(m);
+                measure(i, m);
+                order[n++] = i;
             }
         }
-        list.sort((a, b) -> Float.compare(width(b), width(a)));
-        for (Module m : list) {
-            float v = slide.get(m);
+        // Longest first. Insertion sort on cached widths: n is tiny and nearly sorted
+        // frame to frame, and it allocates nothing.
+        for (int a = 1; a < n; a++) {
+            int idx = order[a];
+            int b = a - 1;
+            while (b >= 0 && widths[order[b]] < widths[idx]) {
+                order[b + 1] = order[b];
+                b--;
+            }
+            order[b + 1] = idx;
+        }
+        for (int k = 0; k < n; k++) {
+            int i = order[k];
+            Module m = all.get(i);
+            float v = slide[i];
             String label = m.name();
-            String info = info(m);
-            float w = width(m) + 14;
+            String info = infoOf[i];
+            float w = widths[i] + 14;
             float rx = x - (1f - v) * (w + 8);
             Ui.roundRect(ctx, rx, y, w, 14, 4, Ui.alpha(0xB0101319, v));
             Ui.roundRect(ctx, rx, y + 3, 2, 8, 1, Ui.alpha(Ui.ACCENT, v));
@@ -84,18 +115,35 @@ public final class ActiveHud extends Module {
         ctx.getMatrices().popMatrix();
     }
 
-    private String info(Module m) {
-        if (!showInfo.get()) {
-            return "";
+    private void ensureCapacity(int size) {
+        if (slide.length != size) {
+            slide = java.util.Arrays.copyOf(slide, size);
+            widths = new float[size];
+            labelSeen = new String[size];
+            infoOf = new String[size];
+            order = new int[size];
         }
-        String full = m.hudLabelCached() == null ? "" : m.hudLabelCached();
-        int i = full.indexOf(" · ");
-        return i < 0 ? "" : full.substring(i + 3);
     }
 
-    private float width(Module m) {
-        String info = info(m);
-        return Ui.textWidth(m.name(), 8.5f, false) + (info.isEmpty() ? 0 : 4 + Ui.textWidth(info, 8.5f, false));
+    /**
+     * Width + info suffix for module {@code i}. hudLabelCached() returns the same String
+     * instance for a whole tick, so the substring + text measurement run only when the
+     * label actually changes (at most 20 times a second), not every frame.
+     */
+    private void measure(int i, Module m) {
+        String full = m.hudLabelCached() == null ? "" : m.hudLabelCached();
+        if (full == labelSeen[i]) {
+            return;
+        }
+        labelSeen[i] = full;
+        String info = "";
+        if (infoFlagSeen) {
+            int cut = full.indexOf(" · ");
+            info = cut < 0 ? "" : full.substring(cut + 3);
+        }
+        infoOf[i] = info;
+        widths[i] = Ui.textWidth(m.name(), 8.5f, false)
+                + (info.isEmpty() ? 0 : 4 + Ui.textWidth(info, 8.5f, false));
     }
 
     @Override

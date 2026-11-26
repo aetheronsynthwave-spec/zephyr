@@ -28,6 +28,12 @@ public final class BlockEsp extends Module implements WorldRenderParticipant {
     private final NumberSetting budget = num("budget", "Blocks scanned / tick", 2000, 60000, 1000, 20000);
     private final NumberSetting maxBoxes = num("maxBoxes", "Max outlines", 16, 1024, 16, 256);
 
+    private static final float[] C_DIAMOND = {0.3f, 0.9f, 1f};
+    private static final float[] C_DEBRIS = {0.7f, 0.4f, 0.2f};
+    private static final float[] C_AMETHYST = {0.75f, 0.4f, 1f};
+    private static final float[] C_SPAWNERS = {1f, 0.3f, 0.3f};
+    private static final float[] C_DEFAULT = {1f, 0.85f, 0.2f};
+
     private final List<BlockPos> found = new ArrayList<>();
     private List<BlockPos> building = new ArrayList<>();
     private int cx, cy, cz;       // scan cursor (offset from origin)
@@ -108,18 +114,20 @@ public final class BlockEsp extends Module implements WorldRenderParticipant {
             return;
         }
         float[] c = switch (preset.get()) {
-            case "DIAMOND" -> new float[]{0.3f, 0.9f, 1f};
-            case "DEBRIS" -> new float[]{0.7f, 0.4f, 0.2f};
-            case "AMETHYST" -> new float[]{0.75f, 0.4f, 1f};
-            case "SPAWNERS" -> new float[]{1f, 0.3f, 0.3f};
-            default -> new float[]{1f, 0.85f, 0.2f};
+            case "DIAMOND" -> C_DIAMOND;
+            case "DEBRIS" -> C_DEBRIS;
+            case "AMETHYST" -> C_AMETHYST;
+            case "SPAWNERS" -> C_SPAWNERS;
+            default -> C_DEFAULT;
         };
         int n = 0, max = maxBoxes.asInt();
         for (BlockPos p : found) {
             if (n++ >= max) {
                 break;
             }
-            RenderUtil.drawBoxOutline(ctx.matrices(), ctx.consumers(), new Box(p), c[0], c[1], c[2], 1f);
+            int x = p.getX(), y = p.getY(), z = p.getZ();
+            RenderUtil.drawBoxOutline(ctx.matrices(), ctx.consumers(), x, y, z, x + 1, y + 1, z + 1,
+                    c[0], c[1], c[2], 1f, false);
         }
     }
 

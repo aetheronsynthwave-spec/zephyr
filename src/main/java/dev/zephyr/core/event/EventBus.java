@@ -27,6 +27,11 @@ public final class EventBus<E> {
         }
     }
 
+    /** Lets hot call sites skip building an event object when nobody listens. */
+    public boolean hasListeners() {
+        return !listeners.isEmpty();
+    }
+
     public void clear() {
         listeners.clear();
     }

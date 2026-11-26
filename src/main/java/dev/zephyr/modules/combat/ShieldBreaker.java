@@ -3,9 +3,11 @@ package dev.zephyr.modules.combat;
 import dev.zephyr.core.Module;
 import dev.zephyr.core.ModuleCategory;
 import dev.zephyr.core.combat.CombatActions;
+import dev.zephyr.core.combat.CombatCoordinator;
 import dev.zephyr.core.inventory.InventoryManager;
+import dev.zephyr.core.settings.BooleanSetting;
 import dev.zephyr.core.settings.NumberSetting;
-import dev.zephyr.core.timing.MsTimer;
+import dev.zephyr.core.target.TargetManager;
 import dev.zephyr.core.util.ItemUtil;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
@@ -13,24 +15,33 @@ import net.minecraft.entity.LivingEntity;
 import net.minecraft.util.hit.EntityHitResult;
 
 /**
- * ShieldBreaker - when your crosshair is on an enemy that is blocking with a shield,
- * swaps to an axe from the hotbar, disables the shield with one hit and swaps back.
- * (From Echo's ShieldBreaker.)
+ * ShieldBreaker - when an enemy's raised shield faces you, attribute-swaps to an axe,
+ * disables the shield with one hit and swaps back.
+ *
+ * <p>Works with AutoMace for a <b>stun slam</b>: during a mace drop it also targets
+ * AutoMace's target (not just the crosshair), breaks the shield on the way down, records
+ * the break in {@link CombatCoordinator}, and AutoMace smashes on the next tick into the
+ * now-open guard. The swap goes through SwapManager, so AutoMace's own swap returns to your
+ * original weapon, not to the axe.
  */
 public final class ShieldBreaker extends Module {
 
-    private final NumberSetting swapBackMs = num("swapBack", "Swap-back delay ms", 20, 400, 10, 120);
-    private final MsTimer back = new MsTimer();
-    private int returnSlot = -1;
+    private final NumberSetting swapBackMs = num("swapBack", "Swap-back delay ms", 50, 400, 10, 120);
+    private final BooleanSetting stunSlam = bool("stunSlam", "Stun slam with AutoMace", true);
+    private final NumberSetting reach = num("reach", "Reach", 2.5, 3.0, 0.05, 3.0);
     public int breaks;
 
     public ShieldBreaker() {
         super("ShieldBreaker", ModuleCategory.COMBAT, 0);
     }
 
-    @Override
-    protected void onDisable() {
-        returnSlot = -1;
+    /** Coordinator query: would this module break {@code target}'s shield now? */
+    public boolean wantsToBreak(MinecraftClient client, LivingEntity target) {
+        ClientPlayerEntity self = client.player;
+        return self != null && target != null && target.isAlive()
+                && CombatCoordinator.shieldBlocks(target, self)
+                && inReach(self, target)
+                && axeSlot(self) != -1;
     }
 
     @Override
@@ -39,42 +50,44 @@ public final class ShieldBreaker extends Module {
         if (self == null || client.interactionManager == null) {
             return;
         }
-        if (returnSlot >= 0) {
-            // Refused (another slot change already went out this tick) -> retry next tick.
-            if (back.isDue() && InventoryManager.selectHotbar(client, returnSlot)) {
-                returnSlot = -1;
-            }
+        LivingEntity target = pickTarget(client, self);
+        if (target == null || !wantsToBreak(client, target)) {
             return;
         }
-        if (!(client.crosshairTarget instanceof EntityHitResult ehr)
-                || !(ehr.getEntity() instanceof LivingEntity t) || !t.isBlocking()) {
+        int axe = axeSlot(self);
+        boolean onAxe = self.getInventory().getSelectedSlot() == axe;
+        // Already holding the axe: wait for a charged swing like a player would. Swapping
+        // in resets the client cooldown anyway, and the disable does not depend on charge.
+        if (onAxe && ItemUtil.attackCooldownProgress(self) < 0.9f) {
             return;
         }
-        // SMART: a raised shield only blocks hits from the front; from the side/back the
-        // sword already gets through, so do not waste the swap.
-        if (smart()) {
-            net.minecraft.util.math.Vec3d facing = t.getRotationVec(1.0f);
-            net.minecraft.util.math.Vec3d toUs = self.getEntityPos().subtract(t.getEntityPos()).normalize();
-            if (facing.x * toUs.x + facing.z * toUs.z < 0.0) {
-                return;
-            }
-        }
-        int axe = InventoryManager.findHotbarSlot(self, s -> ItemUtil.id(s).endsWith("_axe"));
-        if (axe < 0) {
-            return;
-        }
-        int cur = InventoryManager.selectedHotbar(self);
-        if (cur != axe && !InventoryManager.selectHotbar(client, axe)) {
-            return; // axe not selectable this tick: never hit the shield with the wrong item
-        }
-        if (ItemUtil.attackCooldownProgress(self) >= 0.9f || cur != axe) {
-            CombatActions.attackEntity(client, t);
+        int backTicks = Math.max(1, (int) Math.round(swapBackMs.get() / 50.0));
+        if (CombatActions.attributeSwapAttack(client, axe, target, backTicks)) {
             breaks++;
-            if (cur != axe) {
-                returnSlot = cur;
-                back.restartExact(swapBackMs.get());
-            }
+            CombatCoordinator.noteShieldBroken(target);
         }
+    }
+
+    /** Crosshair target, or AutoMace's target while a slam is coming (stun slam). */
+    private LivingEntity pickTarget(MinecraftClient client, ClientPlayerEntity self) {
+        if (client.crosshairTarget instanceof EntityHitResult ehr
+                && ehr.getEntity() instanceof LivingEntity t && t != self) {
+            return t;
+        }
+        if (stunSlam.get() && CombatCoordinator.maceSlamPending()) {
+            return TargetManager.currentTarget();
+        }
+        return null;
+    }
+
+    private boolean inReach(ClientPlayerEntity self, LivingEntity target) {
+        double r = reach.get();
+        // Reach to the nearest point of the hitbox, as the server measures it.
+        return target.getBoundingBox().squaredMagnitude(self.getEyePos()) <= r * r;
+    }
+
+    private static int axeSlot(ClientPlayerEntity self) {
+        return InventoryManager.findHotbarSlot(self, s -> ItemUtil.id(s).endsWith("_axe"));
     }
 
     @Override

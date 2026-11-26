@@ -29,8 +29,8 @@ public final class ModuleDescriptions {
         d("LegitAura", "Attacks a visible nearby target with smooth rotations and full-charge timing.");
         d("LungeMacro", "Press the bind to swap to your spear, jab (fires Lunge), and swap back.");
         d("STap", "Briefly taps back or releases forward after a sprint hit to keep combos going.");
-        d("ShieldBreaker", "Swaps to an axe to disable a blocking enemy's shield, then swaps back.");
-        d("TriggerBot", "Attacks when your crosshair is already on an enemy and your weapon is charged.");
+        d("ShieldBreaker", "Axe-hits a raised shield to disable it, then swaps back. With AutoMace: stun slam.");
+        d("TriggerBot", "Attacks when your crosshair is on an enemy and your weapon is charged. Holds off for AutoMace and ShieldBreaker.");
         // Crystal
         d("AnchorMacro", "Places, charges and detonates respawn anchors near your target.");
         d("AutoCrystal", "Places and breaks end crystals at the best damage spot near your target.");
@@ -40,7 +40,7 @@ public final class ModuleDescriptions {
         d("AutoLog", "Disconnects when your health or totem count drops below your limits.");
         d("AutoTotem", "Keeps a totem in your offhand, moving one from your inventory when needed.");
         d("FastXP", "Throws XP bottles quickly at your feet for fast armour mending.");
-        d("PearlCatch", "Press the bind to look up, throw a pearl, then a wind charge to catch it.");
+        d("PearlCatch", "Press the bind: throws a pearl straight up and wind-charge jumps you into it. Your view never moves.");
         d("AutoRespawn", "Clicks Respawn for you on the death screen after a short delay.");
         d("DurabilityAlert", "Warns you on screen (with a sound) when held items or armour are about to break.");
         // Utility

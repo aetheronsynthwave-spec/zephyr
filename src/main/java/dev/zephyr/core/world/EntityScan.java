@@ -36,13 +36,28 @@ public final class EntityScan {
     private static final List<net.minecraft.entity.LivingEntity> LIVING_CACHE =
             new java.util.ArrayList<>(64);
 
-    /** All living entities within {@code range} of {@code center} - shared per tick. */
+    /** Largest range any caller asked for last tick: queried up front so one scan serves all. */
+    private static double lastTickMaxRange = 1.0;
+    private static double thisTickMaxRange = 1.0;
+
+    /**
+     * All living entities within AT LEAST {@code range} of {@code center} - shared per tick.
+     * The list may contain entities further away (a superset serving a larger caller), so
+     * callers filter by their own distance. Previously the cache was keyed on the exact
+     * range: DamageNumbers (64) and TargetManager (~9) alternated and every call missed.
+     */
     public static List<net.minecraft.entity.LivingEntity> livingAroundCached(ClientWorld world,
                                                                              Vec3d center, double range) {
-        double bucket = Math.max(1.0, Math.ceil(range));
-        if (cacheWorld != world || cacheTick != world.getTime()
-                || cacheRange != bucket
-                || cacheCenterPos.squaredDistanceTo(center) > 4.0) {
+        double need = Math.max(1.0, Math.ceil(range));
+        boolean newTick = cacheTick != (int) world.getTime() || cacheWorld != world;
+        if (newTick) {
+            lastTickMaxRange = thisTickMaxRange;
+            thisTickMaxRange = need;
+        } else {
+            thisTickMaxRange = Math.max(thisTickMaxRange, need);
+        }
+        if (newTick || need > cacheRange || cacheCenterPos.squaredDistanceTo(center) > 4.0) {
+            double bucket = Math.max(need, lastTickMaxRange);
             LIVING_CACHE.clear();
             LIVING_CACHE.addAll(world.getEntitiesByClass(net.minecraft.entity.LivingEntity.class,
                     new Box(center, center).expand(bucket), e -> true));

@@ -203,6 +203,9 @@ public final class AutoHitCrystal extends Module {
         if (target.hurtTime > maxHurtTime.get().intValue()) {
             return; // server invulnerability frames
         }
+        if (dev.zephyr.core.combat.CombatCoordinator.meleeShouldYield(client, target)) {
+            return; // let AutoMace / ShieldBreaker take this hit
+        }
         // Weapon-delay aware: swords/axes carry a full 1.0-scaled cooldown; respecting
         // it keeps every hit at full strength and the rhythm legal.
         if (ItemUtil.attackCooldownProgress(self) < minCooldown.get()) {

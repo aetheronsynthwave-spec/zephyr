@@ -160,16 +160,25 @@ public final class LungeMacro extends Module {
             primeWait = 0; // slot already changed this tick: jab on the next pre-movement stage
             return;
         }
-        // Lunging from behind a raised shield (the hand routine): drop the block for the jab.
-        // Vanilla re-raises it by itself: handleInputEvents calls doItemUse again while
-        // right-click is held and the player is no longer using an item.
+        // Lunging from behind a raised shield (the hand routine): drop the block this tick
+        // (RELEASE_USE_ITEM) and jab next tick - vanilla never releases and attacks in the
+        // same tick. Vanilla re-raises the shield by itself while right-click is held.
         if (self.isUsingItem()) {
             client.interactionManager.stopUsingItem(self);
+            primeWait = 0;
+            return;
+        }
+        if (!dev.zephyr.core.combat.ActionState.canAttack(client)) {
+            primeWait = 0; // screen open / already attacked this tick: retry next tick
+            return;
         }
         // Spear (jab fires Lunge) -> back on a later tick; the spear shows for a moment when
         // "Show spear swap" is on, exactly like doing it by hand.
         int back = showSwap.get() ? backTicks.get().intValue() : 0;
         boolean jabbed = SwapManager.withSwap(client, slot, back, () -> {
+            if (!dev.zephyr.core.combat.ActionState.prepareAttack(client)) {
+                return false; // aborts an active dig first (ABORT_DESTROY_BLOCK)
+            }
             client.interactionManager.attackWithPiercingWeapon(jab);
             self.swingHand(Hand.MAIN_HAND);
             return true;

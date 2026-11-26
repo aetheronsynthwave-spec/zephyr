@@ -141,6 +141,9 @@ public final class LegitAura extends Module {
         if (target.hurtTime > maxHurtTime.get().intValue()) {
             return;
         }
+        if (dev.zephyr.core.combat.CombatCoordinator.meleeShouldYield(client, target)) {
+            return; // AutoMace slam coming or ShieldBreaker opening a raised shield
+        }
         if (ItemUtil.attackCooldownProgress(self) < cooldownGate.get()) {
             return;
         }

@@ -15,6 +15,22 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 @Mixin(ClientPlayerInteractionManager.class)
 public abstract class MixinClientPlayerInteractionManager {
 
+    /** ActionState: every attack path (vanilla click, module, re-entrant swap, spear jab). */
+    @Inject(method = "attackEntity", at = @At("HEAD"))
+    private void zephyr$noteAttack(PlayerEntity player, Entity target, CallbackInfo ci) {
+        dev.zephyr.core.combat.ActionState.noteAttack();
+    }
+
+    @Inject(method = "attackWithPiercingWeapon", at = @At("HEAD"))
+    private void zephyr$noteJab(CallbackInfo ci) {
+        dev.zephyr.core.combat.ActionState.noteAttack();
+    }
+
+    @Inject(method = "stopUsingItem", at = @At("HEAD"))
+    private void zephyr$noteRelease(PlayerEntity player, CallbackInfo ci) {
+        dev.zephyr.core.combat.ActionState.noteRelease();
+    }
+
     @Inject(method = "attackEntity", at = @At("HEAD"), cancellable = true)
     private void zephyr$breachSwap(PlayerEntity player, Entity target, CallbackInfo ci) {
         if (ZephyrClient.modules() == null) {

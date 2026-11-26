@@ -137,7 +137,26 @@ public final class Ui {
     }
 
     /** Anti-aliased filled circle of diameter {@code d} px (white mask). */
+    private static final Identifier[] CIRCLE_BY_BUCKET = new Identifier[129];
+    private static final Identifier[] GLOW_BY_BUCKET = new Identifier[129];
+
     private static Identifier circle(int d) {
+        Identifier hit = CIRCLE_BY_BUCKET[d];
+        if (hit != null) {
+            return hit;
+        }
+        return CIRCLE_BY_BUCKET[d] = circleBuild(d);
+    }
+
+    private static Identifier glow(int d) {
+        Identifier hit = GLOW_BY_BUCKET[d];
+        if (hit != null) {
+            return hit;
+        }
+        return GLOW_BY_BUCKET[d] = glowBuild(d);
+    }
+
+    private static Identifier circleBuild(int d) {
         return CIRCLES.computeIfAbsent(d, size -> {
             int s = size * 2; // diameter in texels; radius == bucket
             BufferedImage img = new BufferedImage(s, s, BufferedImage.TYPE_INT_ARGB);
@@ -152,7 +171,7 @@ public final class Ui {
     }
 
     /** Radial soft falloff (for shadows/glows): alpha 1 at the centre to 0 at the rim. */
-    private static Identifier glow(int d) {
+    private static Identifier glowBuild(int d) {
         return GLOWS.computeIfAbsent(d, size -> {
             int s = size * 2;
             BufferedImage img = new BufferedImage(s, s, BufferedImage.TYPE_INT_ARGB);
@@ -278,6 +297,8 @@ public final class Ui {
     // ------------------------------------------------------------------
 
     private static final int[] FONT_BUCKETS = {12, 16, 20, 26, 34, 44, 56};
+    private static final Atlas[] ATLAS_REGULAR = new Atlas[FONT_BUCKETS.length];
+    private static final Atlas[] ATLAS_BOLD = new Atlas[FONT_BUCKETS.length];
     private static final String CHARS;
 
     static {
@@ -296,6 +317,11 @@ public final class Ui {
         int px;
         float ascent;
         final Map<Character, float[]> glyphs = new HashMap<>(); // u, v, w, h, advance, xOff
+        final float[][] low = new float[256][];
+
+        float[] glyph(char c) {
+            return c < 256 ? low[c] : glyphs.get(c);
+        }
     }
 
     private static final Map<Integer, Atlas> ATLASES = new HashMap<>();
@@ -356,7 +382,11 @@ public final class Ui {
                     y += cellH;
                 }
                 g.drawString(String.valueOf(c), x + pad, y + pad + fm.getAscent());
-                a.glyphs.put(c, new float[]{x, y, cw, cellH, adv, pad});
+                float[] gl = new float[]{x, y, cw, cellH, adv, pad};
+                a.glyphs.put(c, gl);
+                if (c < 256) {
+                    a.low[c] = gl;
+                }
                 x += cw;
             }
             g.dispose();
@@ -370,7 +400,14 @@ public final class Ui {
     }
 
     private static Atlas atlasFor(float size, boolean bold) {
-        return atlas(bold, bucket(FONT_BUCKETS, size * pixelScale * 1.25f));
+        int px = bucket(FONT_BUCKETS, size * pixelScale * 1.25f);
+        int slot = 0;
+        while (FONT_BUCKETS[slot] != px) {
+            slot++;
+        }
+        Atlas[] row = bold ? ATLAS_BOLD : ATLAS_REGULAR;
+        Atlas hit = row[slot];
+        return hit != null ? hit : (row[slot] = atlas(bold, px));
     }
 
     /** Text width in gui units at {@code size} (cap height ~ 0.7 size). */
@@ -379,7 +416,7 @@ public final class Ui {
         float k = size / a.px;
         float w = 0;
         for (int i = 0; i < s.length(); i++) {
-            float[] gl = a.glyphs.get(s.charAt(i));
+            float[] gl = a.glyph(s.charAt(i));
             w += (gl != null ? gl[4] : a.px * 0.5f) * k;
         }
         return w;
@@ -396,7 +433,7 @@ public final class Ui {
         float top = y - (a.ascent - a.px * 0.92f) * k; // align visual top to y
         push(ctx);
         for (int i = 0; i < s.length(); i++) {
-            float[] gl = a.glyphs.get(s.charAt(i));
+            float[] gl = a.glyph(s.charAt(i));
             if (gl == null) {
                 cx += a.px * 0.5f * k;
                 continue;

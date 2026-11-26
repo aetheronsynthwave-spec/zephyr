@@ -23,6 +23,10 @@ public final class Esp extends Module implements WorldRenderParticipant {
     private final BooleanSetting teammates = bool("teammates", "Show teammates", false);
     private final NumberSetting width = num("width", "Line width", 1.0, 6.0, 0.5, 2.0);
 
+    /** Per-frame scratch (render thread only). */
+    private final float[] rgb = new float[3];
+    private final double[] off = new double[3];
+
     public Esp() {
         super("ESP", ModuleCategory.RENDER, 0);
     }
@@ -34,11 +38,17 @@ public final class Esp extends Module implements WorldRenderParticipant {
         }
         float td = RenderUtil.tickProgress();
         RenderUtil.lineWidth = width.get().floatValue();
+        boolean walls = throughWalls.get();
+        boolean byHealth = healthColor.get();
         for (LivingEntity e : EspTargets.collect(range.get(), players.get(), hostiles.get(), others.get(),
                 teammates.get())) {
-            float[] c = EspTargets.color(e, healthColor.get());
-            RenderUtil.drawBoxOutline(ctx.matrices(), ctx.consumers(), EspTargets.box(e, td).expand(0.05),
-                    c[0], c[1], c[2], 1f, throughWalls.get());
+            EspTargets.color(e, byHealth, rgb);
+            EspTargets.lerpOffset(e, td, off);
+            net.minecraft.util.math.Box bb = e.getBoundingBox();
+            RenderUtil.drawBoxOutline(ctx.matrices(), ctx.consumers(),
+                    bb.minX + off[0] - 0.05, bb.minY + off[1] - 0.05, bb.minZ + off[2] - 0.05,
+                    bb.maxX + off[0] + 0.05, bb.maxY + off[1] + 0.05, bb.maxZ + off[2] + 0.05,
+                    rgb[0], rgb[1], rgb[2], 1f, walls);
         }
         RenderUtil.lineWidth = 2.0f;
     }

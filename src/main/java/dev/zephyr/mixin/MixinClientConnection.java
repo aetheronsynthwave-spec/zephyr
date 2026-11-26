@@ -14,6 +14,9 @@ public abstract class MixinClientConnection {
 
     @Inject(method = "send(Lnet/minecraft/network/packet/Packet;)V", at = @At("HEAD"), cancellable = true)
     private void zephyr$onSendPacket(Packet<?> packet, CallbackInfo ci) {
+        if (!ZephyrEvents.PACKET_SEND.hasListeners()) {
+            return; // runs for every outbound packet: no allocation when unused
+        }
         ZephyrEvents.PacketSend event = new ZephyrEvents.PacketSend(packet);
         ZephyrEvents.PACKET_SEND.fire(event);
         if (event.isCancelled()) {

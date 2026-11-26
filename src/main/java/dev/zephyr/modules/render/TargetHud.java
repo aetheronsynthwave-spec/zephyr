@@ -44,6 +44,13 @@ public final class TargetHud extends Module {
     private float absAnim;
     private long lastNanos;
 
+    private Object nameFor;
+    private float nameMaxW = -1f;
+    private String nameCached = "";
+    private int infoHp = Integer.MIN_VALUE;
+    private int infoDist = Integer.MIN_VALUE;
+    private String infoCached;
+
     public TargetHud() {
         super("TargetHUD", ModuleCategory.RENDER, 0);
     }
@@ -120,10 +127,19 @@ public final class TargetHud extends Module {
         }
 
         float tx = 7 + head + 9;
-        String name = e.getName().getString();
-        while (name.length() > 3 && Ui.textWidth(name, 9.5f, true) > w - tx - 26) {
-            name = name.substring(0, name.length() - 2) + "…";
+        // Name truncation re-measured the text in a loop every frame; cache it per
+        // (entity, available width) and rebuild only when either changes.
+        float nameMax = w - tx - 26;
+        if (e != nameFor || nameMax != nameMaxW) {
+            String full = e.getName().getString();
+            while (full.length() > 3 && Ui.textWidth(full, 9.5f, true) > nameMax) {
+                full = full.substring(0, full.length() - 2) + "…";
+            }
+            nameCached = full;
+            nameFor = e;
+            nameMaxW = nameMax;
         }
+        String name = nameCached;
         Ui.text(ctx, name, tx, 8, 9.5f, Ui.alpha(e.hurtTime > 0 ? 0xFFFF8A8A : Ui.TEXT, fade), true);
 
         if (e instanceof PlayerEntity p && ItemUtil.isTotem(p.getOffHandStack())) {
@@ -137,7 +153,17 @@ public final class TargetHud extends Module {
         hpAnim = Ui.approach(hpAnim, MathHelper.clamp(hp / max, 0f, 1f), 9f, dt);
         absAnim = Ui.approach(absAnim, MathHelper.clamp(abs / max, 0f, 1f), 9f, dt);
         double dist = mc.player.distanceTo(e);
-        String info = String.format("%.1f", hp + abs) + " hp  ·  " + String.format("%.1fm", dist);
+        // String.format twice per frame was the costliest call in this HUD; rebuild the
+        // line only when the displayed (one-decimal) values change.
+        int hpTenths = Math.round((hp + abs) * 10f);
+        int distTenths = (int) Math.round(dist * 10.0);
+        if (hpTenths != infoHp || distTenths != infoDist || infoCached == null) {
+            infoHp = hpTenths;
+            infoDist = distTenths;
+            infoCached = (hpTenths / 10) + "." + Math.abs(hpTenths % 10) + " hp  ·  "
+                    + (distTenths / 10) + "." + (distTenths % 10) + "m";
+        }
+        String info = infoCached;
         Ui.text(ctx, info, tx, 20, 8f, Ui.alpha(Ui.TEXT_DIM, fade), false);
 
         float barX = tx, barY = 30, barW = w - tx - 8, barH = 4;

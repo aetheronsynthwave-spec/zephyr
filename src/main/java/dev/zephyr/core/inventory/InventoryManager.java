@@ -73,6 +73,7 @@ public final class InventoryManager {
             return;
         }
         client.interactionManager.clickSlot(player.currentScreenHandler.syncId, handlerSlot, button, type, player);
+        dev.zephyr.core.combat.ActionState.noteInventoryClick(); // no attack/use in the same tick
     }
 
     /** Equips {@code handlerSlot} stack into the offhand (vanilla F-key style swap). */

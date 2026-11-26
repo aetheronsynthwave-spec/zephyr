@@ -18,6 +18,12 @@ import java.util.function.Supplier;
 public final class ModuleManager {
 
     private final List<Module> modules = new ArrayList<>();
+    /**
+     * Type -> module lookup cache. {@link #get(Class)} is called from per-frame and
+     * per-entity mixin hooks (FOV, look deltas, pushes, knockback); a linear isInstance
+     * scan over ~50 modules there was pure overhead. Modules are only registered at init.
+     */
+    private final java.util.Map<Class<?>, Module> byType = new java.util.HashMap<>();
     private Supplier<Boolean> inputGuard = () -> false;
 
     /** moduleName -> last fault description (read by the self-test harness). */
@@ -33,6 +39,7 @@ public final class ModuleManager {
 
     public void register(Module module) {
         modules.add(module);
+        byType.clear();
     }
 
     public void forEach(Consumer<Module> action) {
@@ -42,12 +49,17 @@ public final class ModuleManager {
     }
 
     public <T extends Module> T get(Class<T> type) {
-        for (Module m : modules) {
-            if (type.isInstance(m)) {
-                return type.cast(m);
+        Module cached = byType.get(type);
+        if (cached == null && !byType.containsKey(type)) {
+            for (Module m : modules) {
+                if (type.isInstance(m)) {
+                    cached = m;
+                    break;
+                }
             }
+            byType.put(type, cached); // null cached too: a missing type is not re-scanned
         }
-        return null;
+        return type.cast(cached);
     }
 
     public Module byName(String name) {

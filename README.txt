@@ -1,5 +1,20 @@
-Zephyr Client v1.9.0 - Minecraft 1.21.11 (Fabric)
-==================================================
+Zephyr Client v1.10.0 - Minecraft 1.21.11 (Fabric)
+===================================================
+
+WHAT'S NEW IN v1.10.0
+---------------------
+* PearlCatch rewritten: silent throws (camera never moves), pearl straight up,
+  wind charge at your feet, launch timed with vanilla physics + ping, self-calibrating.
+* Combat modules cooperate: TriggerBot / LegitAura hold off for AutoMace slams and
+  ShieldBreaker; ShieldBreaker + AutoMace = stun slam (axe opens shield, mace next tick).
+* Action states: no attacks while using an item, with a screen open, in the same tick
+  as a release or inventory click, or twice in one tick; active digging is aborted
+  (ABORT_DESTROY_BLOCK) before an attack; no right-click while digging.
+* FPS: ESP/Tracers no longer scan the whole world every frame, shared entity cache
+  fixed, allocation-free box/line drawing, cheaper HUD text and module lookups.
+
+Zephyr Client v1.9.0
+--------------------
 
 WHAT'S NEW IN v1.9.0
 --------------------

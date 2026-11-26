@@ -95,9 +95,11 @@ public final class BaseFinder extends Module implements WorldRenderParticipant {
             }
         }
         if (entities.get()) {
-            for (Entity e : mc.world.getEntities()) {
-                if ((e instanceof ArmorStandEntity || e instanceof ItemFrameEntity)
-                        && e.squaredDistanceTo(me) <= rSq && out.size() < cap) {
+            // Section-backed box query instead of walking every loaded entity.
+            for (Entity e : mc.world.getOtherEntities(null,
+                    new net.minecraft.util.math.Box(me, me).expand(Math.sqrt(rSq)),
+                    x -> x instanceof ArmorStandEntity || x instanceof ItemFrameEntity)) {
+                if (e.squaredDistanceTo(me) <= rSq && out.size() < cap) {
                     out.add(new Hit(e.getBoundingBox(), 0.9f, 0.9f, 0.9f));
                 }
             }

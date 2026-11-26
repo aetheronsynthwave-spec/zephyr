@@ -32,9 +32,8 @@ public final class CombatActions {
 
     /** Melee/entity attack through the vanilla path (sets cooldown + sends swing). */
     public static boolean attackEntity(MinecraftClient client, Entity target) {
-        if (client.player == null || client.interactionManager == null || target == null
-                || !TickPhase.actionWindowOpen()) {
-            return false;
+        if (target == null || !ActionState.prepareAttack(client)) {
+            return false; // mid-use, screen open, already attacked this tick, or window closed
         }
         // Exactly what vanilla doAttack does: attack packet, then the hand swing (which
         // also sends the swing packet). Without the swing every hit was animation-less
@@ -62,15 +61,16 @@ public final class CombatActions {
      * @return false (and nothing sent) if the slot is invalid or cannot change this tick
      */
     public static boolean attributeSwapAttack(MinecraftClient client, int hotbarSlot, Entity target, int backTicks) {
-        if (client.player == null || client.getNetworkHandler() == null || !SwapManager.isValidSlot(hotbarSlot)) {
-            return false;
+        if (client.player == null || client.getNetworkHandler() == null || !SwapManager.isValidSlot(hotbarSlot)
+                || !ActionState.canAttack(client)) {
+            return false; // check BEFORE swapping, so a refused hit never leaves a stray slot change
         }
         return SwapManager.withSwap(client, hotbarSlot, backTicks, () -> attackEntity(client, target));
     }
 
     /** Right-click a block (crystal/anchor/glowstone placement); swings like vanilla on success. */
     public static ActionResult interactBlock(MinecraftClient client, net.minecraft.util.hit.BlockHitResult hit) {
-        if (client.player == null || client.interactionManager == null || !TickPhase.actionWindowOpen()) {
+        if (!ActionState.prepareUse(client)) {
             return ActionResult.FAIL;
         }
         ActionResult r = RotationManager.withServerRotation(() ->
@@ -81,11 +81,37 @@ public final class CombatActions {
 
     /** Item use (pearl throw, XP bottle); swings like vanilla on success. */
     public static ActionResult interactItem(MinecraftClient client) {
-        if (client.player == null || client.interactionManager == null || !TickPhase.actionWindowOpen()) {
+        if (!ActionState.prepareUse(client)) {
             return ActionResult.FAIL;
         }
         ActionResult r = RotationManager.withServerRotation(() ->
                 client.interactionManager.interactItem(client.player, Hand.MAIN_HAND));
+        swingIfVanillaWould(client, r);
+        return r;
+    }
+
+    /**
+     * Silent item use at an explicit rotation. Since 1.21.2 {@code PlayerInteractItemC2SPacket}
+     * carries yaw/pitch and the server applies them ({@code setAngles}) right before
+     * {@code interactItem}, so the projectile leaves along this rotation. The player's real
+     * yaw/pitch are restored before the call returns - the camera never moves.
+     */
+    public static ActionResult interactItemAt(MinecraftClient client, float yaw, float pitch) {
+        if (!ActionState.prepareUse(client)) {
+            return ActionResult.FAIL;
+        }
+        var p = client.player;
+        float realYaw = p.getYaw();
+        float realPitch = p.getPitch();
+        ActionResult r;
+        try {
+            p.setYaw(yaw);
+            p.setPitch(net.minecraft.util.math.MathHelper.clamp(pitch, -90f, 90f));
+            r = client.interactionManager.interactItem(p, Hand.MAIN_HAND);
+        } finally {
+            p.setYaw(realYaw);
+            p.setPitch(realPitch);
+        }
         swingIfVanillaWould(client, r);
         return r;
     }
