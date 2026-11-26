@@ -30,8 +30,9 @@ public final class TargetHud extends Module {
 
     private final ModeSetting position = s(new ModeSetting("pos", "Position",
             List.of("NEAR_CROSSHAIR", "LEFT", "RIGHT", "CUSTOM"), "NEAR_CROSSHAIR"));
-    private final NumberSetting customX = num("x", "Custom X", 0, 2000, 5, 20);
-    private final NumberSetting customY = num("y", "Custom Y", 0, 1200, 5, 120);
+    /** Percent of the screen (0 = left/top edge, 100 = right/bottom edge), always on-screen. */
+    private final NumberSetting customX = num("xPct", "X position %", 0, 100, 0.5, 55);
+    private final NumberSetting customY = num("yPct", "Y position %", 0, 100, 0.5, 55);
     private final NumberSetting scale = num("scale", "Scale", 0.6, 2.0, 0.05, 1.0);
     private final NumberSetting range = num("range", "Acquire range", 4.0, 64.0, 1.0, 16.0);
     private final BooleanSetting showItems = bool("items", "Show armour + items", true);
@@ -53,6 +54,16 @@ public final class TargetHud extends Module {
 
     public TargetHud() {
         super("TargetHUD", ModuleCategory.RENDER, 0);
+        // Moving a slider means "put it here": switch to CUSTOM, otherwise the sliders
+        // looked dead because only CUSTOM mode read them.
+        customX.onChange(v -> selectCustom());
+        customY.onChange(v -> selectCustom());
+    }
+
+    private void selectCustom() {
+        if (!dev.zephyr.core.ModuleManager.loadingConfig && !position.is("CUSTOM")) {
+            position.set("CUSTOM");
+        }
     }
 
     @Override
@@ -105,9 +116,15 @@ public final class TargetHud extends Module {
         switch (position.get()) {
             case "LEFT" -> { px = 8; py = sh / 2f - h * s / 2f; }
             case "RIGHT" -> { px = sw - 8 - w * s; py = sh / 2f - h * s / 2f; }
-            case "CUSTOM" -> { px = customX.get().floatValue(); py = customY.get().floatValue(); }
+            case "CUSTOM" -> {
+                px = (sw - w * s) * customX.get().floatValue() / 100f;
+                py = (sh - h * s) * customY.get().floatValue() / 100f;
+            }
             default -> { px = sw / 2f + 16; py = sh / 2f + 12; }
         }
+        // Keep the whole panel on screen for every mode / scale / window size.
+        px = MathHelper.clamp(px, 0f, Math.max(0f, sw - w * s));
+        py = MathHelper.clamp(py, 0f, Math.max(0f, sh - h * s));
 
         ctx.getMatrices().pushMatrix();
         ctx.getMatrices().translate(px, py + (1f - fade) * 6f);

@@ -40,6 +40,32 @@ public final class ZephyrCommand {
     private static LiteralArgumentBuilder<FabricClientCommandSource> build() {
         return ClientCommandManager.literal("zephyr")
                 .then(ClientCommandManager.literal("list").executes(ZephyrCommand::list))
+                .then(ClientCommandManager.literal("coords").executes(ZephyrCommand::coords))
+                .then(ClientCommandManager.literal("calc")
+                        .then(ClientCommandManager.argument("expr", StringArgumentType.greedyString())
+                                .executes(ZephyrCommand::calc)))
+                .then(ClientCommandManager.literal("roll")
+                        .executes(ctx -> roll(ctx, 6))
+                        .then(ClientCommandManager.argument("sides", com.mojang.brigadier.arguments.IntegerArgumentType.integer(2, 1000000))
+                                .executes(ctx -> roll(ctx, com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(ctx, "sides")))))
+                .then(ClientCommandManager.literal("wp")
+                        .then(ClientCommandManager.literal("add")
+                                .then(ClientCommandManager.argument("name", StringArgumentType.word())
+                                        .executes(ZephyrCommand::wpAdd)))
+                        .then(ClientCommandManager.literal("remove")
+                                .then(ClientCommandManager.argument("name", StringArgumentType.word())
+                                        .suggests((ctx, builder) -> {
+                                            var wp = ZephyrClient.modules().get(dev.zephyr.modules.utility.Waypoints.class);
+                                            if (wp != null && net.minecraft.client.MinecraftClient.getInstance().world != null) {
+                                                for (var w : wp.current(net.minecraft.client.MinecraftClient.getInstance())) {
+                                                    builder.suggest(w.name());
+                                                }
+                                            }
+                                            return builder.buildFuture();
+                                        })
+                                        .executes(ZephyrCommand::wpRemove)))
+                        .then(ClientCommandManager.literal("list").executes(ZephyrCommand::wpList))
+                        .then(ClientCommandManager.literal("clear").executes(ZephyrCommand::wpClear)))
                 .then(ClientCommandManager.literal("info")
                         .then(ClientCommandManager.argument("module", StringArgumentType.word())
                                 .suggests((ctx, builder) -> {
@@ -133,6 +159,95 @@ public final class ZephyrCommand {
             settings.append(s.id());
         }
         ctx.getSource().sendFeedback(Text.literal("Settings: " + settings).formatted(Formatting.DARK_GRAY));
+        return 1;
+    }
+
+    /** Copies "x y z" of your block position to the clipboard. */
+    private static int coords(CommandContext<FabricClientCommandSource> ctx) {
+        var mc = net.minecraft.client.MinecraftClient.getInstance();
+        if (mc.player == null) {
+            return 0;
+        }
+        String c = mc.player.getBlockX() + " " + mc.player.getBlockY() + " " + mc.player.getBlockZ();
+        mc.keyboard.setClipboard(c);
+        reply(ctx, "copied " + c);
+        return 1;
+    }
+
+    private static int calc(CommandContext<FabricClientCommandSource> ctx) {
+        String expr = StringArgumentType.getString(ctx, "expr");
+        try {
+            double v = Calc.eval(expr);
+            String out = v == Math.rint(v) && Math.abs(v) < 1e15 ? Long.toString((long) v) : Double.toString(v);
+            reply(ctx, expr + " = " + out);
+            return 1;
+        } catch (RuntimeException e) {
+            reply(ctx, "calc error: " + e.getMessage());
+            return 0;
+        }
+    }
+
+    private static final java.util.Random DICE = new java.util.Random();
+
+    private static int roll(CommandContext<FabricClientCommandSource> ctx, int sides) {
+        reply(ctx, "rolled d" + sides + ": " + (DICE.nextInt(sides) + 1));
+        return 1;
+    }
+
+    private static dev.zephyr.modules.utility.Waypoints waypoints(CommandContext<FabricClientCommandSource> ctx) {
+        var wp = ZephyrClient.modules().get(dev.zephyr.modules.utility.Waypoints.class);
+        if (wp != null && !wp.isEnabled()) {
+            wp.setEnabled(true); // using the command turns the beams on
+        }
+        if (net.minecraft.client.MinecraftClient.getInstance().player == null) {
+            reply(ctx, "join a world first");
+            return null;
+        }
+        return wp;
+    }
+
+    private static int wpAdd(CommandContext<FabricClientCommandSource> ctx) {
+        var wp = waypoints(ctx);
+        if (wp == null) {
+            return 0;
+        }
+        var w = wp.add(net.minecraft.client.MinecraftClient.getInstance(), StringArgumentType.getString(ctx, "name"));
+        reply(ctx, "waypoint " + w.name() + " at " + w.x() + " " + w.y() + " " + w.z());
+        return 1;
+    }
+
+    private static int wpRemove(CommandContext<FabricClientCommandSource> ctx) {
+        var wp = waypoints(ctx);
+        if (wp == null) {
+            return 0;
+        }
+        String n = StringArgumentType.getString(ctx, "name");
+        reply(ctx, wp.remove(net.minecraft.client.MinecraftClient.getInstance(), n) ? "removed " + n : "no waypoint " + n);
+        return 1;
+    }
+
+    private static int wpList(CommandContext<FabricClientCommandSource> ctx) {
+        var wp = waypoints(ctx);
+        if (wp == null) {
+            return 0;
+        }
+        var list = wp.current(net.minecraft.client.MinecraftClient.getInstance());
+        if (list.isEmpty()) {
+            reply(ctx, "no waypoints here");
+        }
+        for (var w : list) {
+            reply(ctx, w.name() + ": " + w.x() + " " + w.y() + " " + w.z());
+        }
+        return 1;
+    }
+
+    private static int wpClear(CommandContext<FabricClientCommandSource> ctx) {
+        var wp = waypoints(ctx);
+        if (wp == null) {
+            return 0;
+        }
+        wp.clear(net.minecraft.client.MinecraftClient.getInstance());
+        reply(ctx, "cleared waypoints for this world");
         return 1;
     }
 

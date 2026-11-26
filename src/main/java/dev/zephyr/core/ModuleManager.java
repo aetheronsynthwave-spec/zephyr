@@ -139,7 +139,19 @@ public final class ModuleManager {
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})
+    /** True while the config file is being applied (change listeners can ignore it). */
+    public static volatile boolean loadingConfig;
+
     public void readSettings(java.util.Map<String, java.util.Map<String, Object>> in) {
+        loadingConfig = true;
+        try {
+            readSettingsInner(in);
+        } finally {
+            loadingConfig = false;
+        }
+    }
+
+    private void readSettingsInner(java.util.Map<String, java.util.Map<String, Object>> in) {
         for (Module m : modules) {
             java.util.Map<String, Object> data = in.get(m.name());
             if (data == null) {

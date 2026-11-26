@@ -3,88 +3,66 @@ package dev.zephyr.modules.survival;
 import dev.zephyr.core.Module;
 import dev.zephyr.core.ModuleCategory;
 import dev.zephyr.core.combat.CombatActions;
+import dev.zephyr.core.combat.CombatCoordinator;
 import dev.zephyr.core.inventory.InventoryManager;
 import dev.zephyr.core.settings.NumberSetting;
 import dev.zephyr.core.timing.MsTimer;
 import dev.zephyr.core.util.ItemUtil;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
-import net.minecraft.client.network.PlayerListEntry;
 import net.minecraft.entity.projectile.thrown.EnderPearlEntity;
 import net.minecraft.item.ItemStack;
+import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.Vec3d;
 import org.lwjgl.glfw.GLFW;
 
 /**
- * PearlCatch - throw a pearl straight up and catch it yourself with a wind-charge jump.
- * Your camera never moves: both throws are silent (the rotation rides only on the
- * {@code PlayerInteractItemC2SPacket}, which the server applies before using the item).
+ * PearlCatch - throw a pearl up, then hit it in mid-air with a wind charge. Both throws are
+ * silent: the rotation only rides on {@code PlayerInteractItemC2SPacket} (the server applies
+ * it before using the item), so your camera never moves.
  *
- * <pre>
- *  PEARL   select pearl, throw it at (your yaw, -lookPitch)          [silent]
- *  TIMING  pre-select the wind charge; every tick, simulate both bodies with vanilla
- *          physics and find the earliest tick to fire so that your launch path
- *          crosses the pearl's path
- *  FIRE    throw the wind charge straight down at your feet (pitch +90) [silent]
- *  WATCH   measure the real launch (delay, speed) to calibrate the next catch
- *  RESTORE back to the slot you held before
- * </pre>
- *
- * <p><b>Why the old math was wrong.</b> It aimed the wind charge AT the pearl. A wind charge
- * does not collide with pearls, so it flew past; and nothing lifted the player. The catch
- * works the other way round: the wind burst at your feet launches you, and the pearl hits
- * you (its owner) once your hitbox crosses its path.
- *
- * <p><b>Physics used</b> (1.21.11, per tick):
+ * <p><b>Intercept math</b> (vanilla 1.21.11 per-tick physics):
  * <ul>
- *   <li>Pearl ({@code ThrownEntity#tick}): {@code pos += v; v *= 0.99; v.y -= 0.03}.</li>
- *   <li>Player in the air: {@code pos += v; v.y = (v.y - 0.08) * 0.98; v.xz *= 0.91}.</li>
- *   <li>Wind-charge burst: power 1.2 (radius 2.4), knockback x1.22 scaled by
- *       {@code 1 - distance/2.4}; at your feet that is a launch of about 1.15 blocks/tick
- *       up, which is the default until a real launch has been measured.</li>
- *   <li>Latency: the server checks the pearl against where it last saw you. The client sees
- *       the pearl one one-way trip late and the server sees you one one-way trip late, so
- *       player state at tick m is compared with pearl state at tick m + RTT (in ticks).
- *       The fire-to-launch delay is measured on every catch and reused.</li>
+ *   <li>Pearl ({@code ThrownEntity}): {@code pos += v; v *= 0.99; v.y -= 0.03}.</li>
+ *   <li>Wind charge: no gravity, drag 1.0, no acceleration - a straight line at constant
+ *       velocity {@code 1.5 * dir + shooterMovement} from the eyes (shooter movement is added
+ *       by {@code ProjectileEntity#setVelocity}; vertical part only when airborne).</li>
+ *   <li>Wind after k ticks: {@code eye + m*k + 1.5*k*dir}, so it meets the pearl at tick k when
+ *       {@code |P(k) - eye - m*k| = 1.5k}. The first zero crossing of
+ *       {@code f(k) = |P(k) - eye - m*k| - 1.5k} is interpolated between ticks and the
+ *       direction to that point is the aim.</li>
+ *   <li>Latency: the client sees the pearl one one-way trip late, and the server spawns the
+ *       wind charge one one-way trip after we throw, so wind tick k meets the pearl state
+ *       {@code k + RTT/50} ticks ahead of what the client shows now.</li>
  * </ul>
+ * Old bugs fixed: shooter movement was added to the distance instead of being solved out, no
+ * latency offset, whole-tick aim snapping (no interpolation), and a visible rotation that had
+ * to "arrive" before throwing, which burned the intercept window.
  */
 public final class PearlCatch extends Module {
 
     private static final double PEARL_DRAG = 0.99;
     private static final double PEARL_GRAVITY = 0.03;
-    private static final double PLAYER_GRAVITY = 0.08;
-    private static final double PLAYER_DRAG_Y = 0.98;
-    private static final double PLAYER_DRAG_XZ = 0.91;
-    /** Player hitbox half-width / height plus projectile hit margin (0.3) and pearl half-size. */
-    private static final double HALF_W = 0.3 + 0.3 + 0.125;
-    private static final double HEIGHT = 1.8;
-    private static final double MARGIN_Y = 0.3 + 0.125;
-    private static final int HORIZON = 200;
-    private static final int FLIGHT_TICKS = 45;
+    private static final double WIND_SPEED = 1.5;
+    private static final int HORIZON = 80;
 
-    private final NumberSetting lookPitch = num("lookPitch", "Throw pitch (90 = straight up)", 45, 90, 1, 90);
-    private final NumberSetting maxWait = num("maxWait", "Max wait for catch (ticks)", 20, 160, 5, 120);
+    private final NumberSetting lookPitch = num("lookPitch", "Pearl pitch (90 = straight up)", 45, 90, 1, 90);
+    private final NumberSetting minGap = num("minGap", "Min ticks pearl->wind", 1, 10, 1, 2);
+    private final NumberSetting tickOffset = num("tickOffset", "Timing offset (ticks)", -3, 3, 1, 0);
     private final NumberSetting restoreMin = num("restMin", "Restore delay min ms", 20, 500, 5, 60);
     private final NumberSetting restoreMax = num("restMax", "Restore delay max ms", 20, 800, 5, 160);
 
-    private enum Stage { IDLE, PEARL, TIMING, WATCH, RESTORE }
+    private enum Stage { IDLE, PEARL, WIND, RESTORE }
 
     private Stage stage = Stage.IDLE;
     private final MsTimer stageTimer = new MsTimer();
     private int returnSlot = -1;
     private int stageTicks;
-    private int thrownPearlAge = -1;
-    private double lastVy;
-
-    /** Calibration (session-wide): ticks from fire to launch minus ping ticks, and launch speed. */
-    private static double delayOffset = 3.0;
-    private static double launchVy = 1.15;
-    private static int calibratedSamples;
-
-    /** Reused simulation buffers (no per-tick allocation). */
     private final double[] px = new double[HORIZON + 2];
     private final double[] py = new double[HORIZON + 2];
     private final double[] pz = new double[HORIZON + 2];
+    private float aimYaw;
+    private float aimPitch;
 
     public PearlCatch() {
         super("PearlCatch", ModuleCategory.SURVIVAL, GLFW.GLFW_KEY_G);
@@ -96,7 +74,7 @@ public final class PearlCatch extends Module {
             return;
         }
         if (!isEnabled()) {
-            setEnabled(true); // the key always works; it arms the module, then fires
+            setEnabled(true);
         }
         ClientPlayerEntity self = MinecraftClient.getInstance().player;
         if (self != null && stage == Stage.IDLE) {
@@ -123,116 +101,47 @@ public final class PearlCatch extends Module {
         switch (stage) {
             case IDLE -> { }
             case PEARL -> pearlStage(client, self);
-            case TIMING -> timingStage(client, self);
-            case WATCH -> watchStage(self);
+            case WIND -> windStage(client, self);
             case RESTORE -> restoreStage(client);
         }
-        lastVy = self.getVelocity().y;
     }
-
-    // ------------------------------------------------------------------
-    // Stages
-    // ------------------------------------------------------------------
 
     private void pearlStage(MinecraftClient client, ClientPlayerEntity self) {
         if (stageTicks > 20) {
-            beginRestore(); // no pearl / never off cooldown
+            beginRestore();
             return;
         }
-        if (!holdItem(client, self, ItemUtil::isPearl)) {
-            return; // selection lands next tick (one slot change per tick)
-        }
-        ItemStack held = self.getMainHandStack();
-        if (ItemUtil.coolingDown(self, held)) {
+        if (!holdItem(client, self, ItemUtil::isPearl) || ItemUtil.coolingDown(self, self.getMainHandStack())) {
             return;
         }
         if (CombatActions.interactItemAt(client, self.getYaw(), (float) -lookPitch.get()).isAccepted()) {
-            thrownPearlAge = -1;
             stageTicks = 0;
-            stage = Stage.TIMING;
+            stage = Stage.WIND;
         }
     }
 
-    private void timingStage(MinecraftClient client, ClientPlayerEntity self) {
-        if (stageTicks > maxWait.get()) {
-            beginRestore();
+    private void windStage(MinecraftClient client, ClientPlayerEntity self) {
+        if (stageTicks > 40) {
+            beginRestore(); // pearl never seen / no intercept left
             return;
         }
-        // Wind charge in hand early, so the fire tick needs no slot change.
-        boolean windReady = holdItem(client, self, ItemUtil::isWindCharge)
+        boolean ready = holdItem(client, self, ItemUtil::isWindCharge)
                 && !ItemUtil.coolingDown(self, self.getMainHandStack());
-
         EnderPearlEntity pearl = findOwnPearl(client, self);
-        if (pearl == null) {
-            if (thrownPearlAge >= 0 || stageTicks > 20) {
-                beginRestore(); // pearl landed / never arrived
-            }
-            return; // spawn packet still on its way
-        }
-        thrownPearlAge = pearl.age;
-
-        int pingTicks = pingTicks(client, self);
-        int launchDelay = Math.max(1, (int) Math.round(pingTicks + delayOffset));
-        int fireIn = solveFireDelay(self, pearl, pingTicks, launchDelay);
-        if (fireIn < 0) {
-            // No reachable intercept. Give up once the pearl is falling below jump height.
-            if (pearl.getVelocity().y < 0 && pearl.getY() < self.getY() + 8.0) {
-                beginRestore();
-            }
+        if (!ready || pearl == null || stageTicks < minGap.get()) {
             return;
         }
-        if (fireIn == 0 && windReady && self.isOnGround()) {
-            // Straight down at the feet: the burst is centred under you, launch is vertical.
-            if (CombatActions.interactItemAt(client, self.getYaw(), 90f).isAccepted()) {
-                stageTicks = 0;
-                stage = Stage.WATCH;
-            }
+        int lead = Math.max(0, CombatCoordinator.pingTicks(client) + tickOffset.get().intValue());
+        if (!solve(self, pearl, lead)) {
+            return;
         }
-    }
-
-    /** Measures the real launch to calibrate delay and launch speed. */
-    private void watchStage(ClientPlayerEntity self) {
-        double vy = self.getVelocity().y;
-        if (vy - lastVy > 0.5) {
-            MinecraftClient client = MinecraftClient.getInstance();
-            int pingTicks = pingTicks(client, self);
-            double measuredOffset = stageTicks - pingTicks;
-            double k = calibratedSamples == 0 ? 1.0 : 0.4;
-            delayOffset += (measuredOffset - delayOffset) * k;
-            launchVy += (vy - launchVy) * k;
-            calibratedSamples++;
+        if (CombatActions.interactItemAt(client, aimYaw, aimPitch).isAccepted()) {
             beginRestore();
-        } else if (stageTicks > 30) {
-            beginRestore(); // launch never seen (not on ground / burst blocked)
         }
     }
 
-    private void restoreStage(MinecraftClient client) {
-        if (!stageTimer.isDue()) {
-            return;
-        }
-        if (returnSlot != -1 && !InventoryManager.selectHotbar(client, returnSlot)) {
-            return; // slot already changed this tick: restore next tick
-        }
-        stage = Stage.IDLE;
-        stageTimer.invalidate();
-    }
-
-    private void beginRestore() {
-        stageTimer.restart(restoreMin.get(), restoreMax.get());
-        stage = Stage.RESTORE;
-    }
-
-    // ------------------------------------------------------------------
-    // Intercept solver
-    // ------------------------------------------------------------------
-
-    /**
-     * Earliest number of ticks from now at which throwing the wind charge makes the player's
-     * launch path intersect the pearl, or -1 if none within {@link #maxWait}.
-     */
-    private int solveFireDelay(ClientPlayerEntity self, EnderPearlEntity pearl, int pingTicks, int launchDelay) {
-        // Pearl path, index m = after m client ticks from now.
+    /** Fills aimYaw/aimPitch with the interception direction; false if none in range. */
+    private boolean solve(ClientPlayerEntity self, EnderPearlEntity pearl, int lead) {
         Vec3d p = pearl.getEntityPos();
         Vec3d v = pearl.getVelocity();
         double x = p.x, y = p.y, z = p.z, vx = v.x, vy = v.y, vz = v.z;
@@ -247,79 +156,47 @@ public final class PearlCatch extends Module {
             vy = vy * PEARL_DRAG - PEARL_GRAVITY;
             vz *= PEARL_DRAG;
         }
-        double fx = self.getX(), fy = self.getY(), fz = self.getZ();
-        double hvx = self.getVelocity().x, hvz = self.getVelocity().z;
-        int maxD = Math.min(maxWait.get().intValue() - stageTicks, HORIZON);
-        for (int d = 0; d <= maxD; d++) {
-            int launch = d + launchDelay; // movement number launch+1 uses the launch velocity
-            double sx = fx, sy = fy, sz = fz;
-            double svx = hvx, svy = launchVy, svz = hvz;
-            for (int m = launch + 1; m <= launch + FLIGHT_TICKS; m++) {
-                int k = m + pingTicks;
-                if (k + 1 > HORIZON + 1) {
-                    return -1; // past the simulated pearl horizon: later d only goes further
-                }
-                double nx = sx + svx, ny = sy + svy, nz = sz + svz;
-                // Pearl sweep during the server tick that sees the player at (nx, ny, nz).
-                if (segmentHitsBox(px[k], py[k], pz[k], px[k + 1], py[k + 1], pz[k + 1], nx, ny, nz)) {
-                    return d;
-                }
-                sx = nx;
-                sy = ny;
-                sz = nz;
-                svy = (svy - PLAYER_GRAVITY) * PLAYER_DRAG_Y;
-                svx *= PLAYER_DRAG_XZ;
-                svz *= PLAYER_DRAG_XZ;
-                if (sy < fy) {
-                    break; // landed again
-                }
+        Vec3d eye = self.getEyePos();
+        Vec3d mv = self.getVelocity();
+        double mx = mv.x, my = self.isOnGround() ? 0.0 : mv.y, mz = mv.z;
+        double prevF = Double.NaN;
+        for (int k = 0; k + lead <= HORIZON + 1; k++) {
+            int i = k + lead;
+            double rx = px[i] - eye.x - mx * k, ry = py[i] - eye.y - my * k, rz = pz[i] - eye.z - mz * k;
+            double f = Math.sqrt(rx * rx + ry * ry + rz * rz) - WIND_SPEED * k;
+            if (k > 0 && prevF > 0 && f <= 0) {
+                double t = prevF / (prevF - f); // fraction between tick k-1 and k
+                double kk = k - 1 + t;
+                int j = i - 1;
+                double ax = px[j] + (px[i] - px[j]) * t - eye.x - mx * kk;
+                double ay = py[j] + (py[i] - py[j]) * t - eye.y - my * kk;
+                double az = pz[j] + (pz[i] - pz[j]) * t - eye.z - mz * kk;
+                double h = Math.sqrt(ax * ax + az * az);
+                aimYaw = (float) (MathHelper.atan2(az, ax) * MathHelper.DEGREES_PER_RADIAN) - 90f;
+                aimPitch = (float) -(MathHelper.atan2(ay, h) * MathHelper.DEGREES_PER_RADIAN);
+                return true;
             }
+            prevF = f;
         }
-        return -1;
+        return false;
     }
 
-    /** Slab test: does the segment a->b touch the (margin-expanded) player box at feet (fx, fy, fz)? */
-    private final double[] slabT = new double[2];
-
-    private boolean segmentHitsBox(double ax, double ay, double az, double bx, double by, double bz,
-                                   double fx, double fy, double fz) {
-        double[] t = slabT;
-        t[0] = 0.0;
-        t[1] = 1.0;
-        return slab(ax, bx, fx - HALF_W, fx + HALF_W, t)
-                && slab(ay, by, fy - MARGIN_Y, fy + HEIGHT + MARGIN_Y, t)
-                && slab(az, bz, fz - HALF_W, fz + HALF_W, t);
+    private void restoreStage(MinecraftClient client) {
+        if (!stageTimer.isDue()) {
+            return;
+        }
+        if (returnSlot != -1 && !InventoryManager.selectHotbar(client, returnSlot)) {
+            return;
+        }
+        stage = Stage.IDLE;
+        stageTimer.invalidate();
     }
 
-    private static boolean slab(double a, double b, double min, double max, double[] t) {
-        double d = b - a;
-        if (Math.abs(d) < 1.0e-9) {
-            return a >= min && a <= max;
-        }
-        double t1 = (min - a) / d, t2 = (max - a) / d;
-        if (t1 > t2) {
-            double tmp = t1;
-            t1 = t2;
-            t2 = tmp;
-        }
-        t[0] = Math.max(t[0], t1);
-        t[1] = Math.min(t[1], t2);
-        return t[0] <= t[1];
+    private void beginRestore() {
+        stageTimer.restart(restoreMin.get(), restoreMax.get());
+        stage = Stage.RESTORE;
     }
 
-    // ------------------------------------------------------------------
-    // Helpers
-    // ------------------------------------------------------------------
-
-    private static int pingTicks(MinecraftClient client, ClientPlayerEntity self) {
-        if (client.getNetworkHandler() == null) {
-            return 0;
-        }
-        PlayerListEntry e = client.getNetworkHandler().getPlayerListEntry(self.getUuid());
-        return e == null ? 0 : Math.round(e.getLatency() / 50.0f);
-    }
-
-    /** Our newest pearl (the one this sequence threw). */
     private EnderPearlEntity findOwnPearl(MinecraftClient client, ClientPlayerEntity self) {
         EnderPearlEntity best = null;
         for (EnderPearlEntity ep : client.world.getEntitiesByClass(EnderPearlEntity.class,
@@ -328,13 +205,9 @@ public final class PearlCatch extends Module {
                 best = ep;
             }
         }
-        if (best != null && thrownPearlAge >= 0 && best.age < thrownPearlAge) {
-            return null; // a newer pearl is not ours to track; ours is gone
-        }
         return best;
     }
 
-    /** True once a hotbar slot holding the item is selected (swaps from inventory if needed). */
     private boolean holdItem(MinecraftClient client, ClientPlayerEntity self,
                              java.util.function.Predicate<ItemStack> pred) {
         if (pred.test(self.getMainHandStack())) {
@@ -346,14 +219,12 @@ public final class PearlCatch extends Module {
         }
         int handler = InventoryManager.findHandlerSlot(self, pred);
         int swapSlot = pickSacrificialSlot(self);
-        if (handler == -1 || swapSlot == -1) {
-            return false;
+        if (handler != -1 && swapSlot != -1) {
+            InventoryManager.swapWithHotbar(client, handler, swapSlot);
         }
-        InventoryManager.swapWithHotbar(client, handler, swapSlot);
-        return false; // selected on a later tick, once the swap has landed
+        return false;
     }
 
-    /** Hotbar slot for inventory swaps - never the pre-trigger "return" slot. */
     private int pickSacrificialSlot(ClientPlayerEntity self) {
         for (int i = 8; i >= 0; i--) {
             if (i != returnSlot && self.getInventory().getStack(i).isEmpty()) {
@@ -370,7 +241,6 @@ public final class PearlCatch extends Module {
 
     @Override
     public String hudLabel() {
-        return name + " · " + stage.name().toLowerCase()
-                + (calibratedSamples > 0 ? String.format(" · %.2f", launchVy) : "");
+        return name + " · " + stage.name().toLowerCase();
     }
 }

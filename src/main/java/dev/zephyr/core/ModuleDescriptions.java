@@ -40,7 +40,7 @@ public final class ModuleDescriptions {
         d("AutoLog", "Disconnects when your health or totem count drops below your limits.");
         d("AutoTotem", "Keeps a totem in your offhand, moving one from your inventory when needed.");
         d("FastXP", "Throws XP bottles quickly at your feet for fast armour mending.");
-        d("PearlCatch", "Press the bind: throws a pearl straight up and wind-charge jumps you into it. Your view never moves.");
+        d("PearlCatch", "Press the bind: throws a pearl up, then hits it mid-air with a wind charge. Your view never moves.");
         d("AutoRespawn", "Clicks Respawn for you on the death screen after a short delay.");
         d("DurabilityAlert", "Warns you on screen (with a sound) when held items or armour are about to break.");
         // Utility
@@ -73,6 +73,9 @@ public final class ModuleDescriptions {
         d("ProgressBar", "Streaming overlay with Overworld/Nether/End milestones and a bases-found counter.");
         d("InfoHUD", "Shows coordinates, nether/overworld coords, facing, speed, FPS and ping.");
         d("ArmorHUD", "Shows your armour and held items with durability above the hotbar.");
+        d("SpotifyLyrics", "Shows synced lyrics for the song playing in the Spotify desktop app (Windows).");
+        d("SessionHUD", "Shows this session's play time, distance travelled, hits and deaths.");
+        d("Waypoints", "Saved markers with beams and distance. /zephyr wp add|remove|list|clear.");
         d("Keystrokes", "Shows WASD, jump and mouse buttons on screen, with clicks per second.");
         // Gui
         d("ClickGui", "Opens this menu. Default key: Right Shift.");

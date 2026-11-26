@@ -1,5 +1,17 @@
-Zephyr Client v1.10.0 - Minecraft 1.21.11 (Fabric)
+Zephyr Client v1.11.0 - Minecraft 1.21.11 (Fabric)
 ===================================================
+
+WHAT'S NEW IN v1.11.0
+---------------------
+* PearlCatch: wind charge now intercepts the pearl (solved intercept, ping-compensated,
+  interpolated aim), both throws silent.
+* TargetHUD: X/Y sliders now work (percent of screen, auto-switch to CUSTOM, clamped).
+* New: SpotifyLyrics, Waypoints (/zephyr wp), SessionHUD, /zephyr coords|calc|roll.
+* Fixes: smooth NameTags (were stepping at 20 Hz), smooth DamageNumbers, fewer
+  per-frame allocations in billboard text.
+
+Zephyr Client v1.10.0
+---------------------
 
 WHAT'S NEW IN v1.10.0
 ---------------------

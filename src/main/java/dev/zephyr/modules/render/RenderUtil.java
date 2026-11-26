@@ -260,13 +260,21 @@ public final class RenderUtil {
     public static void drawBillboardText(MatrixStack matrices, VertexConsumerProvider consumers,
                                          Vec3d worldPos, Text text, int color,
                                          int backgroundColor, boolean seeThrough) {
+        drawBillboardText(matrices, consumers, worldPos.x, worldPos.y, worldPos.z, text, color,
+                backgroundColor, seeThrough);
+    }
+
+    /** Allocation-free variant taking raw world coordinates. */
+    public static void drawBillboardText(MatrixStack matrices, VertexConsumerProvider consumers,
+                                         double wx, double wy, double wz, Text text, int color,
+                                         int backgroundColor, boolean seeThrough) {
         MinecraftClient client = MinecraftClient.getInstance();
         Vec3d cameraPos = cameraPos();
 
         matrices.push();
-        matrices.translate(worldPos.x - cameraPos.x, worldPos.y - cameraPos.y, worldPos.z - cameraPos.z);
+        matrices.translate(wx - cameraPos.x, wy - cameraPos.y, wz - cameraPos.z);
         // Billboard: yaw-only rotation so the label always faces the camera horizontally.
-        float faceYaw = (float) Math.toDegrees(Math.atan2(cameraPos.x - worldPos.x, cameraPos.z - worldPos.z));
+        float faceYaw = (float) Math.toDegrees(Math.atan2(cameraPos.x - wx, cameraPos.z - wz));
         matrices.multiply(net.minecraft.util.math.RotationAxis.POSITIVE_Y.rotationDegrees(faceYaw));
         float scale = 0.02f;
         matrices.scale(scale, -scale, scale);

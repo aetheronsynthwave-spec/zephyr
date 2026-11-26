@@ -157,6 +157,7 @@ public final class ZephyrClient implements ClientModInitializer {
         modules.register(new SoundDetector());
         modules.register(new dev.zephyr.modules.utility.AutoTool());
         modules.register(new dev.zephyr.modules.utility.Zoom());
+        modules.register(new dev.zephyr.modules.utility.Waypoints());
         modules.register(new Freecam());
         modules.register(new Fly());
         // Render & HUD
@@ -169,6 +170,8 @@ public final class ZephyrClient implements ClientModInitializer {
         modules.register(new dev.zephyr.modules.hud.InfoHud());
         modules.register(new dev.zephyr.modules.hud.ArmorHud());
         modules.register(new dev.zephyr.modules.hud.Keystrokes());
+        modules.register(new dev.zephyr.modules.hud.SpotifyLyrics());
+        modules.register(new dev.zephyr.modules.hud.SessionHud());
         modules.register(new dev.zephyr.modules.utility.NameHider());
         modules.register(new Esp());
         modules.register(new Tracers());

@@ -113,16 +113,18 @@ public final class DamageNumbers extends Module implements WorldRenderParticipan
         MatrixStack matrices = ctx.matrices();
         VertexConsumerProvider consumers = ctx.consumers();
         int lifetime = lifetimeTicks.get().intValue();
+        float td = RenderUtil.tickProgress();
+        double rise = riseSpeed.get();
 
         for (FloatingNumber f : pool) {
             if (!f.active) {
                 continue;
             }
-            float progress = (float) f.age / lifetime;
-            int alpha = (int) ((1.0f - progress) * 255.0f);
+            float age = f.age + td; // smooth rise/fade between ticks
+            float progress = Math.min(1f, age / lifetime);
+            int alpha = Math.max(4, (int) ((1.0f - progress) * 255.0f));
             int color = (alpha << 24) | 0xFF5050;
-            Vec3d pos = new Vec3d(f.x, f.y + f.age * riseSpeed.get(), f.z);
-            RenderUtil.drawBillboardText(matrices, consumers, pos,
+            RenderUtil.drawBillboardText(matrices, consumers, f.x, f.y + age * rise, f.z,
                     f.display, color, 0x00000000, true);
         }
     }

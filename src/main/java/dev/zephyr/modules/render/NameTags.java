@@ -58,6 +58,8 @@ public final class NameTags extends Module implements WorldRenderParticipant {
         MatrixStack matrices = ctx.matrices();
         VertexConsumerProvider consumers = ctx.consumers();
         double rangeSq = range.get() * range.get();
+        float td = RenderUtil.tickProgress();
+        Vec3d cam = RenderUtil.cameraPos();
 
         for (PlayerEntity player : RenderUtil.cachedPlayers()) {
             if (player == self || !player.isAlive() || player.isSpectator()) {
@@ -77,21 +79,15 @@ public final class NameTags extends Module implements WorldRenderParticipant {
                 cached.width = client.textRenderer.getWidth(cached.text);
             }
 
+            // Frame-interpolated anchor (the raw tick position made tags stutter at 20 Hz).
             double height = player.getBoundingBox().getLengthY();
-            Vec3d pos = new net.minecraft.util.math.Vec3d(
-                    player.getX(),
-                    player.getY() + height + 0.35,
-                    player.getZ());
+            double ax = net.minecraft.util.math.MathHelper.lerp(td, player.lastRenderX, player.getX());
+            double ay = net.minecraft.util.math.MathHelper.lerp(td, player.lastRenderY, player.getY()) + height + 0.35;
+            double az = net.minecraft.util.math.MathHelper.lerp(td, player.lastRenderZ, player.getZ());
             matrices.push();
             float s = scale.get().floatValue();
-            // Apply extra scale around the anchor point.
-            matrices.translate(
-                    pos.x - RenderUtil.cameraPos().x,
-                    pos.y - RenderUtil.cameraPos().y,
-                    pos.z - RenderUtil.cameraPos().z);
-            float faceYaw = (float) Math.toDegrees(Math.atan2(
-                    RenderUtil.cameraPos().x - pos.x,
-                    RenderUtil.cameraPos().z - pos.z));
+            matrices.translate(ax - cam.x, ay - cam.y, az - cam.z);
+            float faceYaw = (float) Math.toDegrees(Math.atan2(cam.x - ax, cam.z - az));
             matrices.multiply(net.minecraft.util.math.RotationAxis.POSITIVE_Y.rotationDegrees(faceYaw));
             matrices.scale(0.02f * s, -0.02f * s, 0.02f * s);
             client.textRenderer.draw(cached.text, -cached.width / 2.0f, 0, 0xFFFFFFFF, false,
