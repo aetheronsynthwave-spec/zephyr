@@ -39,6 +39,9 @@ public final class SafeAnchor extends AnchorMacro {
         if (client.world == null) {
             return false;
         }
+        if (anchor.equals(coveredFor)) {
+            return finishCover(client, self); // one shield per anchor, not a wall
+        }
         BlockPos cover = findCoverPosition(client, self, anchor);
         if (cover == null) {
             // No legal cover: hard-fail this detonation cycle rather than self-destruct.
@@ -47,18 +50,60 @@ public final class SafeAnchor extends AnchorMacro {
             anchorPos = null;
             return true;
         }
-        int obsidianSlot = InventoryManager.findHotbarSlot(self, ItemUtil::isObsidian);
-        if (obsidianSlot == -1) {
+        if (!client.world.getBlockState(cover).isAir()) {
+            return finishCover(client, self); // cover already standing
+        }
+        // Glowstone is the classic shield block (you carry it anyway); obsidian as fallback.
+        int coverSlot = InventoryManager.findHotbarSlot(self, ItemUtil::isGlowstone);
+        if (coverSlot == -1) {
+            coverSlot = InventoryManager.findHotbarSlot(self, ItemUtil::isObsidian);
+        }
+        BlockHitResult hit = supportHit(client, cover);
+        if (coverSlot == -1 || hit == null) {
             stage = Stage.IDLE;
             stageTimer.invalidate();
             anchorPos = null;
-            return true;
+            return false;
         }
-        InventoryManager.selectHotbar(client, obsidianSlot);
-        BlockHitResult hit = new BlockHitResult(
-                Vec3d.ofCenter(cover).add(0, 0.45, 0), Direction.UP, cover, false);
-        var result = dev.zephyr.core.combat.CombatActions.interactBlock(client, hit);
-        return result.isAccepted() && client.world.getBlockState(cover).isOf(Blocks.OBSIDIAN);
+        InventoryManager.selectHotbar(client, coverSlot);
+        // Click an existing neighbour's face (the old code clicked the empty cell itself,
+        // which the server rejects - so the cover never appeared).
+        dev.zephyr.core.combat.CombatActions.interactBlock(client, hit);
+        if (client.world.getBlockState(cover).isAir()) {
+            return false; // try again on the next paced attempt
+        }
+        coveredFor = anchor.toImmutable();
+        return finishCover(client, self);
+    }
+
+    private BlockPos coveredFor;
+
+    /** After cover: hold a non-glowstone item so the next anchor click detonates. */
+    private boolean finishCover(MinecraftClient client, ClientPlayerEntity self) {
+        if (ItemUtil.isGlowstone(self.getMainHandStack())) {
+            int slot = InventoryManager.findHotbarSlot(self, s -> !ItemUtil.isGlowstone(s));
+            if (slot != -1) {
+                InventoryManager.selectHotbar(client, slot);
+            }
+        }
+        return !ItemUtil.isGlowstone(self.getMainHandStack());
+    }
+
+    /** A click on a solid neighbour's face that places a block into {@code cell}. */
+    private static BlockHitResult supportHit(MinecraftClient client, BlockPos cell) {
+        for (Direction dir : new Direction[]{Direction.DOWN, Direction.NORTH, Direction.SOUTH,
+                Direction.EAST, Direction.WEST, Direction.UP}) {
+            BlockPos support = cell.offset(dir);
+            var st = client.world.getBlockState(support);
+            if (st.isAir() || !st.isSolidBlock(client.world, support)) {
+                continue;
+            }
+            Direction face = dir.getOpposite();
+            Vec3d hitVec = Vec3d.ofCenter(support).add(face.getOffsetX() * 0.5,
+                    face.getOffsetY() * 0.5, face.getOffsetZ() * 0.5);
+            return new BlockHitResult(hitVec, face, support, false);
+        }
+        return null;
     }
 
     /**

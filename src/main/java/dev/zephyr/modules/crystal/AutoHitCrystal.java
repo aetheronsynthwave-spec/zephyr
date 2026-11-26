@@ -63,14 +63,17 @@ public final class AutoHitCrystal extends Module {
     private final NumberSetting minTargetDamage = num("minDmg", "Min target dmg", 0.0, 20.0, 0.5, 3.0);
     private final NumberSetting maxSelfDamage = num("maxSelf", "Max self dmg", 0.0, 20.0, 0.5, 8.0);
     private final NumberSetting facePlaceHealth = num("faceplace", "Faceplace below hp", 0.0, 12.0, 0.5, 3.0);
-    private final NumberSetting cpsMin = num("cpsMin", "CPS min", 10, 30, 0.5, 15);
-    private final NumberSetting cpsMax = num("cpsMax", "CPS max", 10, 30, 0.5, 22);
-    private final NumberSetting swapMin = num("swapMin", "Swap delay min ms", 5, 100, 1, 8);
-    private final NumberSetting swapMax = num("swapMax", "Swap delay max ms", 5, 150, 1, 22);
-    private final NumberSetting rotMin = num("rotMin", "Rotation min deg/t", 10, 120, 5, 45);
-    private final NumberSetting rotMax = num("rotMax", "Rotation max deg/t", 10, 180, 5, 95);
+    private final NumberSetting cpsMin = num("cpsMin", "CPS min", 4, 30, 0.5, 8);
+    private final NumberSetting cpsMax = num("cpsMax", "CPS max", 4, 30, 0.5, 12);
+    private final NumberSetting swapMin = num("swapMin", "Swap delay min ms", 5, 100, 1, 35);
+    private final NumberSetting swapMax = num("swapMax", "Swap delay max ms", 5, 150, 1, 70);
+    private final NumberSetting rotMin = num("rotMin", "Rotation min deg/t", 5, 120, 5, 18);
+    private final NumberSetting rotMax = num("rotMax", "Rotation max deg/t", 5, 180, 5, 40);
 
     private final BooleanSetting useObsidian = bool("obsidian", "Place obsidian supports", true);
+    /** Always open with our own obsidian instead of grabbing whatever obsidian is lying around. */
+    private final BooleanSetting ownObsidian = bool("ownObsidian", "Prefer own obsidian", true);
+    private final NumberSetting aimTolerance = num("aimTol", "Aim tolerance deg", 3, 30, 0.5, 10);
     private final BooleanSetting predictTarget = bool("predict", "Predict target motion", true);
     private final BooleanSetting requireWallsRange = bool("walls", "Respect walls", false);
     private final BooleanSetting pauseOnLoot = bool("pauseLoot", "Pause near loot", false);
@@ -189,7 +192,7 @@ public final class AutoHitCrystal extends Module {
 
         Vec3d aim = MathUtil.aimPoint(target);
         requestRotation(self, aim);
-        if (!RotationManager.isAimedAt(aim, 40.0)) {
+        if (!RotationManager.isAimedAt(aim, aimTolerance.get())) {
             return;
         }
 
@@ -231,8 +234,9 @@ public final class AutoHitCrystal extends Module {
         }
 
         aimAt(self, Vec3d.ofCenter(plan.obsidianCell));
-        if (!stageTimer.isDue()) {
-            return;
+        if (!stageTimer.isDue()
+                || !RotationManager.isAimedAt(Vec3d.ofCenter(plan.obsidianCell), aimTolerance.get())) {
+            return; // place only once the camera has actually arrived (no mid-flick clicks)
         }
         stageTimer.restart(swapMin.get(), swapMax.get());
 
@@ -323,7 +327,7 @@ public final class AutoHitCrystal extends Module {
             return;
         }
         aimAt(self, Vec3d.ofCenter(plan.support));
-        if (!RotationManager.isAimedAt(Vec3d.ofCenter(plan.support), 45.0)) {
+        if (!RotationManager.isAimedAt(Vec3d.ofCenter(plan.support), aimTolerance.get())) {
             return;
         }
         BlockHitResult hit = CrystalSolver.crystalPlacementHit(world, plan.support, self.getEyePos());
@@ -375,7 +379,7 @@ public final class AutoHitCrystal extends Module {
         }
         Vec3d aim = best.getBoundingBox().getCenter();
         requestRotation(self, aim);
-        if (!RotationManager.isAimedAt(aim, 35.0)) {
+        if (!RotationManager.isAimedAt(aim, aimTolerance.get())) {
             return true; // rotation still converging; keep the timer armed
         }
         attackTimer.restartCps(lastCps = RandomController.uniform(cpsMin.get(), cpsMax.get()), 15);
@@ -392,13 +396,20 @@ public final class AutoHitCrystal extends Module {
                        LivingEntity target) {
         int predictTicks = predictTarget.get() ? 2 : 0;
         boolean walls = requireWallsRange.get();
+        boolean canObsidian = useObsidian.get() && hasItem(self, ItemUtil::isObsidian);
+        if (canObsidian && ownObsidian.get()) {
+            // Own obsidian first: a fresh block right at the target's feet, placed by us,
+            // instead of locking onto some random obsidian that happens to be nearby.
+            Spot own = CrystalSolver.findBestObsidianPlan(world, self, target, placeRange.get(),
+                    effectiveMinDamage(target), maxSelfDamage.get(), walls, predictTicks);
+            if (own != null) {
+                return own;
+            }
+        }
         Spot natural = CrystalSolver.findBestCrystalSpot(world, self, target, placeRange.get(),
                 effectiveMinDamage(target), maxSelfDamage.get(), walls, predictTicks);
-        if (natural != null) {
+        if (natural != null || !canObsidian) {
             return natural;
-        }
-        if (!useObsidian.get()) {
-            return null;
         }
         return CrystalSolver.findBestObsidianPlan(world, self, target, placeRange.get(),
                 effectiveMinDamage(target), maxSelfDamage.get(), walls, predictTicks);

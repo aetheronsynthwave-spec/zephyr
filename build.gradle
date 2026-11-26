@@ -59,8 +59,6 @@ loom {
     runs {
         client {
             client()
-            vmArgs "-Dzephyr.gametest=1", "-Dzephyr.gametest.only=${System.getProperty('zephyr.only') ?: ''}"
-        programArgs "--quickPlaySingleplayer", "ZephyrTest"
             property "java.awt.headless", "false"
         }
     }

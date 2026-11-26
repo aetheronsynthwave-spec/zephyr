@@ -126,19 +126,6 @@ public final class AutoMace extends Module {
             // finds the aim already settled instead of needing a last-moment flick.
             aimAt(client, self, target);
         }
-        BreachSwap breach = ZephyrClient.modules().get(BreachSwap.class);
-        if (descending && fall >= minFall.get() && heightOk && self.squaredDistanceTo(target) <= 36.0
-                && distToGround <= 6.0) {
-            // Have the mace out before the strike window (it is only ~2 ticks wide at speed).
-            if (breach != null && breach.isEnabled()) {
-                breach.requestStrike(); // BreachSwap owns the transition (and the swap back)
-            } else if (!ItemUtil.isMace(self.getMainHandStack())) {
-                int slot = dev.zephyr.core.inventory.InventoryManager.findHotbarSlot(self, ItemUtil::isMace);
-                if (slot != -1) {
-                    dev.zephyr.core.inventory.InventoryManager.selectHotbar(client, slot);
-                }
-            }
-        }
         if (!descending || fall < minFall.get() || !heightOk || !groundGapOk) {
             return;
         }
@@ -200,21 +187,21 @@ public final class AutoMace extends Module {
 
     /** Requests the BreachSwap transition, then attacks through the vanilla path. */
     private void strike(MinecraftClient client, ClientPlayerEntity self, LivingEntity target, double fall) {
+        // Attribute swap: the hit goes out with the mace's attributes (smash damage) while
+        // you keep holding your sword. With BreachSwap on, a Breach mace is preferred.
         BreachSwap breach = ZephyrClient.modules().get(BreachSwap.class);
+        int slot = -1;
         if (breach != null && breach.isEnabled()) {
-            breach.requestStrike();
-        } else if (!ItemUtil.isMace(self.getMainHandStack())) {
-            // No BreachSwap running: pick the hotbar mace ourselves (previously the strike
-            // just waited forever for a swap nobody was going to make).
-            int slot = dev.zephyr.core.inventory.InventoryManager.findHotbarSlot(self, ItemUtil::isMace);
-            if (slot != -1) {
-                dev.zephyr.core.inventory.InventoryManager.selectHotbar(client, slot);
-            }
+            slot = dev.zephyr.core.inventory.InventoryManager.findHotbarSlot(self,
+                    s -> ItemUtil.isMace(s) && ItemUtil.enchantLevel(s, "breach") > 0);
         }
-        if (!ItemUtil.isMace(self.getMainHandStack())) {
-            return; // the transition lands next tick; the strike resumes then
+        if (slot == -1) {
+            slot = dev.zephyr.core.inventory.InventoryManager.findHotbarSlot(self, ItemUtil::isMace);
         }
-        if (CombatActions.attackEntity(client, target)) {
+        if (slot == -1) {
+            return; // no mace on the hotbar
+        }
+        if (CombatActions.attributeSwapAttack(client, slot, target)) {
             ticksSinceStrike = 0;
             armedZeroTick = false;
         }

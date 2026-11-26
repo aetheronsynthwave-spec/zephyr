@@ -178,7 +178,7 @@ public class AnchorMacro extends Module {
                     stageTimer.invalidate();
                     return;
                 }
-                if (protectivePlacement() && selfDmg > maxSelfDamage.get()) {
+                if (protectivePlacement()) { // SafeAnchor always shields first
                     // SafeAnchor hook point: place protective cover before detonating.
                     if (!placeProtection(client, self, anchorPos)) {
                         return; // wait a few more paced attempts

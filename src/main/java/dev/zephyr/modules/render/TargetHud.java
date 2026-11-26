@@ -3,249 +3,178 @@ package dev.zephyr.modules.render;
 import dev.zephyr.core.Module;
 import dev.zephyr.core.ModuleCategory;
 import dev.zephyr.core.settings.BooleanSetting;
+import dev.zephyr.core.settings.ModeSetting;
 import dev.zephyr.core.settings.NumberSetting;
 import dev.zephyr.core.target.TargetCriteria;
 import dev.zephyr.core.target.TargetManager;
-import net.fabricmc.fabric.api.client.rendering.v1.world.WorldRenderContext;
+import dev.zephyr.core.util.ItemUtil;
+import dev.zephyr.gui.render.Ui;
 import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.font.TextRenderer;
-import net.minecraft.client.render.VertexConsumerProvider;
-import net.minecraft.client.util.math.MatrixStack;
+import net.minecraft.client.gui.DrawContext;
+import net.minecraft.client.gui.PlayerSkinDrawer;
+import net.minecraft.client.network.AbstractClientPlayerEntity;
+import net.minecraft.entity.EquipmentSlot;
 import net.minecraft.entity.LivingEntity;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.item.ItemStack;
-import net.minecraft.text.Text;
-import net.minecraft.util.Formatting;
 import net.minecraft.util.math.MathHelper;
-import net.minecraft.util.math.Vec3d;
-import org.joml.Matrix4f;
+
+import java.util.List;
 
 /**
- * TargetHUD - a combat detail panel rendered IN THE WORLD, anchored right beside the
- * current enemy's head (billboarded to face the camera, like a nameplate). It rides
- * the same entity the combat modules locked onto - and if no combat module is enabled,
- * it acquires its own target each tick so the panel is ALWAYS the nearest/most
- * crosshair-aligned enemy, never blank.
- *
- * <p>Highlighted details, line by line:
- * <ol>
- *   <li>Target name (white) + "HURT" flash when in hurt frames</li>
- *   <li>Health BAR (green -> amber -> red) with numeric hp + absorption</li>
- *   <li>Distance in meters + held item name</li>
- *   <li>Armor points + totem-in-offhand indicator</li>
- * </ol>
- *
- * <p>Perf: the text lines are rebuilt at most once per client tick (the panel draws
- * per frame, the data changes per tick). The health bar itself is two fill quads.
+ * TargetHUD - a small, smooth panel on the HUD (not in the world) showing the current
+ * target: head, name, animated health bar with absorption, distance, totem status and
+ * their armour + held items. It slides/fades in and out when a target appears or is lost.
  */
-public final class TargetHud extends Module implements WorldRenderParticipant {
+public final class TargetHud extends Module {
 
-    private final NumberSetting scale = num("scale", "Panel scale", 0.5, 2.0, 0.05, 1.0);
+    private final ModeSetting position = s(new ModeSetting("pos", "Position",
+            List.of("NEAR_CROSSHAIR", "LEFT", "RIGHT", "CUSTOM"), "NEAR_CROSSHAIR"));
+    private final NumberSetting customX = num("x", "Custom X", 0, 2000, 5, 20);
+    private final NumberSetting customY = num("y", "Custom Y", 0, 1200, 5, 120);
+    private final NumberSetting scale = num("scale", "Scale", 0.6, 2.0, 0.05, 1.0);
     private final NumberSetting range = num("range", "Acquire range", 4.0, 64.0, 1.0, 16.0);
-    private final BooleanSetting showHeld = bool("held", "Show held item", true);
-    private final BooleanSetting showArmor = bool("armor", "Show armor points", true);
-    private final BooleanSetting showBar = bool("bar", "Show health bar", true);
-    private final BooleanSetting requireLook = bool("crosshair", "Only crosshair targets", false);
+    private final BooleanSetting showItems = bool("items", "Show armour + items", true);
 
-    /** Cached per-tick panel lines. */
-    private Text[] cachedLines;
-    private LivingEntity cachedTarget;
-    private float cachedHpRatio = 1.0f;
-    private float cachedAbsRatio = 0.0f;
-    private int cachedTick = -1;
-
-    /** Our own acquire criteria, used only when no combat module drove the target. */
     private final TargetCriteria criteria = new TargetCriteria().range(16.0).playersOnly(true);
+
+    private LivingEntity shown;
+    private float fade;
+    private float hpAnim = 1f;
+    private float absAnim;
+    private long lastNanos;
 
     public TargetHud() {
         super("TargetHUD", ModuleCategory.RENDER, 0);
-        criteria.range = range.get();
     }
 
     @Override
     protected void onDisable() {
-        cachedLines = null;
-        cachedTarget = null;
-        cachedTick = -1;
+        shown = null;
+        fade = 0;
     }
 
     @Override
     public void onTick(MinecraftClient client) {
-        // Self-acquire so the HUD shows the enemy even with no combat module enabled.
-        // Combat modules that already acquired a target this tick simply overwrite it
-        // with the same (sticky) selection - one shared lock, zero flicker.
         if (client.player == null || client.world == null) {
             return;
         }
-        criteria.range = requireLook.get() ? 8.0 : range.get();
+        criteria.range = range.get();
         TargetManager.acquire(client, criteria);
         TargetManager.cleanup();
     }
 
-    private void buildLines(MinecraftClient client, LivingEntity target, int tick) {
-        if (cachedTick == tick && cachedTarget == target && cachedLines != null) {
+    @Override
+    public void onHudRender(DrawContext ctx, float tickDelta) {
+        MinecraftClient mc = MinecraftClient.getInstance();
+        if (mc.player == null || mc.options.hudHidden) {
             return;
         }
-        cachedTick = tick;
-        cachedTarget = target;
+        long now = System.nanoTime();
+        float dt = lastNanos == 0 ? 0f : Math.min(0.1f, (now - lastNanos) / 1.0e9f);
+        lastNanos = now;
 
-        String name = target.getDisplayName() != null
-                ? target.getDisplayName().getString() : "?";
-        float hp = target.getHealth();
-        float abs = target.getAbsorptionAmount();
-        float maxHp = Math.max(1.0f, target.getMaxHealth());
-        float ratio = MathHelper.clamp(hp / maxHp, 0f, 1f);
-        cachedHpRatio = ratio;
-        cachedAbsRatio = MathHelper.clamp(abs / maxHp, 0f, 1f);
-        int hpColor = ratio > 0.5f ? 0xFF3CE07A : ratio > 0.25f ? 0xFFFFC63C : 0xFFFF5050;
+        LivingEntity t = TargetManager.currentTarget();
+        boolean valid = t != null && t.isAlive() && mc.player.squaredDistanceTo(t) < 48 * 48;
+        if (valid) {
+            if (shown != t) {
+                hpAnim = MathHelper.clamp(t.getHealth() / Math.max(1f, t.getMaxHealth()), 0f, 1f);
+            }
+            shown = t;
+        }
+        fade = Ui.approach(fade, valid ? 1f : 0f, 14f, dt);
+        if (shown == null || fade < 0.01f) {
+            if (!valid) {
+                shown = null;
+            }
+            return;
+        }
+        LivingEntity e = shown;
 
-        double dist = client.player != null ? client.player.distanceTo(target) : 0.0;
-        Formatting distFmt = dist < 8 ? Formatting.RED : dist < 16 ? Formatting.GOLD : Formatting.GRAY;
+        float s = scale.get().floatValue();
+        float w = 132, h = showItems.get() ? 58 : 42;
+        int sw = ctx.getScaledWindowWidth(), sh = ctx.getScaledWindowHeight();
+        float px, py;
+        switch (position.get()) {
+            case "LEFT" -> { px = 8; py = sh / 2f - h * s / 2f; }
+            case "RIGHT" -> { px = sw - 8 - w * s; py = sh / 2f - h * s / 2f; }
+            case "CUSTOM" -> { px = customX.get().floatValue(); py = customY.get().floatValue(); }
+            default -> { px = sw / 2f + 16; py = sh / 2f + 12; }
+        }
 
-        java.util.List<Text> lines = new java.util.ArrayList<>(4);
-        // Line 1: name (+hurt flash).
-        Text nameLine = Text.literal(name).formatted(Formatting.WHITE);
-        if (target.hurtTime > 0) {
-            nameLine = nameLine.copy().append(Text.literal(" ✗").formatted(Formatting.RED));
-        }
-        lines.add(nameLine);
-        // Line 2: numeric hp + absorption.
-        net.minecraft.text.MutableText hpLine = Text.literal(String.format("%.1f", hp))
-                .styled(s -> s.withColor(hpColor))
-                .append(Text.literal(" HP").formatted(Formatting.GRAY));
-        if (abs > 0.01f) {
-            hpLine = hpLine.append(Text.literal(String.format("  +%.1f", abs))
-                    .formatted(Formatting.GOLD));
-        }
-        if (target instanceof PlayerEntity p && dev.zephyr.core.util.ItemUtil.isTotem(
-                p.getOffHandStack())) {
-            hpLine = hpLine.append(Text.literal("  [totem]").formatted(Formatting.GOLD));
-        }
-        lines.add(hpLine);
-        // Line 3: distance + held.
-        if (showHeld.get()) {
-            ItemStack held = target.getMainHandStack();
-            String heldName = held.isEmpty() ? "empty hand"
-                    : held.getName().getString();
-            int count = held.getCount();
-            lines.add(Text.literal(String.format("%.1fm", dist)).formatted(distFmt)
-                    .append(Text.literal("  ·  ").formatted(Formatting.DARK_GRAY))
-                    .append(Text.literal(count > 1 ? heldName + " x" + count : heldName)
-                            .formatted(Formatting.AQUA)));
+        ctx.getMatrices().pushMatrix();
+        ctx.getMatrices().translate(px, py + (1f - fade) * 6f);
+        ctx.getMatrices().scale(s, s);
+        Ui.beginFrame(s);
+
+        Ui.shadow(ctx, 0, 0, w, h, 8, 8, Ui.alpha(0x80000000, fade));
+        Ui.roundRect(ctx, 0, 0, w, h, 8, Ui.alpha(Ui.BG, fade));
+
+        // Head (players) or a neutral badge.
+        float head = 26;
+        Ui.roundRect(ctx, 7, 7, head + 2, head + 2, 6, Ui.alpha(0xFF0B0E13, fade));
+        if (e instanceof AbstractClientPlayerEntity p) {
+            PlayerSkinDrawer.draw(ctx, p.getSkin(), 8, 8, (int) head, Ui.alpha(0xFFFFFFFF, fade));
         } else {
-            lines.add(Text.literal(String.format("%.1fm", dist)).formatted(distFmt));
+            Ui.logo(ctx, 10, 10, head - 4, Ui.alpha(Ui.TEXT_FAINT, fade));
         }
-        // Line 4: armor.
-        if (showArmor.get()) {
-            int armor = target.getArmor();
-            lines.add(Text.literal("Armor ").formatted(Formatting.GRAY)
-                    .append(Text.literal(String.valueOf(armor)).formatted(Formatting.WHITE)));
+
+        float tx = 7 + head + 9;
+        String name = e.getName().getString();
+        while (name.length() > 3 && Ui.textWidth(name, 9.5f, true) > w - tx - 26) {
+            name = name.substring(0, name.length() - 2) + "…";
         }
-        cachedLines = lines.toArray(new Text[0]);
+        Ui.text(ctx, name, tx, 8, 9.5f, Ui.alpha(e.hurtTime > 0 ? 0xFFFF8A8A : Ui.TEXT, fade), true);
+
+        if (e instanceof PlayerEntity p && ItemUtil.isTotem(p.getOffHandStack())) {
+            Ui.pill(ctx, w - 23, 7, 16, 10, Ui.alpha(0x33FFC63C, fade));
+            Ui.textCentered(ctx, "T", w - 15, 8.5f, 7.5f, Ui.alpha(0xFFFFC63C, fade), true);
+        }
+
+        float hp = e.getHealth();
+        float abs = e.getAbsorptionAmount();
+        float max = Math.max(1f, e.getMaxHealth());
+        hpAnim = Ui.approach(hpAnim, MathHelper.clamp(hp / max, 0f, 1f), 9f, dt);
+        absAnim = Ui.approach(absAnim, MathHelper.clamp(abs / max, 0f, 1f), 9f, dt);
+        double dist = mc.player.distanceTo(e);
+        String info = String.format("%.1f", hp + abs) + " hp  ·  " + String.format("%.1fm", dist);
+        Ui.text(ctx, info, tx, 20, 8f, Ui.alpha(Ui.TEXT_DIM, fade), false);
+
+        float barX = tx, barY = 30, barW = w - tx - 8, barH = 4;
+        Ui.pill(ctx, barX, barY, barW, barH, Ui.alpha(0xFF262C38, fade));
+        int hpColor = Ui.mix(0xFFFF5A5A, 0xFF4BE38C, hpAnim * 1.4f - 0.2f);
+        if (hpAnim > 0.01f) {
+            Ui.pill(ctx, barX, barY, Math.max(barH, barW * hpAnim), barH, Ui.alpha(hpColor, fade));
+        }
+        if (absAnim > 0.01f) {
+            float aw = Math.min(barW, barW * absAnim);
+            Ui.pill(ctx, barX + barW - aw, barY, aw, barH, Ui.alpha(0xCCFFC63C, fade));
+        }
+
+        if (showItems.get()) {
+            ItemStack[] items = {
+                    e.getMainHandStack(),
+                    e.getEquippedStack(EquipmentSlot.HEAD), e.getEquippedStack(EquipmentSlot.CHEST),
+                    e.getEquippedStack(EquipmentSlot.LEGS), e.getEquippedStack(EquipmentSlot.FEET),
+                    e.getOffHandStack()};
+            float ix = 8;
+            for (ItemStack it : items) {
+                Ui.roundRect(ctx, ix, 39, 17, 15, 4, Ui.alpha(0x14FFFFFF, fade));
+                if (!it.isEmpty() && fade > 0.5f) {
+                    ctx.getMatrices().pushMatrix();
+                    ctx.getMatrices().translate(ix + 1.5f, 40f);
+                    ctx.getMatrices().scale(0.85f, 0.85f);
+                    ctx.drawItem(it, 0, 0);
+                    ctx.getMatrices().popMatrix();
+                }
+                ix += 20;
+            }
+        }
+        ctx.getMatrices().popMatrix();
     }
 
     @Override
-    public void onWorldRender(WorldRenderContext ctx) {
-        MinecraftClient client = MinecraftClient.getInstance();
-        LivingEntity target = TargetManager.currentTarget();
-        if (client.player == null || target == null || !target.isAlive()
-                || ctx.consumers() == null) {
-            return;
-        }
-        // Do not chase targets far outside acquire range (sticky lock may outlive it).
-        if (client.player.squaredDistanceTo(target) > 48.0 * 48.0) {
-            return;
-        }
-        buildLines(client, target, RenderUtil.currentTick());
-
-        MatrixStack matrices = ctx.matrices();
-        VertexConsumerProvider consumers = ctx.consumers();
-        float tickDelta = RenderUtil.tickProgress();
-
-        // Anchor: lerped position, top of the head + a small gap, shifted to the right
-        // side of the head so the panel sits NEXT TO the enemy (not covering them).
-        double x = MathHelper.lerp(tickDelta, target.lastRenderX, target.getX());
-        double y = MathHelper.lerp(tickDelta, target.lastRenderY, target.getY());
-        double z = MathHelper.lerp(tickDelta, target.lastRenderZ, target.getZ());
-        Vec3d pos = new Vec3d(x, y + target.getHeight() + 0.45, z);
-        Vec3d cam = RenderUtil.cameraPos();
-
-        matrices.push();
-        matrices.translate(pos.x - cam.x, pos.y - cam.y, pos.z - cam.z);
-        // Billboard: yaw-only rotation so the panel always faces the camera.
-        float faceYaw = (float) Math.toDegrees(Math.atan2(cam.x - pos.x, cam.z - pos.z));
-        matrices.multiply(net.minecraft.util.math.RotationAxis.POSITIVE_Y.rotationDegrees(faceYaw));
-        // Sit NEXT TO the enemy: right of the head in camera space.
-        matrices.translate(0.45 * scale.get().floatValue(), 0.0, 0.0);
-        float s = 0.024f * scale.get().floatValue();
-        matrices.scale(s, -s, s);
-
-        TextRenderer tr = client.textRenderer;
-        int lineHeight = tr.fontHeight + 1;
-        int widest = 0;
-        for (Text line : cachedLines) {
-            widest = Math.max(widest, tr.getWidth(line));
-        }
-        int pad = 3;
-        int barH = showBar.get() ? 4 : 0;
-        int panelH = cachedLines.length * lineHeight + pad * 2 + barH;
-        float x0 = -pad;
-        float x1 = widest + pad;
-        // Panel background with an accent edge.
-        fillQuad(matrices, consumers, x0, -pad, x1, panelH, 0xB20D0F14, -0.8f);
-        fillQuad(matrices, consumers, x0, -pad, x0 + 1.5f, panelH, 0xFF4FD2EC, -0.6f);
-
-        // Health bar: background track + hp fill + absorption sliver.
-        if (showBar.get()) {
-            float barY = panelH - pad - 4 + 1;
-            float barW = widest;
-            fillQuad(matrices, consumers, x0 + pad, barY, x0 + pad + barW, barY + 4, 0x66000000, -0.5f);
-            float hpEnd = x0 + pad + barW * cachedHpRatio;
-            int hpColor = cachedHpRatio > 0.5f ? 0xFF3CE07A
-                    : cachedHpRatio > 0.25f ? 0xFFFFC63C : 0xFFFF5050;
-            if (cachedHpRatio > 0.001f) {
-                fillQuad(matrices, consumers, x0 + pad, barY, hpEnd, barY + 4, hpColor, -0.4f);
-            }
-            if (cachedAbsRatio > 0.001f) {
-                float absEnd = x0 + pad + barW * Math.min(1.0f, cachedHpRatio + cachedAbsRatio);
-                fillQuad(matrices, consumers, hpEnd, barY, absEnd, barY + 4, 0xFFFFC63C, -0.4f);
-            }
-        }
-
-        int ly = 0;
-        for (Text line : cachedLines) {
-            tr.draw(line, 0, ly, 0xFFFFFFFF, false,
-                    matrices.peek().getPositionMatrix(), consumers,
-                    TextRenderer.TextLayerType.NORMAL, 0, 0xF000F0);
-            ly += lineHeight;
-        }
-        matrices.pop();
-    }
-
-    /**
-     * Camera-facing background quad for the panel, on the debug filled-box layer
-     * (POSITION_COLOR, translucent, no texture - the same primitive debug renderers use).
-     */
-    private static void fillQuad(MatrixStack matrices, VertexConsumerProvider consumers,
-                                 float x0, float y0, float x1, float y1, int argb, float depth) {
-        var buffer = consumers.getBuffer(net.minecraft.client.render.RenderLayers.debugFilledBox());
-        Matrix4f matrix = matrices.peek().getPositionMatrix();
-        float a = ((argb >>> 24) & 0xFF) / 255.0f;
-        float r = ((argb >>> 16) & 0xFF) / 255.0f;
-        float g = ((argb >>> 8) & 0xFF) / 255.0f;
-        float b = (argb & 0xFF) / 255.0f;
-        // The billboard's +Z axis points away from the camera; both winding orders
-        // (front and back quad) guarantee visibility regardless of cull state.
-        for (int quad = 0; quad < 2; quad++) {
-            float z = depth + (quad == 0 ? 0.01f : -0.01f);
-            buffer.vertex(matrix, x0, y0, z).color(r, g, b, a);
-            buffer.vertex(matrix, x1, y0, z).color(r, g, b, a);
-            buffer.vertex(matrix, x1, y1, z).color(r, g, b, a);
-            buffer.vertex(matrix, x0, y1, z).color(r, g, b, a);
-            buffer.vertex(matrix, x0, y1, z).color(r, g, b, a);
-            buffer.vertex(matrix, x1, y1, z).color(r, g, b, a);
-            buffer.vertex(matrix, x1, y0, z).color(r, g, b, a);
-            buffer.vertex(matrix, x0, y0, z).color(r, g, b, a);
-        }
+    public String hudLabel() {
+        return name;
     }
 }

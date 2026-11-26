@@ -5,6 +5,7 @@
   "name": "Zephyr",
   "description": "Multi-layered combat & utility client framework for 1.21.11 crystal / mace PvP engineering.",
   "authors": ["zephyr"],
+  "icon": "assets/zephyr/icon.png",
   "environment": "client",
   "entrypoints": {
     "client": ["dev.zephyr.ZephyrClient"]

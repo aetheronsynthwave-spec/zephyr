@@ -8,6 +8,7 @@ import dev.zephyr.core.settings.KeySetting;
 import dev.zephyr.core.settings.ModeSetting;
 import dev.zephyr.core.settings.NumberSetting;
 import dev.zephyr.core.settings.Setting;
+import dev.zephyr.gui.render.Ui;
 import net.minecraft.client.gui.Click;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.Screen;
@@ -22,67 +23,44 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Zephyr module manager screen - drawn entirely with DrawContext fills (no textures,
- * no vanilla widgets), so it is version-stable and cheap.
+ * Zephyr module manager - floating rounded glass panels, one per category, drawn with the
+ * smooth {@link Ui} toolkit (anti-aliased shapes and text from cached linear-filtered
+ * textures; no shaders, no per-frame allocation of GPU resources).
  *
- * <p>Verified against a real 1.21.11 dev client (selftest harness): the matrix-scale
- * approach, the column layout and the scaled mouse math all render and click
- * correctly. The v1.2 "glitched" report came from the 1/3 matrix scale making text
- * unreadably microscopic - this version renders at a readable default scale of 1/2
- * with a live "GUI scale" setting (0.4x .. 1.0x) so the user can shrink it to taste.
- *
- * <p>Interaction model:
- * <ul>
- *   <li>Columns: one per module category; drag the header to move a column,
- *       scroll the wheel to pan a long column.</li>
- *   <li>Module rows: left-click toggles, right-click expands/collapses the settings.</li>
- *   <li>Setting rows: booleans flip, modes cycle, numbers drag as sliders,
- *       keybinds capture the next key (Backspace clears, Escape cancels).</li>
- * </ul>
+ * <p>Controls: left-click a module to toggle it, right-click to open its settings; drag a
+ * panel by its header; wheel scrolls a panel; Ctrl+wheel resizes the whole menu. While
+ * binding a key, Escape (or Backspace/Delete) REMOVES the bind.
  */
 public final class ClickGuiScreen extends Screen {
 
-    /**
-     * Live render scale, shared with the ClickGui module so it is a persisted setting.
-     * 1.0 = the full-size v1.1 GUI, 0.5 = default (a quarter of the screen area),
-     * 0.4 = the smallest still-readable size. All row geometry is defined in
-     * full-scale units and the whole frame is drawn under this uniform scale.
-     */
     private static float renderScale = 0.5f;
 
-    /** Current render scale (gui units per screen unit) - selftest reads this. */
     public static float currentScale() {
         return renderScale;
     }
 
-    /** Call from the ClickGui module whenever its scale setting changes. */
     public static void setRenderScale(float scale) {
         renderScale = Math.max(0.15f, Math.min(1.5f, scale));
     }
 
-    private static final int COL_W = 128;
-    private static final int GAP = 6;
-    private static final int HEADER_H = 18;
-    private static final int ROW_H = 20;
-    private static final int SETTING_H = 17;
-    private static final int DEFAULT_Y = 28;
-    private static final int TITLE_H = 22;
+    // Geometry in unscaled gui units.
+    private static final int COL_W = 150;
+    private static final int GAP = 10;
+    private static final int HEADER_H = 26;
+    private static final int ROW_H = 22;
+    private static final int SETTING_H = 20;
+    private static final int SLIDER_H = 26;
+    private static final int TOP = 52;
+    private static final float RADIUS = 9f;
+    private static final float TEXT = 9.5f;
+    private static final float TEXT_SMALL = 8.5f;
 
-    private static final int COL_PANEL = 0xF20E141B;
-    private static final int COL_HEADER = 0xFF1E3A4C;
-    private static final int COL_TITLEBAR = 0xF2151E29;
-    private static final int COL_SETTING_BG = 0xE2080A10;
-    private static final int COL_HOVER = 0x30FFFFFF;
-    private static final int COL_ACCENT = 0xFF4FD2EC;
-    private static final int COL_ON = 0xFF3CE07A;
-    private static final int COL_TEXT = 0xFFFFFFFF;
-    private static final int COL_TEXT_DIM = 0xFFB7C0C8;
-
-    /** Column positions persist across opens in one session (in scaled gui space). */
     private static final Map<String, int[]> LAYOUT = new HashMap<>();
+    private static final Map<Module, Boolean> EXPANDED = new HashMap<>();
+    /** Animated values (0..1) per module: toggle knob, hover, expand. */
+    private static final Map<Object, Float> ANIM = new HashMap<>();
 
     private final List<Column> columns = new ArrayList<>();
-    /** Flattened hit-rects, rebuilt before every render/click pass. */
     private final List<Row> rows = new ArrayList<>();
 
     private Column dragColumn;
@@ -90,23 +68,26 @@ public final class ClickGuiScreen extends Screen {
     private int dragOffY;
     private NumberSetting dragSlider;
     private KeySetting capturing;
+    private long openedAt;
+    private long lastFrame;
+    private float dt;
 
     public ClickGuiScreen() {
         super(Text.literal("Zephyr"));
     }
 
-    /** Screen width in gui (scaled) space. */
     private float guiWidth() {
         return this.width / renderScale;
     }
 
-    /** Screen height in gui (scaled) space. */
     private float guiHeight() {
         return this.height / renderScale;
     }
 
     @Override
     protected void init() {
+        openedAt = System.nanoTime();
+        lastFrame = openedAt;
         rebuildColumns();
     }
 
@@ -114,17 +95,21 @@ public final class ClickGuiScreen extends Screen {
         columns.clear();
         Map<ModuleCategory, List<Module>> grouped = new HashMap<>();
         for (Module m : ZephyrClient.modules().all()) {
-            if (m.category() == ModuleCategory.GUI) {
-                continue; // the GUI button itself lives on the keybind, not in a column
+            if (m.category() != ModuleCategory.GUI) {
+                grouped.computeIfAbsent(m.category(), c -> new ArrayList<>()).add(m);
             }
-            grouped.computeIfAbsent(m.category(), c -> new ArrayList<>()).add(m);
         }
-        int i = 0;
+        List<ModuleCategory> cats = new ArrayList<>();
         for (ModuleCategory cat : ModuleCategory.values()) {
-            List<Module> mods = grouped.get(cat);
-            if (mods == null) {
-                continue;
+            if (grouped.containsKey(cat)) {
+                cats.add(cat);
             }
+        }
+        int total = cats.size() * COL_W + (cats.size() - 1) * GAP;
+        int startX = Math.max(10, ((int) guiWidth() - total) / 2);
+        int i = 0;
+        for (ModuleCategory cat : cats) {
+            List<Module> mods = grouped.get(cat);
             mods.sort(Comparator.comparing(Module::name));
             Column col = new Column(cat, mods);
             int[] pos = LAYOUT.get(cat.name());
@@ -132,8 +117,8 @@ public final class ClickGuiScreen extends Screen {
                 col.x = pos[0];
                 col.y = pos[1];
             } else {
-                col.x = (int) (12 + i * (COL_W + GAP));
-                col.y = DEFAULT_Y;
+                col.x = startX + i * (COL_W + GAP);
+                col.y = TOP;
             }
             columns.add(col);
             i++;
@@ -142,18 +127,14 @@ public final class ClickGuiScreen extends Screen {
     }
 
     private void clampColumns() {
-        int maxX = Math.max(2, (int) guiWidth() - COL_W - 2);
-        int maxY = Math.max(2, (int) guiHeight() - HEADER_H - 2);
+        int maxX = Math.max(4, (int) guiWidth() - COL_W - 4);
+        int maxY = Math.max(4, (int) guiHeight() - HEADER_H - 4);
         for (Column col : columns) {
-            col.x = Math.max(2, Math.min(col.x, maxX));
-            col.y = Math.max(TITLE_H + 2, Math.min(col.y, maxY));
+            col.x = Math.max(4, Math.min(col.x, maxX));
+            col.y = Math.max(40, Math.min(col.y, maxY));
             col.scroll = Math.max(0, col.scroll);
         }
     }
-
-    // ------------------------------------------------------------------
-    // Layout model
-    // ------------------------------------------------------------------
 
     private static final class Column {
         final ModuleCategory category;
@@ -168,68 +149,66 @@ public final class ClickGuiScreen extends Screen {
         }
     }
 
-    private static final class Row {
-        final Column column;
-        final Module module;
-        final Setting<?> setting;
-        final int x;
-        final int y;
-        final int w;
-        final int h;
-        final boolean header;
-
-        Row(Column column, Module module, Setting<?> setting,
-            int x, int y, int w, int h, boolean header) {
-            this.column = column;
-            this.module = module;
-            this.setting = setting;
-            this.x = x;
-            this.y = y;
-            this.w = w;
-            this.h = h;
-            this.header = header;
-        }
-
+    private record Row(Column column, Module module, Setting<?> setting,
+                       int x, int y, int w, int h, boolean header) {
         boolean inside(double mx, double my) {
             return mx >= x && mx < x + w && my >= y && my < y + h;
         }
     }
 
+    private static int settingHeight(Setting<?> s) {
+        return s instanceof NumberSetting ? SLIDER_H : SETTING_H;
+    }
+
     private void buildLayout() {
         rows.clear();
         for (Column col : columns) {
-            int y = col.y - col.scroll;
+            int y = col.y;
             rows.add(new Row(col, null, null, col.x, y, COL_W, HEADER_H, true));
-            y += HEADER_H;
+            y += HEADER_H - col.scroll;
             for (Module m : col.modules) {
                 rows.add(new Row(col, m, null, col.x, y, COL_W, ROW_H, false));
                 y += ROW_H;
                 if (isExpanded(m)) {
                     for (Setting<?> s : m.settings()) {
-                        rows.add(new Row(col, m, s, col.x, y, COL_W, SETTING_H, false));
-                        y += SETTING_H;
+                        int h = settingHeight(s);
+                        rows.add(new Row(col, m, s, col.x, y, COL_W, h, false));
+                        y += h;
                     }
+                    y += 4;
                 }
             }
         }
     }
 
-    private static final Map<Module, Boolean> EXPANDED = new HashMap<>();
-
     private static boolean isExpanded(Module m) {
         return Boolean.TRUE.equals(EXPANDED.get(m));
     }
 
-    /** Content height of a column below its header (for scroll clamping). */
     private int contentHeight(Column col) {
         int h = 0;
         for (Module m : col.modules) {
             h += ROW_H;
             if (isExpanded(m)) {
-                h += m.settings().size() * SETTING_H;
+                for (Setting<?> s : m.settings()) {
+                    h += settingHeight(s);
+                }
+                h += 4;
             }
         }
-        return h;
+        return h + 6;
+    }
+
+    /** Visible body height of a column (it never runs off the bottom of the screen). */
+    private int bodyHeight(Column col) {
+        return Math.min(contentHeight(col), (int) guiHeight() - col.y - HEADER_H - 30);
+    }
+
+    private float anim(Object key, float target, float speed) {
+        float v = ANIM.getOrDefault(key, target);
+        v = Ui.approach(v, target, speed, dt);
+        ANIM.put(key, v);
+        return v;
     }
 
     // ------------------------------------------------------------------
@@ -238,62 +217,59 @@ public final class ClickGuiScreen extends Screen {
 
     @Override
     public void render(DrawContext ctx, int mouseX, int mouseY, float delta) {
-        // Live-update the scale from the ClickGui setting (also lets the slider work).
-        var clickGui = ZephyrClient.modules() != null
-                ? ZephyrClient.modules().get(dev.zephyr.modules.gui.ClickGui.class) : null;
+        var clickGui = ZephyrClient.modules().get(dev.zephyr.modules.gui.ClickGui.class);
         if (clickGui != null) {
             clickGui.syncScale();
         }
+        long now = System.nanoTime();
+        dt = Math.min(0.1f, (now - lastFrame) / 1.0e9f);
+        lastFrame = now;
+        float open = Math.min(1f, (now - openedAt) / 1.8e8f);
+        float ease = 1f - (1f - open) * (1f - open) * (1f - open);
 
+        lastMouseGuiX = mouseX / renderScale;
+        lastMouseGuiY = mouseY / renderScale;
         buildLayout();
         clampColumns();
 
+        ctx.fill(0, 0, this.width, this.height, Ui.alpha(0x8C06080C, ease));
+
         ctx.getMatrices().pushMatrix();
         ctx.getMatrices().scale(renderScale, renderScale);
+        ctx.getMatrices().translate(0, (1f - ease) * 10f);
+        Ui.beginFrame(renderScale);
         try {
-            ctx.fill(0, 0, (int) guiWidth(), (int) guiHeight(), 0x900F1116);
-            renderTitleBar(ctx);
-
-            for (Row row : rows) {
-                if (row.header) {
-                    renderColumn(ctx, row);
-                }
+            renderTopBar(ctx, ease);
+            for (Column col : columns) {
+                renderColumn(ctx, col, ease);
             }
-            // Pass 2: module rows ONLY (setting rows are rendered separately - drawing
-            // them here too painted a duplicate module label over every setting line,
-            // which was the ghost-text glitch).
-            for (Row row : rows) {
-                if (!row.header && row.setting == null) {
-                    renderModuleRow(ctx, row);
-                }
-            }
-            // Pass 3: setting rows.
-            for (Row row : rows) {
-                if (row.setting != null) {
-                    renderSettingRow(ctx, row);
-                }
-            }
-
-            String hint = "L-Click toggle · R-Click settings · drag header · wheel scroll · Ctrl+wheel menu size · "
-                    + (capturing != null ? "PRESS A KEY..." : "Esc close");
-            ctx.drawText(this.textRenderer, hint,
-                    ((int) guiWidth() - this.textRenderer.getWidth(hint)) / 2,
-                    (int) guiHeight() - 12, capturing != null ? COL_ACCENT : 0xFF8892A0, false);
+            String hint = capturing != null
+                    ? "Press a key to bind  ·  Esc removes the bind"
+                    : "Left-click toggle  ·  Right-click settings  ·  Drag headers  ·  Ctrl + wheel resize";
+            Ui.textCentered(ctx, hint, guiWidth() / 2f, guiHeight() - 16, TEXT_SMALL,
+                    Ui.alpha(capturing != null ? Ui.ACCENT : Ui.TEXT_FAINT, ease), false);
         } finally {
             ctx.getMatrices().popMatrix();
         }
     }
 
-    /** Slim top bar: brand, version, live FPS, module counts. */
-    private void renderTitleBar(DrawContext ctx) {
-        int w = (int) guiWidth();
-        ctx.fill(0, 0, w, TITLE_H, COL_TITLEBAR);
-        ctx.fill(0, TITLE_H - 1, w, TITLE_H, COL_ACCENT);
-        ctx.drawText(this.textRenderer, "ZEPHYR", 6, 7, COL_ACCENT, false);
-        String stats = String.format("%d mods · %d on · %.0f fps",
-                ZephyrClient.modules().all().size(), countEnabled(), getFps());
-        ctx.drawText(this.textRenderer, stats,
-                w - 6 - this.textRenderer.getWidth(stats), 7, COL_TEXT_DIM, false);
+    private void renderTopBar(DrawContext ctx, float ease) {
+        String stats = String.format("%d modules  ·  %d active  ·  %.0f fps",
+                ZephyrClient.modules().all().size() - 1, countEnabled(),
+                (double) net.minecraft.client.MinecraftClient.getInstance().getCurrentFps());
+        float statsW = Ui.textWidth(stats, TEXT_SMALL, false);
+        float titleW = Ui.textWidth("Zephyr", 11.5f, true);
+        float w = 14 + 16 + 7 + titleW + 16 + statsW + 14;
+        float h = 28;
+        float x = (guiWidth() - w) / 2f;
+        float y = 10;
+        Ui.shadow(ctx, x, y, w, h, h / 2f, 10, Ui.alpha(0x99000000, ease));
+        Ui.pill(ctx, x, y, w, h, Ui.alpha(Ui.BG_2, ease));
+        Ui.logo(ctx, x + 12, y + 5, 18, Ui.alpha(Ui.ACCENT, ease));
+        Ui.text(ctx, "Zephyr", x + 14 + 16 + 7, y + 8.5f, 11.5f, Ui.alpha(Ui.TEXT, ease), true);
+        float sx = x + 14 + 16 + 7 + titleW + 9;
+        Ui.rect(ctx, sx, y + 9, 1, h - 18, Ui.alpha(0x33FFFFFF, ease));
+        Ui.text(ctx, stats, sx + 8, y + 10, TEXT_SMALL, Ui.alpha(Ui.TEXT_DIM, ease), false);
     }
 
     private static int countEnabled() {
@@ -306,87 +282,134 @@ public final class ClickGuiScreen extends Screen {
         return n;
     }
 
-    private static double getFps() {
-        return net.minecraft.client.MinecraftClient.getInstance().getCurrentFps();
+    private void renderColumn(DrawContext ctx, Column col, float ease) {
+        int body = bodyHeight(col);
+        float x = col.x;
+        float y = col.y;
+        float h = HEADER_H + body;
+        Ui.shadow(ctx, x, y, COL_W, h, RADIUS, 12, Ui.alpha(0x88000000, ease));
+        Ui.roundRect(ctx, x, y, COL_W, h, RADIUS, Ui.alpha(Ui.BG, ease));
+
+        // Header: category name, active count and an accent underline.
+        int active = 0;
+        for (Module m : col.modules) {
+            if (m.isEnabled()) {
+                active++;
+            }
+        }
+        Ui.text(ctx, col.category.label(), x + 12, y + 9, TEXT, Ui.alpha(Ui.TEXT, ease), true);
+        String count = active + "/" + col.modules.size();
+        float cw = Ui.textWidth(count, TEXT_SMALL, false) + 10;
+        Ui.pill(ctx, x + COL_W - 10 - cw, y + 7, cw, 12,
+                Ui.alpha(active > 0 ? Ui.alpha(Ui.ACCENT, 0.18f) : 0x14FFFFFF, ease));
+        Ui.textCentered(ctx, count, x + COL_W - 10 - cw / 2f, y + 9.5f, TEXT_SMALL,
+                Ui.alpha(active > 0 ? Ui.ACCENT : Ui.TEXT_FAINT, ease), false);
+        Ui.rect(ctx, x + 10, y + HEADER_H - 1, COL_W - 20, 1, Ui.alpha(0x14FFFFFF, ease));
+
+        // Body (clipped to the panel so scrolled rows never spill out).
+        // enableScissor is transformed by the current matrix, so plain gui-space coords.
+        ctx.enableScissor(col.x, col.y + HEADER_H, col.x + COL_W, col.y + HEADER_H + body);
+        try {
+            for (Row row : rows) {
+                if (row.column != col || row.header) {
+                    continue;
+                }
+                if (row.y + row.h < y + HEADER_H || row.y > y + HEADER_H + body) {
+                    continue;
+                }
+                if (row.setting == null) {
+                    renderModuleRow(ctx, row, ease);
+                } else {
+                    renderSettingRow(ctx, row, ease);
+                }
+            }
+        } finally {
+            ctx.disableScissor();
+        }
     }
 
-    private void renderColumn(DrawContext ctx, Row row) {
-        Column col = row.column;
-        ctx.fill(row.x, row.y, row.x + row.w, row.y + row.h, COL_HEADER);
-        ctx.drawText(this.textRenderer, col.category.label(),
-                row.x + 6, row.y + 5, COL_ACCENT, false);
-        // Drag affordance dots.
-        ctx.fill(row.x + row.w - 10, row.y + 8, row.x + row.w - 4, row.y + 10, 0xFF3A5A70);
-    }
-
-    private void renderModuleRow(DrawContext ctx, Row row) {
+    private void renderModuleRow(DrawContext ctx, Row row, float ease) {
         Module m = row.module;
-        boolean on = m.isEnabled();
-
-        // Panel background for the whole column segment (settings included).
-        ctx.fill(row.x, row.y, row.x + row.w, row.y + row.h, COL_PANEL);
+        boolean hover = row.inside(lastMouseGuiX, lastMouseGuiY) && dragColumn == null;
+        float hov = anim("h" + System.identityHashCode(m), hover ? 1f : 0f, 18f);
+        float on = anim("t" + System.identityHashCode(m), m.isEnabled() ? 1f : 0f, 16f);
+        float x = row.x + 5;
+        float w = row.w - 10;
+        if (hov > 0.01f) {
+            Ui.roundRect(ctx, x, row.y + 1, w, row.h - 2, 6, Ui.alpha(0x10FFFFFF, hov * ease));
+        }
         if (isExpanded(m)) {
-            int contentBottom = row.y + ROW_H + m.settings().size() * SETTING_H;
-            ctx.fill(row.x, row.y + ROW_H, row.x + row.w, contentBottom, COL_SETTING_BG);
+            int h = 0;
+            for (Setting<?> s : m.settings()) {
+                h += settingHeight(s);
+            }
+            Ui.roundRect(ctx, x, row.y + row.h - 2, w, h + 4, 6, Ui.alpha(0x40000000, ease));
         }
-        boolean hover = row.inside(lastMouseGuiX, lastMouseGuiY);
-        if (hover) {
-            ctx.fill(row.x, row.y, row.x + row.w, row.y + row.h, COL_HOVER);
-        }
-        // Enabled state bar.
-        ctx.fill(row.x + 2, row.y + 3, row.x + 5, row.y + row.h - 3,
-                on ? COL_ON : 0x30FFFFFF);
+        int textColor = Ui.mix(Ui.TEXT_DIM, Ui.TEXT, Math.max(on, hov * 0.6f));
+        Ui.text(ctx, m.name(), x + 7, row.y + 7, TEXT, Ui.alpha(textColor, ease), false);
 
-        int color = on ? COL_TEXT : COL_TEXT_DIM;
-        String label = m.name();
-        ctx.drawText(this.textRenderer, label, row.x + 9, row.y + 6, color, false);
+        // Toggle switch.
+        float tw = 20, th = 11;
+        float tx = x + w - 7 - tw;
+        float ty = row.y + (row.h - th) / 2f;
+        Ui.pill(ctx, tx, ty, tw, th, Ui.alpha(Ui.mix(0xFF2A303C, Ui.ACCENT, on), ease));
+        float knob = th - 4;
+        Ui.circle(ctx, tx + 2 + knob / 2f + (tw - 4 - knob) * on, ty + th / 2f, knob / 2f,
+                Ui.alpha(Ui.mix(0xFF9AA4B5, 0xFFFFFFFF, on), ease));
+
         if (m.bind().isBound()) {
             String k = m.bind().display();
-            ctx.drawText(this.textRenderer, k,
-                    row.x + row.w - 6 - this.textRenderer.getWidth(k),
-                    row.y + 6, 0xFF51606C, false);
+            Ui.textRight(ctx, k, tx - 6, row.y + 8, TEXT_SMALL - 1, Ui.alpha(Ui.TEXT_FAINT, ease), false);
         }
     }
 
-    private void renderSettingRow(DrawContext ctx, Row row) {
+    private void renderSettingRow(DrawContext ctx, Row row, float ease) {
         Setting<?> s = row.setting;
-        boolean hover = row.inside(lastMouseGuiX, lastMouseGuiY);
-        if (hover) {
-            ctx.fill(row.x + 1, row.y, row.x + row.w - 1, row.y + row.h, 0x18FFFFFF);
-        }
-
+        float x = row.x + 14;
+        float right = row.x + row.w - 12;
+        int label = Ui.alpha(Ui.TEXT_DIM, ease);
         if (s instanceof BooleanSetting b) {
-            ctx.drawText(this.textRenderer, s.label(), row.x + 12, row.y + 5, COL_TEXT_DIM, false);
-            String state = b.get() ? "ON" : "OFF";
-            ctx.drawText(this.textRenderer, state,
-                    row.x + row.w - 6 - this.textRenderer.getWidth(state),
-                    row.y + 5, b.get() ? COL_ON : 0xFF51606C, false);
+            Ui.text(ctx, s.label(), x, row.y + 6, TEXT_SMALL, label, false);
+            float on = anim(b, b.get() ? 1f : 0f, 16f);
+            float tw = 16, th = 9;
+            float tx = right - tw;
+            float ty = row.y + (row.h - th) / 2f;
+            Ui.pill(ctx, tx, ty, tw, th, Ui.alpha(Ui.mix(0xFF2A303C, Ui.ACCENT, on), ease));
+            float knob = th - 4;
+            Ui.circle(ctx, tx + 2 + knob / 2f + (tw - 4 - knob) * on, ty + th / 2f, knob / 2f,
+                    Ui.alpha(0xFFFFFFFF, ease));
         } else if (s instanceof ModeSetting mode) {
-            ctx.drawText(this.textRenderer, s.label(), row.x + 12, row.y + 5, COL_TEXT_DIM, false);
-            String v = mode.get();
-            ctx.drawText(this.textRenderer, "< " + v + " >",
-                    row.x + row.w - 6 - this.textRenderer.getWidth("< " + v + " >"),
-                    row.y + 5, COL_ACCENT, false);
+            Ui.text(ctx, s.label(), x, row.y + 6, TEXT_SMALL, label, false);
+            String v = pretty(mode.get());
+            float vw = Ui.textWidth(v, TEXT_SMALL, false) + 12;
+            Ui.pill(ctx, right - vw, row.y + 4, vw, 12, Ui.alpha(Ui.alpha(Ui.ACCENT_2, 0.22f), ease));
+            Ui.textCentered(ctx, v, right - vw / 2f, row.y + 6.5f, TEXT_SMALL, Ui.alpha(0xFFD6D0FF, ease), false);
         } else if (s instanceof NumberSetting num) {
-            ctx.drawText(this.textRenderer, s.label(), row.x + 12, row.y + 2, COL_TEXT_DIM, false);
-            String v = formatValue(num.get());
-            ctx.drawText(this.textRenderer, v,
-                    row.x + row.w - 6 - this.textRenderer.getWidth(v),
-                    row.y + 2, COL_TEXT, false);
-            // Slider track + fill.
-            int trackY = row.y + row.h - 5;
-            ctx.fill(row.x + 8, trackY, row.x + row.w - 8, trackY + 3, 0x30FFFFFF);
-            double frac = num.max() > num.min()
-                    ? (num.get() - num.min()) / (num.max() - num.min()) : 0.0;
-            int fillEnd = row.x + 8 + (int) Math.round((row.w - 16) * Math.max(0.0, Math.min(1.0, frac)));
-            ctx.fill(row.x + 8, trackY, fillEnd, trackY + 3, COL_ACCENT);
+            Ui.text(ctx, s.label(), x, row.y + 4, TEXT_SMALL, label, false);
+            Ui.textRight(ctx, formatValue(num.get()), right, row.y + 4, TEXT_SMALL, Ui.alpha(Ui.TEXT, ease), false);
+            double frac = num.max() > num.min() ? (num.get() - num.min()) / (num.max() - num.min()) : 0.0;
+            float f = anim(num, (float) Math.max(0.0, Math.min(1.0, frac)), 22f);
+            float trackX = x;
+            float trackW = right - x;
+            float ty = row.y + 17;
+            Ui.pill(ctx, trackX, ty, trackW, 3, Ui.alpha(0xFF2A303C, ease));
+            Ui.pill(ctx, trackX, ty, Math.max(3, trackW * f), 3, Ui.alpha(Ui.ACCENT, ease));
+            Ui.circle(ctx, trackX + trackW * f, ty + 1.5f, 3.5f, Ui.alpha(0xFFFFFFFF, ease));
         } else if (s instanceof KeySetting key) {
-            ctx.drawText(this.textRenderer, s.label(), row.x + 12, row.y + 5, COL_TEXT_DIM, false);
-            String v = capturing == key ? "[press key]" : key.display();
-            ctx.drawText(this.textRenderer, v,
-                    row.x + row.w - 6 - this.textRenderer.getWidth(v),
-                    row.y + 5, capturing == key ? COL_ACCENT : 0xFF8FA0AC, false);
+            Ui.text(ctx, s.label(), x, row.y + 6, TEXT_SMALL, label, false);
+            boolean cap = capturing == key;
+            String v = cap ? "press a key…" : (key.isBound() ? key.display() : "none");
+            float vw = Ui.textWidth(v, TEXT_SMALL, false) + 12;
+            Ui.pill(ctx, right - vw, row.y + 4, vw, 12,
+                    Ui.alpha(cap ? Ui.alpha(Ui.ACCENT, 0.3f) : 0x18FFFFFF, ease));
+            Ui.textCentered(ctx, v, right - vw / 2f, row.y + 6.5f, TEXT_SMALL,
+                    Ui.alpha(cap ? Ui.ACCENT : Ui.TEXT_DIM, ease), false);
         }
+    }
+
+    private static String pretty(String mode) {
+        String s = mode.replace('_', ' ').toLowerCase();
+        return s.isEmpty() ? s : Character.toUpperCase(s.charAt(0)) + s.substring(1);
     }
 
     private static String formatValue(double v) {
@@ -397,10 +420,9 @@ public final class ClickGuiScreen extends Screen {
     }
 
     // ------------------------------------------------------------------
-    // Input (screen px -> gui px conversion: gui = screen / scale)
+    // Input
     // ------------------------------------------------------------------
 
-    /** Last known mouse position in gui space (hover shading in render). */
     private double lastMouseGuiX;
     private double lastMouseGuiY;
 
@@ -412,16 +434,20 @@ public final class ClickGuiScreen extends Screen {
         return screenY / renderScale;
     }
 
+    /** True when the point is inside the visible body of its column (not scrolled away). */
+    private boolean visible(Row row, double my) {
+        Column col = row.column;
+        return row.header || (my >= col.y + HEADER_H && my < col.y + HEADER_H + bodyHeight(col));
+    }
+
     @Override
     public boolean mouseClicked(Click click, boolean doubleClick) {
         double mx = guiX(click.x());
         double my = guiY(click.y());
-        lastMouseGuiX = mx;
-        lastMouseGuiY = my;
         int button = click.button();
         buildLayout();
         for (Row row : rows) {
-            if (!row.inside(mx, my)) {
+            if (!row.inside(mx, my) || !visible(row, my)) {
                 continue;
             }
             if (row.header && button == 0) {
@@ -431,7 +457,7 @@ public final class ClickGuiScreen extends Screen {
                 return true;
             }
             if (row.setting != null) {
-                return handleSettingClick(row, (int) mx, button);
+                return handleSettingClick(row, mx, button);
             }
             if (row.module != null) {
                 if (button == 0) {
@@ -446,38 +472,33 @@ public final class ClickGuiScreen extends Screen {
         return super.mouseClicked(click, doubleClick);
     }
 
-    private boolean handleSettingClick(Row row, int mx, int button) {
+    private boolean handleSettingClick(Row row, double mx, int button) {
         Setting<?> s = row.setting;
-        if (s instanceof BooleanSetting b) {
-            if (button == 0) {
-                b.set(!b.get());
-                ZephyrClient.config().save();
-                return true;
-            }
-        } else if (s instanceof ModeSetting mode) {
-            if (button == 0) {
-                mode.cycle();
-                ZephyrClient.config().save();
-                return true;
-            }
-        } else if (s instanceof NumberSetting num) {
-            if (button == 0) {
-                dragSlider = num;
-                applySlider(row, num, mx);
-                return true;
-            }
-        } else if (s instanceof KeySetting key) {
-            if (button == 0) {
-                capturing = capturing == key ? null : key;
-                return true;
-            }
+        if (button != 0) {
+            return false;
         }
-        return false;
+        if (s instanceof BooleanSetting b) {
+            b.set(!b.get());
+        } else if (s instanceof ModeSetting mode) {
+            mode.cycle();
+        } else if (s instanceof NumberSetting num) {
+            dragSlider = num;
+            applySlider(row, num, mx);
+            return true;
+        } else if (s instanceof KeySetting key) {
+            capturing = capturing == key ? null : key;
+            return true;
+        } else {
+            return false;
+        }
+        ZephyrClient.config().save();
+        return true;
     }
 
-    private void applySlider(Row row, NumberSetting num, int mx) {
-        double frac = (mx - (row.x + 8)) / (double) (row.w - 16);
-        frac = Math.max(0.0, Math.min(1.0, frac));
+    private void applySlider(Row row, NumberSetting num, double mx) {
+        double x0 = row.x + 14;
+        double x1 = row.x + row.w - 12;
+        double frac = Math.max(0.0, Math.min(1.0, (mx - x0) / (x1 - x0)));
         double raw = num.min() + (num.max() - num.min()) * frac;
         double step = num.step();
         if (step >= 0.01) {
@@ -490,20 +511,18 @@ public final class ClickGuiScreen extends Screen {
     public boolean mouseDragged(Click click, double dx, double dy) {
         double mx = guiX(click.x());
         double my = guiY(click.y());
-        lastMouseGuiX = mx;
-        lastMouseGuiY = my;
         if (dragColumn != null) {
-            dragColumn.x = Math.max(2, Math.min((int) mx - dragOffX,
-                    Math.max(2, (int) guiWidth() - COL_W - 2)));
-            dragColumn.y = Math.max(TITLE_H + 2, Math.min((int) my - dragOffY,
-                    Math.max(2, (int) guiHeight() - HEADER_H - 2)));
+            dragColumn.x = (int) mx - dragOffX;
+            dragColumn.y = (int) my - dragOffY;
+            clampColumns();
             LAYOUT.put(dragColumn.category.name(), new int[]{dragColumn.x, dragColumn.y});
             return true;
         }
         if (dragSlider != null) {
+            buildLayout();
             for (Row row : rows) {
                 if (row.setting == dragSlider) {
-                    applySlider(row, dragSlider, (int) mx);
+                    applySlider(row, dragSlider, mx);
                     return true;
                 }
             }
@@ -527,10 +546,9 @@ public final class ClickGuiScreen extends Screen {
 
     @Override
     public boolean mouseScrolled(double mx, double my, double horizontal, double vertical) {
-        // Ctrl + wheel resizes the whole menu live (persisted through the ClickGui setting).
         long win = net.minecraft.client.MinecraftClient.getInstance().getWindow().getHandle();
-        if (org.lwjgl.glfw.GLFW.glfwGetKey(win, org.lwjgl.glfw.GLFW.GLFW_KEY_LEFT_CONTROL) == org.lwjgl.glfw.GLFW.GLFW_PRESS
-                || org.lwjgl.glfw.GLFW.glfwGetKey(win, org.lwjgl.glfw.GLFW.GLFW_KEY_RIGHT_CONTROL) == org.lwjgl.glfw.GLFW.GLFW_PRESS) {
+        if (GLFW.glfwGetKey(win, GLFW.GLFW_KEY_LEFT_CONTROL) == GLFW.GLFW_PRESS
+                || GLFW.glfwGetKey(win, GLFW.GLFW_KEY_RIGHT_CONTROL) == GLFW.GLFW_PRESS) {
             var cg = ZephyrClient.modules().get(dev.zephyr.modules.gui.ClickGui.class);
             if (cg != null) {
                 cg.adjustScale(vertical > 0 ? 0.05 : -0.05);
@@ -539,13 +557,10 @@ public final class ClickGuiScreen extends Screen {
         }
         double gx = guiX(mx);
         double gy = guiY(my);
-        buildLayout();
-        for (Row row : rows) {
-            if (row.header && row.inside(gx, gy)) {
-                Column col = row.column;
-                int max = Math.max(0, contentHeight(col) + 4
-                        - ((int) guiHeight() - col.y - HEADER_H - 16));
-                col.scroll = Math.max(0, Math.min(col.scroll - (int) (vertical * 24), max));
+        for (Column col : columns) {
+            if (gx >= col.x && gx < col.x + COL_W && gy >= col.y && gy < col.y + HEADER_H + bodyHeight(col)) {
+                int max = Math.max(0, contentHeight(col) - bodyHeight(col));
+                col.scroll = Math.max(0, Math.min(col.scroll - (int) (vertical * 22), max));
                 return true;
             }
         }
@@ -556,24 +571,16 @@ public final class ClickGuiScreen extends Screen {
     public boolean keyPressed(KeyInput input) {
         int keyCode = input.getKeycode();
         if (capturing != null) {
-            if (keyCode == GLFW.GLFW_KEY_ESCAPE) {
-                capturing = null; // cancel capture
-                return true;
+            if (keyCode == GLFW.GLFW_KEY_ESCAPE || keyCode == GLFW.GLFW_KEY_BACKSPACE
+                    || keyCode == GLFW.GLFW_KEY_DELETE) {
+                capturing.set(GLFW.GLFW_KEY_UNKNOWN); // Escape removes the current bind
+            } else {
+                capturing.set(keyCode);
             }
-            if (keyCode == GLFW.GLFW_KEY_BACKSPACE || keyCode == GLFW.GLFW_KEY_DELETE) {
-                capturing.set(GLFW.GLFW_KEY_UNKNOWN); // unbind
-                capturing = null;
-                ZephyrClient.config().save();
-                return true;
-            }
-            capturing.set(keyCode);
             capturing = null;
             ZephyrClient.config().save();
             return true;
         }
-        // Escape closes. Right Shift close/open is handled by the tick-poller's edge
-        // detection in ZephyrClient - reacting to keyPressed here too would let OS
-        // key-repeat events slam the GUI shut while the key is merely held.
         if (keyCode == GLFW.GLFW_KEY_ESCAPE) {
             this.close();
             return true;
