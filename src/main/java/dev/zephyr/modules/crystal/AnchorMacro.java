@@ -101,6 +101,11 @@ public class AnchorMacro extends Module {
         }
         switch (stage) {
             case IDLE -> {
+                // The spot search is a full damage scan; every 3rd tick is plenty and
+                // avoids per-tick lag spikes while waiting for a spot.
+                if (anchorPos == null && stageTicks % 3 != 0) {
+                    return;
+                }
                 anchorPos = findAnchorSpot(client, self, target);
                 if (anchorPos != null) {
                     aimAt(self, anchorPos);

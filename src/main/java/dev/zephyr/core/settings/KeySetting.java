@@ -53,6 +53,9 @@ public class KeySetting extends Setting<Integer> {
         if (key <= 0) {
             return "-";
         }
+        if (dev.zephyr.core.input.BindInput.isMouse(key)) {
+            return dev.zephyr.core.input.BindInput.mouseName(key);
+        }
         String named = NAMES.get(key);
         if (named != null) {
             return named;

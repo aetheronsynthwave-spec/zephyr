@@ -181,25 +181,28 @@ public final class ZephyrClient implements ClientModInitializer {
         dev.zephyr.core.ZephyrProfiler.chatReport(client);
     }
 
+    /**
+     * Dispatches every key / mouse press recorded since the last tick (see BindInput).
+     * Event-based, so even a tap shorter than one tick always fires, and keys shared by
+     * several modules fire all of them exactly once.
+     */
     private void pollKeybinds(MinecraftClient client) {
-        long window = client.getWindow().getHandle();
-        boolean screenOpen = client.currentScreen != null;
-        for (Module m : modules.all()) {
-            int bind = m.bind().get();
-            if (bind <= 0) {
-                continue; // unbound (0 and GLFW_KEY_UNKNOWN both mean "no key")
+        int code;
+        while ((code = dev.zephyr.core.input.BindInput.poll()) != -1) {
+            boolean screenOpen = client.currentScreen != null;
+            if (client.currentScreen instanceof dev.zephyr.gui.ClickGuiScreen gs && gs.isCapturing()) {
+                continue; // this press is being bound in the menu, not a trigger
             }
-            boolean pressed = GLFW.glfwGetKey(window, bind) == GLFW.GLFW_PRESS;
-            Boolean previous = keyEdge.get(bind);
-            keyEdge.put(bind, pressed);
-            if (pressed && !Boolean.TRUE.equals(previous)) {
-                if (m instanceof ClickGui gui) {
-                    // The GUI key must work in both directions regardless of screens.
+            ClickGui gui = modules.get(ClickGui.class);
+            if (gui != null && gui.bind().get() == code) {
+                // The GUI key works in both directions, but never while typing in chat etc.
+                if (!screenOpen || client.currentScreen instanceof dev.zephyr.gui.ClickGuiScreen) {
                     gui.openOrClose(client);
-                } else if (!screenOpen) {
-                    // Other binds never fire while a screen (chat/inventory) is open.
-                    modules.handleKey(bind, GLFW.GLFW_PRESS);
                 }
+                continue;
+            }
+            if (!screenOpen) {
+                modules.handleKey(code, GLFW.GLFW_PRESS);
             }
         }
     }

@@ -76,6 +76,11 @@ public final class STap extends Module {
         }
         if (requireTarget.get()) {
             LivingEntity target = TargetManager.currentTarget();
+            // Manual fights have no module-picked target: use whoever was just hit.
+            if (target == null && client.crosshairTarget instanceof net.minecraft.util.hit.EntityHitResult ehr
+                    && ehr.getEntity() instanceof LivingEntity hit) {
+                target = hit;
+            }
             if (target == null || !target.isAlive()
                     || self.squaredDistanceTo(target) > maxRange.get() * maxRange.get()) {
                 return;

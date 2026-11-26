@@ -244,7 +244,7 @@ public final class ClickGuiScreen extends Screen {
                 renderColumn(ctx, col, ease);
             }
             String hint = capturing != null
-                    ? "Press a key to bind  ·  Esc removes the bind"
+                    ? "Press a key or mouse button to bind  ·  Esc removes the bind  ·  Left-click cancels"
                     : "Left-click toggle  ·  Right-click settings  ·  Drag headers  ·  Ctrl + wheel resize";
             Ui.textCentered(ctx, hint, guiWidth() / 2f, guiHeight() - 16, TEXT_SMALL,
                     Ui.alpha(capturing != null ? Ui.ACCENT : Ui.TEXT_FAINT, ease), false);
@@ -440,11 +440,25 @@ public final class ClickGuiScreen extends Screen {
         return row.header || (my >= col.y + HEADER_H && my < col.y + HEADER_H + bodyHeight(col));
     }
 
+    public boolean isCapturing() {
+        return capturing != null;
+    }
+
     @Override
     public boolean mouseClicked(Click click, boolean doubleClick) {
         double mx = guiX(click.x());
         double my = guiY(click.y());
         int button = click.button();
+        if (capturing != null) {
+            // Binding: any mouse button except left binds it (side buttons, middle,
+            // right); left click cancels so you can still click away.
+            if (button != 0) {
+                capturing.set(dev.zephyr.core.input.BindInput.MOUSE_BASE + button);
+                ZephyrClient.config().save();
+            }
+            capturing = null;
+            return true;
+        }
         buildLayout();
         for (Row row : rows) {
             if (!row.inside(mx, my) || !visible(row, my)) {

@@ -101,6 +101,12 @@ public final class AutoTotem extends Module {
     // ------------------------------------------------------------------
 
     private void idle(MinecraftClient client, ClientPlayerEntity self) {
+        // Slot ids below are the PLAYER inventory's; with a chest/furnace/etc. open they
+        // would point at that container instead, so wait until it is closed.
+        if (client.currentScreen != null
+                && !(client.currentScreen instanceof net.minecraft.client.gui.screen.ingame.InventoryScreen)) {
+            return;
+        }
         if (ItemUtil.isTotem(self.getOffHandStack())) {
             return; // healthy offhand
         }

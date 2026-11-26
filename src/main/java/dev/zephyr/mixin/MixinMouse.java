@@ -29,6 +29,15 @@ public abstract class MixinMouse {
      * player's look direction. Kept cheap (two field reads) so it costs nothing when
      * nothing subscribes.
      */
+    /** Records mouse-button presses for Zephyr binds (side buttons etc.). */
+    @Inject(method = "onMouseButton", at = @At("HEAD"))
+    private void zephyr$onMouseButton(long window, net.minecraft.client.input.MouseInput input, int action,
+                                      CallbackInfo ci) {
+        if (action == org.lwjgl.glfw.GLFW.GLFW_PRESS) {
+            dev.zephyr.core.input.BindInput.mousePressed(input.button());
+        }
+    }
+
     @Inject(method = "tick", at = @At("RETURN"), require = 0)
     private void zephyr$afterMouseTick(CallbackInfo ci) {
         // Intentionally empty by default - the look-delta interception lives in

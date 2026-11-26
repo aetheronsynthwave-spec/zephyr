@@ -19,6 +19,19 @@ public abstract class MixinClientPlayerEntity {
         RotationManager.beforeMovementPackets((ClientPlayerEntity) (Object) this);
     }
 
+    /**
+     * JumpReset: vanilla sets the jump flag from the keyboard here (called from inside
+     * LivingEntity#tickMovement), so a forced jump must be applied AFTER this read - the
+     * same tick, just before the jump check runs.
+     */
+    @Inject(method = "tickMovementInput", at = @At("RETURN"))
+    private void zephyr$afterMovementInput(CallbackInfo ci) {
+        var jr = dev.zephyr.ZephyrClient.modules().get(dev.zephyr.modules.combat.JumpReset.class);
+        if (jr != null && jr.consumeJump()) {
+            ((ClientPlayerEntity) (Object) this).setJumping(true);
+        }
+    }
+
     @Inject(method = "sendMovementPackets", at = @At("RETURN"))
     private void zephyr$postSendMovement(CallbackInfo ci) {
         RotationManager.afterMovementPackets((ClientPlayerEntity) (Object) this);

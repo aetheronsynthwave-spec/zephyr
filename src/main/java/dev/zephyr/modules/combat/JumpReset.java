@@ -64,11 +64,7 @@ public final class JumpReset extends Module {
      * the vanilla jump code then runs a few instructions later in the same tick.
      */
     public void zephyr$onMovementHook(ClientPlayerEntity self) {
-        // Clear the previous tick's pulse before vanilla reads the fresh flag below.
-        if (jumpPulse) {
-            self.setJumping(false);
-            jumpPulse = false;
-        }
+        jumpPulse = false;
         if (!isEnabled()) {
             armed = false;
             lastHealth = -1.0;
@@ -95,7 +91,9 @@ public final class JumpReset extends Module {
         if (armed && self.isOnGround() && !self.isTouchingWater() && !self.isInLava()
                 && !self.isClimbing()) {
             if (RandomController.chance(successChance.get())) {
-                self.setJumping(true);
+                // Applied after vanilla reads the keyboard this tick (see consumeJump):
+                // setting the flag here was overwritten by the input read, so the old
+                // version never actually jumped.
                 jumpPulse = true;
             }
             armed = false;
@@ -115,11 +113,14 @@ public final class JumpReset extends Module {
     }
 
     private void clearPulse() {
-        ClientPlayerEntity self = MinecraftClient.getInstance().player;
-        if (self != null && jumpPulse) {
-            self.setJumping(false);
-        }
         jumpPulse = false;
+    }
+
+    /** Called right after vanilla reads movement input; true = force the jump this tick. */
+    public boolean consumeJump() {
+        boolean j = jumpPulse && isEnabled();
+        jumpPulse = false;
+        return j;
     }
 
     @Override

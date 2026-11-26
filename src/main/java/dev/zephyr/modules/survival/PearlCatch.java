@@ -67,6 +67,11 @@ public final class PearlCatch extends Module {
     @Override
     public void handleKeyPress(int keyCode) {
         if (keyCode == bind().get()) {
+            // The key always works: it arms the module if it was off (onTick only runs
+            // for enabled modules), then fires the catch.
+            if (!isEnabled()) {
+                setEnabled(true);
+            }
             trigger();
         }
     }

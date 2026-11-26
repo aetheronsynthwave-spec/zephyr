@@ -11,6 +11,7 @@
     "MixinMinecraftClient",
     "MixinCamera",
     "MixinMouse",
+    "MixinKeyboard",
     "MixinLightmapTextureManager",
     "MixinClientPlayNetworkHandler",
     "MixinItemCooldownManager",

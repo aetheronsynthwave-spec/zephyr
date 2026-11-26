@@ -46,6 +46,9 @@ public final class FastXP extends Module {
         if (self == null || client.currentScreen != null) {
             return;
         }
+        if (InventoryManager.findHotbarSlot(self, ItemUtil::isXpBottle) == -1) {
+            return; // nothing to throw: don't hold the aim down
+        }
         // Hold the ground-focus rotation every tick (not only on throw ticks) so the
         // packet pitch never flicks back to the real view between throws.
         RotationManager.request(RotationRequest

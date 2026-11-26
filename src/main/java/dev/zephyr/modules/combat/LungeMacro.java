@@ -40,7 +40,10 @@ public final class LungeMacro extends Module {
 
     @Override
     public void handleKeyPress(int keyCode) {
-        if (keyCode == bind().get() && isEnabled()) {
+        if (keyCode == bind().get()) {
+            if (!isEnabled()) {
+                setEnabled(true); // the key always works, no need to enable it in the menu first
+            }
             pending = true; // runs on the next tick, on the game thread
         }
     }
