@@ -209,8 +209,33 @@ public final class CrystalSolver {
                 }
                 BlockPos cell = feet.add(dx, 0, dz);
                 BlockPos crystal = cell.up();
-                if (!world.getBlockState(cell).isAir() || !world.getBlockState(crystal).isAir()
+                var cellState = world.getBlockState(cell);
+                boolean existing = cellState.isOf(Blocks.OBSIDIAN) || cellState.isOf(Blocks.BEDROCK);
+                if ((!existing && !cellState.isAir()) || !world.getBlockState(crystal).isAir()
                         || !world.getBlockState(crystal.up()).isAir()) {
+                    continue;
+                }
+                if (existing) {
+                    // Obsidian already right beside the target (usually our own from the last
+                    // cycle): reuse it instead of placing yet another block.
+                    if (!crystalCellLegal(world, crystal, self)) {
+                        continue;
+                    }
+                    Vec3d eyeE = self.getEyePos();
+                    Vec3d topE = Vec3d.ofCenter(cell).add(0, 0.5, 0);
+                    if (eyeE.distanceTo(topE) > placeRange) {
+                        continue;
+                    }
+                    Vec3d blastE = Vec3d.ofBottomCenter(crystal);
+                    double selfE = DamageCalculator.crystalDamage(world, blastE, self);
+                    double tgtE = DamageCalculator.crystalDamage(world, blastE, target);
+                    double turnE = Math.hypot(MathUtil.angleDelta(refYaw, MathUtil.yawTo(eyeE, topE)),
+                            MathUtil.pitchTo(eyeE, topE) - refPitch);
+                    double scoreE = turnE + eyeE.distanceTo(topE) * 6.0 - tgtE * 0.5 + selfE - 25.0;
+                    if (scoreE < bestScore) {
+                        bestScore = scoreE;
+                        best = new Spot(crystal, cell, null, tgtE, selfE, null);
+                    }
                     continue;
                 }
                 if (!blockCellPlaceable(world, cell, self)) {

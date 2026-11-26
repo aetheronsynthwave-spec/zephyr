@@ -4,24 +4,24 @@ import dev.zephyr.core.Module;
 import dev.zephyr.core.ModuleCategory;
 import dev.zephyr.core.settings.BooleanSetting;
 import dev.zephyr.core.settings.NumberSetting;
-import dev.zephyr.core.util.MathUtil;
 import net.fabricmc.fabric.api.client.rendering.v1.world.WorldRenderContext;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.render.VertexConsumerProvider;
-import net.minecraft.client.util.math.MatrixStack;
-import net.minecraft.client.network.ClientPlayerEntity;
-import net.minecraft.entity.player.PlayerEntity;
+import net.minecraft.entity.LivingEntity;
 
 /**
- * ESP - player box outlines on the shared lines layer. No shaders, no framebuffer
- * passes, no per-frame allocations: one vertex stream, per-tick cached entity list,
- * health-mapped plain color.
+ * ESP - box outlines around players (and optionally mobs), visible THROUGH walls by
+ * default, at the frame-interpolated position so they stay glued to the entity while
+ * either of you moves.
  */
 public final class Esp extends Module implements WorldRenderParticipant {
 
-    private final NumberSetting range = num("range", "Range", 8.0, 128.0, 1.0, 64.0);
+    private final NumberSetting range = num("range", "Range", 8.0, 256.0, 1.0, 96.0);
+    private final BooleanSetting throughWalls = bool("walls", "Through walls", true);
+    private final BooleanSetting players = bool("players", "Players", true);
+    private final BooleanSetting hostiles = bool("hostiles", "Hostile mobs", false);
+    private final BooleanSetting others = bool("others", "Other mobs", false);
     private final BooleanSetting healthColor = bool("healthColor", "Color by health", true);
     private final BooleanSetting teammates = bool("teammates", "Show teammates", false);
+    private final NumberSetting width = num("width", "Line width", 1.0, 6.0, 0.5, 2.0);
 
     public Esp() {
         super("ESP", ModuleCategory.RENDER, 0);
@@ -29,32 +29,18 @@ public final class Esp extends Module implements WorldRenderParticipant {
 
     @Override
     public void onWorldRender(WorldRenderContext ctx) {
-        MinecraftClient client = MinecraftClient.getInstance();
-        ClientPlayerEntity self = client.player;
-        if (self == null || ctx.consumers() == null) {
+        if (ctx.consumers() == null) {
             return;
         }
-        MatrixStack matrices = ctx.matrices();
-        VertexConsumerProvider consumers = ctx.consumers();
-        float tickDelta = RenderUtil.tickProgress();
-        double rangeSq = range.get() * range.get();
-
-        for (PlayerEntity player : RenderUtil.cachedPlayers()) {
-            if (player == self || !player.isAlive() || player.isSpectator()) {
-                continue;
-            }
-            if (!teammates.get() && player.isTeammate(self)) {
-                continue;
-            }
-            if (self.squaredDistanceTo(player) > rangeSq) {
-                continue;
-            }
-            float healthRatio = player.getHealth() / Math.max(1.0f, player.getMaxHealth());
-            float r = healthColor.get() ? 1.0f - healthRatio : 1.0f;
-            float g = healthColor.get() ? healthRatio : 1.0f;
-            RenderUtil.drawBoxOutline(matrices, consumers,
-                    RenderUtil.interpolatedBox(player, tickDelta), r, g, 0.05f, 1.0f);
+        float td = RenderUtil.tickProgress();
+        RenderUtil.lineWidth = width.get().floatValue();
+        for (LivingEntity e : EspTargets.collect(range.get(), players.get(), hostiles.get(), others.get(),
+                teammates.get())) {
+            float[] c = EspTargets.color(e, healthColor.get());
+            RenderUtil.drawBoxOutline(ctx.matrices(), ctx.consumers(), EspTargets.box(e, td).expand(0.05),
+                    c[0], c[1], c[2], 1f, throughWalls.get());
         }
+        RenderUtil.lineWidth = 2.0f;
     }
 
     @Override

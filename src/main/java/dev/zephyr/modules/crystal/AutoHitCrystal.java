@@ -76,6 +76,9 @@ public final class AutoHitCrystal extends Module {
     /** Crystals detonated per sword hit before going back to the sword (a hand double-tap is 2). */
     private final NumberSetting perHit = num("perHit", "Crystals per hit", 1, 6, 1, 2);
     private int sinceHit;
+    /** Crystal cells we placed (ms timestamp) - our own crystals are always broken unless lethal. */
+    private final java.util.Map<net.minecraft.util.math.BlockPos, Long> ownCells = new java.util.HashMap<>();
+    private int spamTicks;
     private long swordAfterMs;
     private final NumberSetting aimTolerance = num("aimTol", "Aim tolerance deg", 3, 30, 0.5, 10);
     private final BooleanSetting predictTarget = bool("predict", "Predict target motion", true);
@@ -101,6 +104,11 @@ public final class AutoHitCrystal extends Module {
 
     /** Re-solve backoff: when nothing is solvable, retry at most every 4 ticks. */
     private static final int SOLVE_BACKOFF = 4;
+
+    @Override
+    protected String exclusiveGroup() {
+        return "crystal";
+    }
 
     public AutoHitCrystal() {
         super("AutoHitCrystal", ModuleCategory.CRYSTAL, 0);
@@ -207,6 +215,8 @@ public final class AutoHitCrystal extends Module {
             // THE TRIGGER MOMENT: solve the obsidian/crystal placement right now.
             meleeHotbarSlot = InventoryManager.selectedHotbar(self);
             sinceHit = 0;
+            spamTicks = 0;
+            ownCells.values().removeIf(t -> System.currentTimeMillis() - t > 5000);
             Spot solved = solve(client, self, world, target);
             if (solved == null) {
                 return; // nothing to gain from crystals; keep swinging
@@ -277,6 +287,14 @@ public final class AutoHitCrystal extends Module {
 
     private void spamPhase(MinecraftClient client, ClientPlayerEntity self, ClientWorld world,
                            LivingEntity target, double dist) {
+        // Stuck guard: nothing detonated for ~1.5 s -> back to the sword instead of sitting on crystals.
+        if (++spamTicks > 30) {
+            spamTicks = 0;
+            stage = Stage.MELEE;
+            plan = null;
+            swordAfterMs = System.currentTimeMillis();
+            return;
+        }
         // Hand rhythm: after the per-hit crystals (a double-tap by default) go back to the
         // sword after a short human pause, ready for the next hit when the target lands.
         if (sinceHit >= perHit.get().intValue()) {
@@ -348,6 +366,7 @@ public final class AutoHitCrystal extends Module {
         }
         BlockHitResult hit = CrystalSolver.crystalPlacementHit(world, plan.support, self.getEyePos());
         if (hit != null && CombatActions.interactBlock(client, hit).isAccepted()) {
+            ownCells.put(plan.crystalCell.toImmutable(), System.currentTimeMillis());
             // Double-tap rhythm: as soon as the crystal entity exists, the attack timer
             // detonates it within the next few ms.
             attackTimer.restartCps(lastCps = RandomController.uniform(cpsMax.get(), cpsMax.get() + 4), 15);
@@ -381,10 +400,17 @@ public final class AutoHitCrystal extends Module {
                     world, crystal.getLerpedPos(1.0F), dev.zephyr.core.combat.DamageCalculator.CRYSTAL_STRENGTH,
                     predicted, target);
             double selfDmg = DamageCalculator.crystalDamage(world, crystal.getLerpedPos(1.0F), self);
-            if (targetDmg < effectiveMinDamage(target) || selfDmg > maxSelfDamage.get()) {
+            boolean own = ownCells.containsKey(crystal.getBlockPos())
+                    || ownCells.containsKey(crystal.getBlockPos().down());
+            if (own) {
+                // Our own crystal: break it like a player would, unless it would kill us.
+                if (selfDmg >= self.getHealth() + self.getAbsorptionAmount() - 1.0) {
+                    continue;
+                }
+            } else if (targetDmg < effectiveMinDamage(target) || selfDmg > maxSelfDamage.get()) {
                 continue;
             }
-            double score = targetDmg * 2.0 - selfDmg - self.squaredDistanceTo(crystal) * 0.1;
+            double score = targetDmg * 2.0 - selfDmg - self.squaredDistanceTo(crystal) * 0.1 + (own ? 50 : 0);
             if (score > bestScore) {
                 bestScore = score;
                 best = crystal;
@@ -402,6 +428,7 @@ public final class AutoHitCrystal extends Module {
         if (CombatActions.attackEntity(client, best)) {
             detonatedCount++;
             sinceHit++;
+            spamTicks = 0;
             // Immediate re-place rhythm right after a detonation.
             stageTimer.restart(0.0, 8.0);
         }
@@ -470,8 +497,10 @@ public final class AutoHitCrystal extends Module {
         // the crystal, and at the crystal before breaking it - then back to the
         // player. Nothing is done behind the player's back, so the whole sequence
         // reads as legitimate play to any observer.
+        // Every click target is at floor/body height: never look up into the sky.
+        double pitch = Math.max(-25.0, MathUtil.pitchTo(self.getEyePos(), aim));
         RotationRequest req = RotationRequest
-                .to(MathUtil.yawTo(self.getEyePos(), aim), MathUtil.pitchTo(self.getEyePos(), aim))
+                .to(MathUtil.yawTo(self.getEyePos(), aim), pitch)
                 .speed(rotMin.get(), rotMax.get())
                 .jitter(0.4)
                 .silent(false)

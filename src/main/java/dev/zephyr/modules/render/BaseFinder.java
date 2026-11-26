@@ -139,7 +139,7 @@ public final class BaseFinder extends Module implements WorldRenderParticipant {
         for (Hit h : list) {
             RenderUtil.drawBoxOutline(ctx.matrices(), ctx.consumers(), h.box, h.r, h.g, h.b, 1f);
             if (tracers.get()) {
-                RenderUtil.drawLine(ctx.matrices(), ctx.consumers(), cam.add(0, 0, 0),
+                RenderUtil.drawLine(ctx.matrices(), ctx.consumers(), RenderUtil.crosshairOrigin(),
                         h.box.getCenter(), h.r, h.g, h.b, 0.7f);
             }
         }

@@ -10,7 +10,6 @@ import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.component.DataComponentTypes;
 import net.minecraft.component.type.PiercingWeaponComponent;
 import net.minecraft.item.ItemStack;
-import net.minecraft.network.packet.c2s.play.UpdateSelectedSlotC2SPacket;
 import net.minecraft.util.Hand;
 import org.lwjgl.glfw.GLFW;
 
@@ -29,6 +28,8 @@ public final class LungeMacro extends Module {
 
     private final BooleanSetting preferLunge = bool("preferLunge", "Prefer Lunge-enchanted spear", true);
     private final NumberSetting cooldownMs = num("cooldown", "Min ms between lunges", 0, 1000, 10, 150);
+    private final BooleanSetting showSwap = bool("showSwap", "Show spear swap", true);
+    private final NumberSetting backTicks = num("backTicks", "Swap-back ticks", 1, 10, 1, 2);
 
     private long lastLunge;
     private boolean pending;
@@ -64,13 +65,6 @@ public final class LungeMacro extends Module {
                 || client.currentScreen != null) {
             return;
         }
-        // Lunging from behind a raised shield (the hand routine): drop the block for the jab,
-        // then raise it again right after if right-click is still held.
-        boolean wasBlocking = self.isUsingItem();
-        Hand blockHand = self.getActiveHand();
-        if (wasBlocking) {
-            client.interactionManager.stopUsingItem(self);
-        }
         long now = System.currentTimeMillis();
         if (now - lastLunge < cooldownMs.get()) {
             return;
@@ -79,24 +73,26 @@ public final class LungeMacro extends Module {
         if (slot == -1) {
             return;
         }
-        ItemStack spear = self.getInventory().getStack(slot);
-        PiercingWeaponComponent jab = spear.get(DataComponentTypes.PIERCING_WEAPON);
+        PiercingWeaponComponent jab = self.getInventory().getStack(slot).get(DataComponentTypes.PIERCING_WEAPON);
         if (jab == null) {
             return;
         }
-        var inv = self.getInventory();
-        int original = inv.getSelectedSlot();
-        if (original != slot) {
-            inv.setSelectedSlot(slot);
-            client.getNetworkHandler().sendPacket(new UpdateSelectedSlotC2SPacket(slot));
+        // Lunging from behind a raised shield (the hand routine): drop the block for the jab,
+        // then raise it again right after if right-click is still held.
+        boolean wasBlocking = self.isUsingItem();
+        Hand blockHand = self.getActiveHand();
+        if (wasBlocking) {
+            client.interactionManager.stopUsingItem(self);
         }
-        client.interactionManager.attackWithPiercingWeapon(jab);
-        self.swingHand(Hand.MAIN_HAND);
-        if (original != slot) {
-            inv.setSelectedSlot(original);
-            client.getNetworkHandler().sendPacket(new UpdateSelectedSlotC2SPacket(original));
-        }
-        if (wasBlocking && client.options.useKey.isPressed()) {
+        // Shield -> spear (jab fires Lunge) -> back; the spear shows for a moment when
+        // "Show spear swap" is on, exactly like doing it by hand.
+        int back = showSwap.get() ? backTicks.get().intValue() : 0;
+        dev.zephyr.core.combat.SwapManager.withSwap(client, slot, back, () -> {
+            client.interactionManager.attackWithPiercingWeapon(jab);
+            self.swingHand(Hand.MAIN_HAND);
+            return Boolean.TRUE;
+        });
+        if (wasBlocking && client.options.useKey.isPressed() && back <= 0) {
             client.interactionManager.interactItem(self, blockHand); // shield back up (same hand)
         }
         lastLunge = now;

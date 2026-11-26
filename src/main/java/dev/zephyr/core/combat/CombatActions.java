@@ -46,31 +46,16 @@ public final class CombatActions {
     }
 
     /**
-     * Attribute swap: select {@code hotbarSlot}, attack, and re-select the original slot,
-     * all inside the same client tick. The server applies the hit with the swapped item's
-     * attributes (mace smash, spear lunge, breach) but never sees that item held across a
-     * tick, so your held weapon and its cooldown stay as they were. Visually you never
-     * leave your current item.
-     *
-     * @return true if the attack went out.
+     * Attribute swap: select {@code hotbarSlot}, attack, then return to the original slot
+     * after {@code backTicks} ticks (0 = same tick, invisible; 2-4 = a visible flash of the
+     * swapped item, like doing it by hand). The server applies the hit with the swapped
+     * item's attributes (mace smash, breach, spear) while your held weapon stays your weapon.
      */
-    public static boolean attributeSwapAttack(MinecraftClient client, int hotbarSlot, Entity target) {
+    public static boolean attributeSwapAttack(MinecraftClient client, int hotbarSlot, Entity target, int backTicks) {
         if (client.player == null || client.getNetworkHandler() == null || hotbarSlot < 0 || hotbarSlot > 8) {
             return false;
         }
-        var inv = client.player.getInventory();
-        int original = inv.getSelectedSlot();
-        if (original == hotbarSlot) {
-            return attackEntity(client, target);
-        }
-        inv.setSelectedSlot(hotbarSlot);
-        client.getNetworkHandler().sendPacket(
-                new net.minecraft.network.packet.c2s.play.UpdateSelectedSlotC2SPacket(hotbarSlot));
-        boolean sent = attackEntity(client, target);
-        inv.setSelectedSlot(original);
-        client.getNetworkHandler().sendPacket(
-                new net.minecraft.network.packet.c2s.play.UpdateSelectedSlotC2SPacket(original));
-        return sent;
+        return SwapManager.withSwap(client, hotbarSlot, backTicks, () -> attackEntity(client, target));
     }
 
     /** Right-click a block (crystal/anchor/glowstone placement); swings like vanilla on success. */

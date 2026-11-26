@@ -65,13 +65,62 @@ public final class RenderUtil {
     public static Vec3d cameraPos() {
         if (!cameraValid || cachedCameraPos == null) {
             MinecraftClient client = MinecraftClient.getInstance();
+            // The render camera's own (frame-interpolated) position. The old version used
+            // the entity's current-tick eye position, so every box/line drifted by the
+            // player's per-tick movement while walking - the "shaky ESP" effect - and was
+            // wrong in third person.
             var camera = client.gameRenderer.getCamera();
-            var focused = camera.getFocusedEntity();
-            cachedCameraPos = focused != null ? focused.getEyePos()
-                    : (client.player != null ? client.player.getEyePos() : Vec3d.ZERO);
+            cachedCameraPos = camera.getCameraPos();
+            if (cachedCameraPos == null) {
+                cachedCameraPos = client.player != null ? client.player.getEyePos() : Vec3d.ZERO;
+            }
             cameraValid = true;
         }
         return cachedCameraPos;
+    }
+
+    /** Point just in front of the crosshair (tracer origin): a line starting AT the eye collapses to a dot. */
+    public static Vec3d crosshairOrigin() {
+        var camera = MinecraftClient.getInstance().gameRenderer.getCamera();
+        double yaw = Math.toRadians(camera.getYaw());
+        double pitch = Math.toRadians(camera.getPitch());
+        Vec3d look = new Vec3d(-Math.sin(yaw) * Math.cos(pitch), -Math.sin(pitch), Math.cos(yaw) * Math.cos(pitch));
+        return cameraPos().add(look.multiply(0.6));
+    }
+
+    // ------------------------------------------------------------------
+    // Line layers: normal (depth-tested) and see-through (drawn over walls)
+    // ------------------------------------------------------------------
+
+    private static net.minecraft.client.render.RenderLayer seeThroughLines;
+    private static boolean seeThroughFailed;
+
+    /** Line width (pixels) used by the box/line helpers; modules set it before drawing. */
+    public static float lineWidth = 2.0f;
+
+    private static net.minecraft.client.render.RenderLayer lineLayer(boolean seeThrough) {
+        if (seeThrough && !seeThroughFailed) {
+            if (seeThroughLines == null) {
+                try {
+                    var pipeline = com.mojang.blaze3d.pipeline.RenderPipeline.builder(
+                                    dev.zephyr.mixin.accessor.RenderPipelinesAccessor.zephyr$linesSnippet())
+                            .withLocation(net.minecraft.util.Identifier.of("zephyr", "pipeline/see_through_lines"))
+                            .withDepthTestFunction(com.mojang.blaze3d.platform.DepthTestFunction.NO_DEPTH_TEST)
+                            .withDepthWrite(false)
+                            .build();
+                    seeThroughLines = dev.zephyr.mixin.accessor.RenderLayerInvoker.zephyr$of(
+                            "zephyr_see_through_lines",
+                            net.minecraft.client.render.RenderSetup.builder(pipeline).translucent().build());
+                } catch (Throwable t) {
+                    seeThroughFailed = true; // fall back to normal lines rather than draw nothing
+                    t.printStackTrace();
+                }
+            }
+            if (seeThroughLines != null) {
+                return seeThroughLines;
+            }
+        }
+        return net.minecraft.client.render.RenderLayers.lines();
     }
 
     /** Current frame tick progress (interpolation factor). */
@@ -106,9 +155,14 @@ public final class RenderUtil {
 
     public static void drawBoxOutline(MatrixStack matrices, VertexConsumerProvider consumers,
                                       Box box, float r, float g, float b, float a) {
+        drawBoxOutline(matrices, consumers, box, r, g, b, a, false);
+    }
+
+    public static void drawBoxOutline(MatrixStack matrices, VertexConsumerProvider consumers,
+                                      Box box, float r, float g, float b, float a, boolean seeThrough) {
         // 1.21.11: the lines layer moved from RenderLayer.getLines() to RenderLayers.lines();
         // its vertex format carries a trailing line-width element.
-        VertexConsumer lines = consumers.getBuffer(net.minecraft.client.render.RenderLayers.lines());
+        VertexConsumer lines = consumers.getBuffer(lineLayer(seeThrough));
         Matrix4f matrix = matrices.peek().getPositionMatrix();
 
         // Static scratch (no per-box allocation - this runs per player per frame).
@@ -127,9 +181,9 @@ public final class RenderUtil {
             float y1 = (edge[1] & 2) == 0 ? minY : maxY;
             float z1 = (edge[1] & 1) == 0 ? minZ : maxZ;
             lines.vertex(matrix, x0, y0, z0).color(r, g, b, a)
-                    .normal(0, 1, 0).lineWidth(1.0f);
+                    .normal(0, 1, 0).lineWidth(lineWidth);
             lines.vertex(matrix, x1, y1, z1).color(r, g, b, a)
-                    .normal(0, 1, 0).lineWidth(1.0f);
+                    .normal(0, 1, 0).lineWidth(lineWidth);
         }
     }
 
@@ -155,7 +209,12 @@ public final class RenderUtil {
      */
     public static void drawLine(MatrixStack matrices, VertexConsumerProvider consumers,
                                 Vec3d from, Vec3d to, float r, float g, float b, float a) {
-        VertexConsumer lines = consumers.getBuffer(net.minecraft.client.render.RenderLayers.lines());
+        drawLine(matrices, consumers, from, to, r, g, b, a, false);
+    }
+
+    public static void drawLine(MatrixStack matrices, VertexConsumerProvider consumers,
+                                Vec3d from, Vec3d to, float r, float g, float b, float a, boolean seeThrough) {
+        VertexConsumer lines = consumers.getBuffer(lineLayer(seeThrough));
         Matrix4f matrix = matrices.peek().getPositionMatrix();
         float dx = (float) (to.x - from.x);
         float dy = (float) (to.y - from.y);
@@ -171,9 +230,9 @@ public final class RenderUtil {
         Vec3d cam = cameraPos(); // camera-relative matrices (see drawBoxOutline)
         // Tracer origin sits slightly in front of the eye so it is visible in first person.
         lines.vertex(matrix, (float) (from.x - cam.x), (float) (from.y - cam.y), (float) (from.z - cam.z))
-                .color(r, g, b, a).normal(nx, ny, nz).lineWidth(1.0f);
+                .color(r, g, b, a).normal(nx, ny, nz).lineWidth(lineWidth);
         lines.vertex(matrix, (float) (to.x - cam.x), (float) (to.y - cam.y), (float) (to.z - cam.z))
-                .color(r, g, b, a).normal(nx, ny, nz).lineWidth(1.0f);
+                .color(r, g, b, a).normal(nx, ny, nz).lineWidth(lineWidth);
     }
 
     // ------------------------------------------------------------------

@@ -9,6 +9,7 @@ import dev.zephyr.core.event.ZephyrEvents;
 import dev.zephyr.core.rotation.RotationManager;
 import dev.zephyr.core.rotation.RotationRequest;
 import dev.zephyr.core.settings.ModeSetting;
+import dev.zephyr.core.settings.BooleanSetting;
 import dev.zephyr.core.settings.NumberSetting;
 import dev.zephyr.core.target.TargetManager;
 import dev.zephyr.core.target.TargetCriteria;
@@ -47,6 +48,12 @@ public final class AutoMace extends Module {
     private final NumberSetting rotSpeedMin = num("rotMin", "Rotation min deg/t", 5, 120, 5, 15);
     private final NumberSetting rotSpeedMax = num("rotMax", "Rotation max deg/t", 5, 180, 5, 30);
     private final NumberSetting jitter = num("jitter", "Rotation jitter", 0.0, 2.0, 0.05, 0.4);
+    /** Off = no aim help at all: it only strikes when YOUR crosshair is already on the target. */
+    private final BooleanSetting aim = bool("aim", "Aim at target", true);
+    private final NumberSetting aimFov = num("aimFov", "Aim-off hit cone deg", 2, 45, 1, 12);
+    private final BooleanSetting showSwap = bool("showSwap", "Show mace swap", true);
+    private final NumberSetting backTicks = num("backTicks", "Swap-back ticks", 1, 10, 1, 3);
+    private final BooleanSetting weaponOnly = bool("weaponOnly", "Only holding sword/axe", false);
 
     /** Stage shown in the HUD while a Density 0-tick strike is armed. */
     private boolean armedZeroTick;
@@ -153,6 +160,10 @@ public final class AutoMace extends Module {
         }
         Vec3d aim = MathUtil.bestAimPoint(self, target,
                 RotationManager.currentYaw(), self.getPitch());
+        if (!this.aim.get()) {
+            // No aimbot: strike only when the player's own view is on the target.
+            return RotationManager.isAimedAt(aim, aimFov.get());
+        }
         RotationManager.request(RotationRequest.to(
                         MathUtil.yawTo(self.getEyePos(), aim), MathUtil.pitchTo(self.getEyePos(), aim))
                 .speed(rotSpeedMin.get(), rotSpeedMax.get())
@@ -201,13 +212,23 @@ public final class AutoMace extends Module {
         if (slot == -1) {
             return; // no mace on the hotbar
         }
-        if (CombatActions.attributeSwapAttack(client, slot, target)) {
+        if (weaponOnly.get()) {
+            String held = ItemUtil.id(self.getMainHandStack());
+            if (!(held.endsWith("_sword") || held.endsWith("_axe"))) {
+                return;
+            }
+        }
+        int back = showSwap.get() ? backTicks.get().intValue() : 0;
+        if (CombatActions.attributeSwapAttack(client, slot, target, back)) {
             ticksSinceStrike = 0;
             armedZeroTick = false;
         }
     }
 
     private void aimAt(MinecraftClient client, ClientPlayerEntity self, LivingEntity target) {
+        if (!this.aim.get()) {
+            return;
+        }
         Vec3d aim = MathUtil.aimPoint(target);
         RotationManager.request(RotationRequest.to(
                         MathUtil.yawTo(self.getEyePos(), aim), MathUtil.pitchTo(self.getEyePos(), aim))

@@ -92,6 +92,11 @@ public final class AutoCrystal extends Module {
     /** Re-solve backoff when no legal spot exists (full scans are not free). */
     private static final int SOLVE_INTERVAL = 3;
 
+    @Override
+    protected String exclusiveGroup() {
+        return "crystal";
+    }
+
     public AutoCrystal() {
         super("AutoCrystal", ModuleCategory.CRYSTAL, 0);
     }

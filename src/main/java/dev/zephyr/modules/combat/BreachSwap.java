@@ -1,180 +1,90 @@
 package dev.zephyr.modules.combat;
 
-import dev.zephyr.ZephyrClient;
 import dev.zephyr.core.Module;
 import dev.zephyr.core.ModuleCategory;
+import dev.zephyr.core.combat.SwapManager;
 import dev.zephyr.core.inventory.InventoryManager;
 import dev.zephyr.core.settings.BooleanSetting;
 import dev.zephyr.core.settings.NumberSetting;
-import dev.zephyr.core.timing.MsTimer;
-import dev.zephyr.core.timing.RandomController;
 import dev.zephyr.core.util.ItemUtil;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
+import net.minecraft.entity.Entity;
+import net.minecraft.entity.LivingEntity;
+import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.item.ItemStack;
-import net.minecraft.screen.slot.SlotActionType;
 
 /**
- * BreachSwap - hotbar/inventory transition to a Breach-enchanted mace at the optimal
- * strike moment, then restore the previous weapon once the slam window closes.
+ * BreachSwap - modelled on the player's clip: you hold your sword, and every melee hit is
+ * attribute-swapped to the Breach mace (Breach ignores armour), the mace shows for a
+ * moment, then you are back on the sword. Works for your own clicks AND for hits from
+ * other modules (LegitAura, TriggerBot, ...), because it hooks the attack itself.
  *
- * <p>Flow (micro-FSM, ms-paced with randomized delays):
- * <pre>IDLE -> (strike request) -> SWAP -> SWAPPED (window) -> RESTORE -> IDLE</pre>
- *
- * <p>Search order: first the hotbar (pure selection, zero inventory clicks), then the
- * main inventory (vanilla swap-click exchanging the mace with the active hotbar slot).
+ * <p>Hook: {@code ClientPlayerInteractionManager#attackEntity} HEAD (see
+ * MixinClientPlayerInteractionManager) calls {@link #beforeAttack}; the slot change is
+ * sent before the attack packet, so the server applies the hit with the mace.
  */
 public final class BreachSwap extends Module {
 
     private final BooleanSetting onlyBreach = bool("onlyBreach", "Require Breach enchant", true);
-    private final BooleanSetting restoreAfter = bool("restore", "Restore weapon after", true);
-    private final NumberSetting swapDelayMin = num("swapMin", "Swap delay min ms", 10, 200, 5, 20);
-    private final NumberSetting swapDelayMax = num("swapMax", "Swap delay max ms", 10, 300, 5, 60);
-    private final NumberSetting restoreDelayMin = num("restMin", "Restore delay min ms", 50, 500, 10, 80);
-    private final NumberSetting restoreDelayMax = num("restMax", "Restore delay max ms", 50, 800, 10, 220);
+    private final BooleanSetting playersOnly = bool("playersOnly", "Only on players", true);
+    private final BooleanSetting weaponOnly = bool("weaponOnly", "Only holding sword/axe", true);
+    private final BooleanSetting showSwap = bool("showSwap", "Show mace swap", true);
+    private final NumberSetting backTicks = num("backTicks", "Swap-back ticks", 1, 10, 1, 3);
 
-    private enum Stage { IDLE, SWAP, SWAPPED, RESTORE }
-
-    private Stage stage = Stage.IDLE;
-    private final MsTimer stageTimer = new MsTimer();
-    private int breachHotbarSlot = -1;
-    private int breachHandlerSlot = -1;
-    private int selectedBeforeSwap = -1;
-    private int strikeWindowTicks = 0;
-    private boolean strikeRequested;
+    private int swaps;
 
     public BreachSwap() {
         super("BreachSwap", ModuleCategory.COMBAT, 0);
-        dev.zephyr.core.event.ZephyrEvents.ATTACK_LANDED.subscribe(e -> {
-            if (stage == Stage.SWAPPED) {
-                attackedSinceSwap = true;
-            }
-        });
     }
 
-    private boolean attackedSinceSwap;
-
-    /** Called by AutoMace / LungeMacro to request a breach-mace strike window. */
-    public void requestStrike() {
-        if (isEnabled() && stage == Stage.IDLE) {
-            strikeRequested = true;
+    /** @return the hotbar slot to swap to for this hit, or -1 to leave the hit alone. */
+    private int maceSlotFor(ClientPlayerEntity self, Entity target) {
+        if (!(target instanceof LivingEntity) || (playersOnly.get() && !(target instanceof PlayerEntity))) {
+            return -1;
         }
+        ItemStack held = self.getMainHandStack();
+        if (ItemUtil.isMace(held)) {
+            return -1; // already a mace (e.g. AutoMace's own swap)
+        }
+        if (weaponOnly.get()) {
+            String id = ItemUtil.id(held);
+            if (!(id.endsWith("_sword") || id.endsWith("_axe"))) {
+                return -1;
+            }
+        }
+        int slot = InventoryManager.findHotbarSlot(self,
+                s -> ItemUtil.isMace(s) && ItemUtil.enchantLevel(s, "breach") > 0);
+        if (slot == -1 && !onlyBreach.get()) {
+            slot = InventoryManager.findHotbarSlot(self, ItemUtil::isMace);
+        }
+        return slot;
     }
 
-    @Override
-    public void onTick(MinecraftClient client) {
+    /**
+     * Called at the start of every attack. Returns true when it already performed the
+     * swapped attack itself (the caller then skips the original one).
+     */
+    public boolean beforeAttack(MinecraftClient client, Entity target) {
         ClientPlayerEntity self = client.player;
-        if (self == null) {
-            reset();
-            return;
-        }
-        switch (stage) {
-            case IDLE -> {
-                if (strikeRequested) {
-                    strikeRequested = false;
-                    if (findBreachMace(self)) {
-                        selectedBeforeSwap = InventoryManager.selectedHotbar(self);
-                        attackedSinceSwap = false;
-                        stageTimer.restart(swapDelayMin.get(), swapDelayMax.get());
-                        stage = Stage.SWAP;
-                    }
-                }
-            }
-            case SWAP -> {
-                if (!stageTimer.isDue()) {
-                    return;
-                }
-                performSwap(client, self);
-            }
-            case SWAPPED -> {
-                // Window closes when the strike happened (mace cooldown engaged) or timeout.
-                strikeWindowTicks++;
-                // Maces have no item cooldown, so the old "coolingDown" check never fired and
-                // the mace stayed out for the full 30-tick timeout after every hit.
-                boolean struck = attackedSinceSwap;
-                if (struck || strikeWindowTicks > 30) {
-                    strikeWindowTicks = 0;
-                    attackedSinceSwap = false;
-                    if (restoreAfter.get() && needsRestore(self)) {
-                        stageTimer.restart(restoreDelayMin.get(), restoreDelayMax.get());
-                        stage = Stage.RESTORE;
-                    } else {
-                        reset();
-                    }
-                }
-            }
-            case RESTORE -> {
-                if (!stageTimer.isDue()) {
-                    return;
-                }
-                InventoryManager.selectHotbar(client, selectedBeforeSwap);
-                if (breachHandlerSlot != -1) {
-                    // Undo the inventory exchange (mace back to storage, weapon to hotbar).
-                    InventoryManager.swapWithHotbar(client, breachHandlerSlot, selectedBeforeSwap);
-                }
-                reset();
-            }
-        }
-    }
-
-    private void performSwap(MinecraftClient client, ClientPlayerEntity self) {
-        if (breachHotbarSlot != -1) {
-            InventoryManager.selectHotbar(client, breachHotbarSlot);
-        } else if (breachHandlerSlot != -1) {
-            InventoryManager.swapWithHotbar(client, breachHandlerSlot, InventoryManager.selectedHotbar(self));
-        } else {
-            reset();
-            return;
-        }
-        strikeWindowTicks = 0;
-        stage = Stage.SWAPPED;
-    }
-
-    private boolean findBreachMace(ClientPlayerEntity self) {
-        int hotbar = -1;
-        int handler = -1;
-        for (int i = 0; i < 9; i++) {
-            ItemStack stack = self.getInventory().getStack(i);
-            if (isQualifyingMace(stack)) {
-                hotbar = i;
-                break;
-            }
-        }
-        if (hotbar == -1) {
-            handler = InventoryManager.findHandlerSlot(self, this::isQualifyingMace);
-        }
-        breachHotbarSlot = hotbar;
-        breachHandlerSlot = handler;
-        return hotbar != -1 || handler != -1;
-    }
-
-    private boolean isQualifyingMace(ItemStack stack) {
-        if (!ItemUtil.isMace(stack)) {
+        if (!isEnabled() || self == null || SwapManager.inSwap() || client.interactionManager == null) {
             return false;
         }
-        return !onlyBreach.get() || ItemUtil.enchantLevel(stack, "breach") > 0;
-    }
-
-    private boolean needsRestore(ClientPlayerEntity self) {
-        return InventoryManager.selectedHotbar(self) != selectedBeforeSwap || breachHandlerSlot != -1;
-    }
-
-    private void reset() {
-        stage = Stage.IDLE;
-        breachHotbarSlot = -1;
-        breachHandlerSlot = -1;
-        selectedBeforeSwap = -1;
-        strikeWindowTicks = 0;
-        stageTimer.invalidate();
-    }
-
-    @Override
-    protected void onDisable() {
-        reset();
+        int slot = maceSlotFor(self, target);
+        if (slot == -1) {
+            return false;
+        }
+        int back = showSwap.get() ? backTicks.get().intValue() : 0;
+        SwapManager.withSwap(client, slot, back, () -> {
+            client.interactionManager.attackEntity(self, target);
+            return Boolean.TRUE;
+        });
+        swaps++;
+        return true;
     }
 
     @Override
     public String hudLabel() {
-        return name + " · " + stage.name().toLowerCase();
+        return name + " · " + swaps;
     }
 }

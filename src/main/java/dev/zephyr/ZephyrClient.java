@@ -174,6 +174,7 @@ public final class ZephyrClient implements ClientModInitializer {
         // Per-tick caches: exposure memo table + render caches all key off this tick.
         dev.zephyr.core.combat.DamageCalculator.advanceTick();
         pollKeybinds(client);
+        dev.zephyr.core.combat.SwapManager.tick(client);
         long t0 = System.nanoTime();
         modules.tick(client);
         RotationManager.tick(client);

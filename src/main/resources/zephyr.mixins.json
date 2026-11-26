@@ -12,11 +12,15 @@
     "MixinCamera",
     "MixinMouse",
     "MixinKeyboard",
+    "MixinKeyboardInput",
+    "MixinClientPlayerInteractionManager",
     "MixinLightmapTextureManager",
     "MixinClientPlayNetworkHandler",
     "MixinItemCooldownManager",
     "accessor.MinecraftClientAccessor",
-    "accessor.LivingEntityAccessor"
+    "accessor.LivingEntityAccessor",
+    "accessor.RenderPipelinesAccessor",
+    "accessor.RenderLayerInvoker"
   ],
   "injectors": {
     "defaultRequire": 0
