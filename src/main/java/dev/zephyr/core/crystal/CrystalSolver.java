@@ -182,6 +182,68 @@ public final class CrystalSolver {
      * scan as {@link #findBestCrystalSpot}: cheap block-state filtering with a
      * geometric pre-score, full damage math on the top candidates only.
      */
+    /**
+     * The hand-played hit-crystal placement (modelled on a real player's clip): a FRESH
+     * obsidian on the floor in one of the 8 cells around the target's feet, choosing the
+     * cell that needs the least camera movement from the current view and sits on the
+     * player's side - so the aim only dips slightly instead of flicking around. The
+     * crystal then goes on top, beside the (knocked-up) target.
+     *
+     * @param refYaw/refPitch the view the player currently has (camera, not packet).
+     */
+    public static Spot findHandObsidianPlan(ClientWorld world, Entity self, LivingEntity target,
+                                           double placeRange, double maxSelfDamage,
+                                           double refYaw, double refPitch) {
+        Vec3d eye = self.getEyePos();
+        // Floor level under the target (it is usually airborne right after the hit).
+        BlockPos feet = target.getBlockPos();
+        for (int i = 0; i < 4 && world.getBlockState(feet.down()).isAir(); i++) {
+            feet = feet.down();
+        }
+        Spot best = null;
+        double bestScore = Double.MAX_VALUE;
+        for (int dx = -1; dx <= 1; dx++) {
+            for (int dz = -1; dz <= 1; dz++) {
+                if (dx == 0 && dz == 0) {
+                    continue;
+                }
+                BlockPos cell = feet.add(dx, 0, dz);
+                BlockPos crystal = cell.up();
+                if (!world.getBlockState(cell).isAir() || !world.getBlockState(crystal).isAir()
+                        || !world.getBlockState(crystal.up()).isAir()) {
+                    continue;
+                }
+                if (!blockCellPlaceable(world, cell, self)) {
+                    continue;
+                }
+                Vec3d top = Vec3d.ofCenter(cell).add(0, 0.5, 0);
+                if (eye.distanceTo(top) > placeRange) {
+                    continue;
+                }
+                BlockHitResult hit = blockPlacementHit(world, cell, eye);
+                if (hit == null) {
+                    continue;
+                }
+                Vec3d blast = Vec3d.ofBottomCenter(crystal);
+                double selfDmg = dev.zephyr.core.combat.DamageCalculator.crystalDamage(world, blast, self);
+                if (selfDmg > maxSelfDamage) {
+                    continue;
+                }
+                double targetDmg = dev.zephyr.core.combat.DamageCalculator.crystalDamage(world, blast, target);
+                double yaw = dev.zephyr.core.util.MathUtil.yawTo(eye, top);
+                double pitch = dev.zephyr.core.util.MathUtil.pitchTo(eye, top);
+                double turn = Math.hypot(dev.zephyr.core.util.MathUtil.angleDelta(refYaw, yaw), pitch - refPitch);
+                // Least camera movement first, then closer to us, then more damage.
+                double score = turn + eye.distanceTo(top) * 6.0 - targetDmg * 0.5 + selfDmg;
+                if (score < bestScore) {
+                    bestScore = score;
+                    best = new Spot(crystal, cell, cell, targetDmg, selfDmg, hit);
+                }
+            }
+        }
+        return best;
+    }
+
     public static Spot findBestObsidianPlan(ClientWorld world, Entity self, LivingEntity target,
                                             double placeRange, double minTargetDamage, double maxSelfDamage,
                                             boolean requireVisible, int predictTicks) {

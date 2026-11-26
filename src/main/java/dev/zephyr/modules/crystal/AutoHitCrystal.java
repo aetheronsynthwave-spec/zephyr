@@ -73,6 +73,10 @@ public final class AutoHitCrystal extends Module {
     private final BooleanSetting useObsidian = bool("obsidian", "Place obsidian supports", true);
     /** Always open with our own obsidian instead of grabbing whatever obsidian is lying around. */
     private final BooleanSetting ownObsidian = bool("ownObsidian", "Prefer own obsidian", true);
+    /** Crystals detonated per sword hit before going back to the sword (a hand double-tap is 2). */
+    private final NumberSetting perHit = num("perHit", "Crystals per hit", 1, 6, 1, 2);
+    private int sinceHit;
+    private long swordAfterMs;
     private final NumberSetting aimTolerance = num("aimTol", "Aim tolerance deg", 3, 30, 0.5, 10);
     private final BooleanSetting predictTarget = bool("predict", "Predict target motion", true);
     private final BooleanSetting requireWallsRange = bool("walls", "Respect walls", false);
@@ -165,6 +169,9 @@ public final class AutoHitCrystal extends Module {
         // slot. If the previous crystal cycle left crystals/obsidian in hand, the
         // module visibly swaps back to the sword BEFORE the swing - and the next
         // crystal phase never destroys that slot (see ensureItemSelected).
+        if (System.currentTimeMillis() < swordAfterMs) {
+            return; // brief pause before swapping back, like a player would
+        }
         if (meleeHotbarSlot != -1
                 && InventoryManager.selectedHotbar(self) != meleeHotbarSlot) {
             if (!InventoryManager.selectHotbar(client, meleeHotbarSlot)) {
@@ -199,6 +206,7 @@ public final class AutoHitCrystal extends Module {
         if (CombatActions.attackEntity(client, target)) {
             // THE TRIGGER MOMENT: solve the obsidian/crystal placement right now.
             meleeHotbarSlot = InventoryManager.selectedHotbar(self);
+            sinceHit = 0;
             Spot solved = solve(client, self, world, target);
             if (solved == null) {
                 return; // nothing to gain from crystals; keep swinging
@@ -269,6 +277,14 @@ public final class AutoHitCrystal extends Module {
 
     private void spamPhase(MinecraftClient client, ClientPlayerEntity self, ClientWorld world,
                            LivingEntity target, double dist) {
+        // Hand rhythm: after the per-hit crystals (a double-tap by default) go back to the
+        // sword after a short human pause, ready for the next hit when the target lands.
+        if (sinceHit >= perHit.get().intValue()) {
+            stage = Stage.MELEE;
+            plan = null;
+            swordAfterMs = System.currentTimeMillis() + (long) RandomController.uniform(220, 380);
+            return;
+        }
         // Loop exit: target DOWN or OUT OF RANGE -> swap back to the sword first,
         // then fold back to the melee phase automatically.
         if (!target.isAlive() || dist > reEngageRange.get()) {
@@ -385,6 +401,7 @@ public final class AutoHitCrystal extends Module {
         attackTimer.restartCps(lastCps = RandomController.uniform(cpsMin.get(), cpsMax.get()), 15);
         if (CombatActions.attackEntity(client, best)) {
             detonatedCount++;
+            sinceHit++;
             // Immediate re-place rhythm right after a detonation.
             stageTimer.restart(0.0, 8.0);
         }
@@ -400,8 +417,10 @@ public final class AutoHitCrystal extends Module {
         if (canObsidian && ownObsidian.get()) {
             // Own obsidian first: a fresh block right at the target's feet, placed by us,
             // instead of locking onto some random obsidian that happens to be nearby.
-            Spot own = CrystalSolver.findBestObsidianPlan(world, self, target, placeRange.get(),
-                    effectiveMinDamage(target), maxSelfDamage.get(), walls, predictTicks);
+            // Placed the way a player does it by hand: fresh obsidian beside the target's
+            // feet, on the cell needing the least camera movement (small dip, no flick).
+            Spot own = CrystalSolver.findHandObsidianPlan(world, self, target, placeRange.get(),
+                    maxSelfDamage.get(), self.getYaw(), self.getPitch());
             if (own != null) {
                 return own;
             }
