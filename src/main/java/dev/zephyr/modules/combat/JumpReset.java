@@ -39,6 +39,8 @@ public final class JumpReset extends Module {
     private final BooleanSetting resetInAir = bool("inAir", "Arm when hit airborne", true);
 
     private double lastHealth = -1.0;
+    /** Set by the knockback packet hook; consumed by the next movement tick. */
+    private boolean knockbackPending;
     private int lastHurtTime;
     private boolean armed;
     private int armedTicksLeft;
@@ -82,7 +84,14 @@ public final class JumpReset extends Module {
         lastHurtTime = hurt;
         lastHealth = health;
 
-        if (freshHurt || healthDrop) {
+        if (knockbackPending) {
+            // Exact moment: the knockback velocity just arrived this tick.
+            knockbackPending = false;
+            armed = true;
+            armedTicksLeft = Math.max(1, armWindow.get().intValue());
+        } else if ((freshHurt || healthDrop) && !smart()) {
+            // Non-smart fallback: any hit arms it (SMART waits for real knockback, so
+            // fire/fall/poison damage never makes you hop).
             armed = true;
             armedTicksLeft = Math.max(1, armWindow.get().intValue());
         }
@@ -99,6 +108,17 @@ public final class JumpReset extends Module {
             armed = false;
         } else if (armed && --armedTicksLeft <= 0) {
             armed = false;
+        }
+    }
+
+    /** Called from the velocity-packet hook with the server-sent knockback velocity. */
+    public void onKnockback(net.minecraft.util.math.Vec3d velocity) {
+        if (!isEnabled()) {
+            return;
+        }
+        // Real melee knockback has a horizontal push and lifts you slightly.
+        if (Math.hypot(velocity.x, velocity.z) > 0.08 || velocity.y > 0.1) {
+            knockbackPending = true;
         }
     }
 

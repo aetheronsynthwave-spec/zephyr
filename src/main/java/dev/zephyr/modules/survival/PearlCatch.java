@@ -122,6 +122,10 @@ public final class PearlCatch extends Module {
             case TURN -> turnStage(client, self);
             case PEARL -> pearlStage(client, self);
             case GAP -> {
+                if (smart() && windCharge.get()) {
+                    smartGap(client, self);
+                    return;
+                }
                 if (stageTimer.isDue()) {
                     if (windCharge.get() && beginItem(client, self, ItemUtil::isWindCharge, true)) {
                         stage = Stage.WIND;
@@ -140,6 +144,16 @@ public final class PearlCatch extends Module {
         // Keep the current yaw and tilt straight up (the clip: pearl and wind charge both
         // thrown vertically, so the wind charge meets the rising pearl on the same line).
         double upPitch = -lookPitch.get();
+        if (smart() && self.getPitch() < -20.0) {
+            // SMART: you are already aiming upward - throw along YOUR line (diagonal
+            // catches); the intercept solver handles the wind charge for any angle.
+            if (beginItem(client, self, ItemUtil::isPearl, false)) {
+                stage = Stage.PEARL;
+            } else if (++lookTicks > 25) {
+                beginRestore(client);
+            }
+            return;
+        }
         RotationManager.request(RotationRequest
                 .to(self.getYaw(), upPitch)
                 .speed(45, 95).jitter(0.2).silent(false)
@@ -170,8 +184,84 @@ public final class PearlCatch extends Module {
             return; // pearl still on item cooldown - hold the aim a few ticks
         }
         CombatActions.interactItem(client);
+        smartTicks = 0;
         stageTimer.restart(gapMin.get(), gapMax.get());
         stage = Stage.GAP;
+    }
+
+    // ------------------------------------------------------------------
+    // SMART: intercept math
+    // ------------------------------------------------------------------
+
+    private static final double PEARL_DRAG = 0.99;
+    private static final double PEARL_GRAVITY = 0.03;
+    private static final double WIND_SPEED = 1.5;
+    private int smartTicks;
+
+    /**
+     * Tracks our own pearl and solves where a wind charge thrown NOW meets it:
+     * the pearl is stepped forward tick by tick with vanilla thrown-projectile physics
+     * (move, then velocity *= 0.99, then vy -= 0.03); the wind charge flies in a straight
+     * line at 1.5 blocks/tick plus our own motion. The earliest tick k at which the wind
+     * charge can be exactly where the pearl will be (|gap - 1.5k| < half a tick of travel)
+     * gives the aim point; we turn there and throw once the aim has arrived. Works for any
+     * throw angle (diagonal catches included), not just straight up.
+     */
+    private void smartGap(MinecraftClient client, ClientPlayerEntity self) {
+        smartTicks++;
+        net.minecraft.entity.projectile.thrown.EnderPearlEntity pearl = null;
+        for (var e : client.world.getEntities()) {
+            if (e instanceof net.minecraft.entity.projectile.thrown.EnderPearlEntity ep && ep.getOwner() == self
+                    && (pearl == null || ep.age < pearl.age)) {
+                pearl = ep;
+            }
+        }
+        if (pearl == null) {
+            if (smartTicks > 6) {
+                // pearl never showed up (or already landed): fall back to the timed throw
+                smartTicks = 0;
+                stageTimer.restart(0, 0);
+                if (beginItem(client, self, ItemUtil::isWindCharge, true)) {
+                    stage = Stage.WIND;
+                } else {
+                    beginRestore(client);
+                }
+            }
+            return;
+        }
+        Vec3d eye = self.getEyePos();
+        Vec3d selfVel = self.isOnGround() ? new Vec3d(self.getVelocity().x, 0, self.getVelocity().z) : self.getVelocity();
+        Vec3d p = pearl.getEntityPos();
+        Vec3d v = pearl.getVelocity();
+        Vec3d aimPoint = null;
+        for (int k = 1; k <= 30; k++) {
+            p = p.add(v);
+            v = v.multiply(PEARL_DRAG).add(0, -PEARL_GRAVITY, 0);
+            Vec3d rel = p.subtract(eye.add(selfVel.multiply(k)));
+            double gap = rel.length();
+            if (gap < 1.2) {
+                continue; // too close: the burst would just hit us
+            }
+            if (Math.abs(gap - WIND_SPEED * k) <= WIND_SPEED * 0.5) {
+                aimPoint = p;
+                break;
+            }
+        }
+        if (aimPoint == null) {
+            if (smartTicks > 25) {
+                beginRestore(client); // no intercept possible any more
+            }
+            return;
+        }
+        RotationManager.request(RotationRequest
+                .to(MathUtil.yawTo(eye, aimPoint), MathUtil.pitchTo(eye, aimPoint))
+                .speed(60, 120).jitter(0.1).silent(false)
+                .expiresAfter(3).build());
+        if (RotationManager.isAimedAt(aimPoint, 3.0)
+                && beginItem(client, self, ItemUtil::isWindCharge, true)) {
+            smartTicks = 0;
+            stage = Stage.WIND;
+        }
     }
 
     private void windStage(MinecraftClient client, ClientPlayerEntity self) {

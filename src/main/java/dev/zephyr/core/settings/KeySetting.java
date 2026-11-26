@@ -71,6 +71,11 @@ public class KeySetting extends Setting<Integer> {
 
     @Override
     protected Integer validate(Integer candidate) {
-        return candidate != null && candidate >= 0 ? candidate : null;
+        // Negative (GLFW_KEY_UNKNOWN, what Escape/Backspace send) means "unbind" -> 0.
+        // Rejecting it - the old behaviour - is why Escape never removed a bind.
+        if (candidate == null) {
+            return null;
+        }
+        return candidate < 0 ? 0 : candidate;
     }
 }

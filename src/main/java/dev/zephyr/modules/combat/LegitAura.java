@@ -131,7 +131,9 @@ public final class LegitAura extends Module {
                 .build());
 
         // Attack path: pacing gate first, then the human gates.
-        if (!attackTimer.isDue()) {
+        // SMART: no click timer - every hit lands the moment the weapon is charged
+        // (1.21.11 cooldown combat rewards charged hits, not CPS).
+        if (!smart() && !attackTimer.isDue()) {
             return;
         }
         attackTimer.restartCps(lastCps = RandomController.uniform(cpsMin.get(), cpsMax.get()), 15);

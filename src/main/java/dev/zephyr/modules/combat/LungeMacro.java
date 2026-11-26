@@ -30,6 +30,14 @@ public final class LungeMacro extends Module {
     private final NumberSetting cooldownMs = num("cooldown", "Min ms between lunges", 0, 1000, 10, 150);
     private final BooleanSetting showSwap = bool("showSwap", "Show spear swap", true);
     private final NumberSetting backTicks = num("backTicks", "Swap-back ticks", 1, 10, 1, 2);
+    /** Your routine: shield (no cooldown item) first, then the spear jab, then back to it. */
+    private final BooleanSetting prime = bool("prime", "Switch to no-cooldown item first", true);
+    private final NumberSetting primeTicks = num("primeTicks", "Ticks on that item first", 0, 10, 1, 1);
+    private final BooleanSetting returnOriginal = bool("returnOriginal", "Return to original item after", false);
+
+    private int primeWait = -1;
+    private int originalSlot = -1;
+    private int returnWait = -1;
 
     private long lastLunge;
     private boolean pending;
@@ -54,12 +62,79 @@ public final class LungeMacro extends Module {
         pending = false;
     }
 
+    /**
+     * Item with no cooldown to sit on before the jab: a shield first (the hand routine),
+     * else an empty slot, else any non-weapon item that is not on an item cooldown.
+     */
+    private int findPrimeSlot(ClientPlayerEntity self) {
+        int empty = -1;
+        int plain = -1;
+        for (int i = 0; i < 9; i++) {
+            ItemStack s = self.getInventory().getStack(i);
+            if (s.isOf(net.minecraft.item.Items.SHIELD)) {
+                return i;
+            }
+            if (s.isEmpty() && empty == -1) {
+                empty = i;
+            } else if (plain == -1 && !s.isEmpty() && !ItemUtil.isSpear(s) && !ItemUtil.isMace(s)
+                    && !ItemUtil.id(s).endsWith("_sword") && !ItemUtil.id(s).endsWith("_axe")
+                    && !self.getItemCooldownManager().isCoolingDown(s)) {
+                plain = i;
+            }
+        }
+        return empty != -1 ? empty : plain;
+    }
+
     @Override
     public void onTick(MinecraftClient client) {
+        if (returnWait >= 0 && client.player != null && !dev.zephyr.core.combat.SwapManager.pending()) {
+            // "Return to original item": after the spear swap-back has finished.
+            if (returnWait-- <= 0) {
+                if (originalSlot != -1) {
+                    dev.zephyr.core.combat.SwapManager.select(client, originalSlot);
+                }
+                originalSlot = -1;
+                returnWait = -1;
+            }
+        }
+        if (primeWait >= 0) {
+            if (primeWait-- > 0) {
+                return;
+            }
+            primeWait = -1;
+            jab(client);
+            return;
+        }
         if (!pending) {
             return;
         }
         pending = false;
+        ClientPlayerEntity self = client.player;
+        if (self == null || client.getNetworkHandler() == null || client.currentScreen != null) {
+            return;
+        }
+        if (System.currentTimeMillis() - lastLunge < cooldownMs.get() || findSpear(self) == -1) {
+            return;
+        }
+        if (prime.get()) {
+            int p = findPrimeSlot(self);
+            if (p != -1) {
+                originalSlot = self.getInventory().getSelectedSlot();
+                if (p != originalSlot) {
+                    dev.zephyr.core.combat.SwapManager.select(client, p);
+                }
+                primeWait = primeTicks.get().intValue();
+                if (primeWait <= 0) {
+                    primeWait = -1;
+                    jab(client);
+                }
+                return;
+            }
+        }
+        jab(client);
+    }
+
+    private void jab(MinecraftClient client) {
         ClientPlayerEntity self = client.player;
         if (self == null || client.interactionManager == null || client.getNetworkHandler() == null
                 || client.currentScreen != null) {
@@ -97,6 +172,11 @@ public final class LungeMacro extends Module {
         }
         lastLunge = now;
         lunges++;
+        if (returnOriginal.get() && originalSlot != -1) {
+            returnWait = (showSwap.get() ? backTicks.get().intValue() : 0) + 2;
+        } else {
+            originalSlot = -1;
+        }
     }
 
     private int findSpear(ClientPlayerEntity self) {

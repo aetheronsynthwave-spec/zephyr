@@ -12,6 +12,7 @@ public abstract class Setting<T> {
     private final String label;
     private final String description;
     private T value;
+    private final T defaultValue;
     private Consumer<T> onSet;
 
     protected Setting(String id, String label, String description, T defaultValue) {
@@ -19,6 +20,16 @@ public abstract class Setting<T> {
         this.label = label;
         this.description = description;
         this.value = defaultValue;
+        this.defaultValue = defaultValue;
+    }
+
+    public T defaultValue() {
+        return defaultValue;
+    }
+
+    /** Back to the built-in default (used by "New config"). */
+    public void reset() {
+        loadRaw(defaultValue);
     }
 
     public String id() {

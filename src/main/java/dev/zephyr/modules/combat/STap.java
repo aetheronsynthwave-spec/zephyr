@@ -49,6 +49,7 @@ public final class STap extends Module {
     private boolean resprintPending;
     private int taps;
     private boolean sprintSample;
+    private double lastTargetDist = -1;
 
     public STap() {
         super("STap", ModuleCategory.COMBAT, 0);
@@ -89,6 +90,7 @@ public final class STap extends Module {
         if (target == null || self.squaredDistanceTo(target) > maxRange.get() * maxRange.get()) {
             return;
         }
+        lastTargetDist = Math.sqrt(self.squaredDistanceTo(target));
         waitTicks = delay.get().intValue();
     }
 
@@ -103,6 +105,11 @@ public final class STap extends Module {
                 int lo = tapMin.get().intValue();
                 int hi = Math.max(lo, tapMax.get().intValue());
                 tapTicks = (int) Math.round(RandomController.uniform(lo, hi));
+                if (smart() && lastTargetDist > 0) {
+                    // SMART: the closer they are, the longer the back-tap (more spacing
+                    // needed so they cannot trade); at the edge of reach a 1-tick tap.
+                    tapTicks = lastTargetDist < 2.2 ? 3 : lastTargetDist < 3.0 ? 2 : 1;
+                }
                 waitTicks = -1;
                 taps++;
             }

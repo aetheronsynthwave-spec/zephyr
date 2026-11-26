@@ -50,7 +50,7 @@ public final class ClickGuiScreen extends Screen {
     private static final int ROW_H = 22;
     private static final int SETTING_H = 20;
     private static final int SLIDER_H = 26;
-    private static final int TOP = 52;
+    private static final int TOP = 74;
     private static final float RADIUS = 9f;
     private static final float TEXT = 9.5f;
     private static final float TEXT_SMALL = 8.5f;
@@ -69,6 +69,9 @@ public final class ClickGuiScreen extends Screen {
     private NumberSetting dragSlider;
     private KeySetting capturing;
     private long openedAt;
+    /** Live search: typing anywhere filters modules (and their setting names). */
+    private static String search = "";
+    private float configsBtnX, configsBtnY, configsBtnW, configsBtnH;
     private long lastFrame;
     private float dt;
 
@@ -131,7 +134,7 @@ public final class ClickGuiScreen extends Screen {
         int maxY = Math.max(4, (int) guiHeight() - HEADER_H - 4);
         for (Column col : columns) {
             col.x = Math.max(4, Math.min(col.x, maxX));
-            col.y = Math.max(40, Math.min(col.y, maxY));
+            col.y = Math.max(70, Math.min(col.y, maxY)); // below the bar + search field
             col.scroll = Math.max(0, col.scroll);
         }
     }
@@ -166,7 +169,10 @@ public final class ClickGuiScreen extends Screen {
             int y = col.y;
             rows.add(new Row(col, null, null, col.x, y, COL_W, HEADER_H, true));
             y += HEADER_H - col.scroll;
-            for (Module m : col.modules) {
+            if (visible(col).isEmpty()) {
+                continue;
+            }
+            for (Module m : visible(col)) {
                 rows.add(new Row(col, m, null, col.x, y, COL_W, ROW_H, false));
                 y += ROW_H;
                 if (isExpanded(m)) {
@@ -181,13 +187,39 @@ public final class ClickGuiScreen extends Screen {
         }
     }
 
+    private static boolean matches(Module m) {
+        if (search.isEmpty()) {
+            return true;
+        }
+        String q = search.toLowerCase();
+        if (m.name().toLowerCase().contains(q) || m.category().label().toLowerCase().contains(q)) {
+            return true;
+        }
+        for (Setting<?> st : m.settings()) {
+            if (st.label().toLowerCase().contains(q)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static List<Module> visible(Column col) {
+        List<Module> out = new ArrayList<>();
+        for (Module m : col.modules) {
+            if (matches(m)) {
+                out.add(m);
+            }
+        }
+        return out;
+    }
+
     private static boolean isExpanded(Module m) {
         return Boolean.TRUE.equals(EXPANDED.get(m));
     }
 
     private int contentHeight(Column col) {
         int h = 0;
-        for (Module m : col.modules) {
+        for (Module m : visible(col)) {
             h += ROW_H;
             if (isExpanded(m)) {
                 for (Setting<?> s : m.settings()) {
@@ -240,8 +272,11 @@ public final class ClickGuiScreen extends Screen {
         Ui.beginFrame(renderScale);
         try {
             renderTopBar(ctx, ease);
+            renderSearch(ctx, ease);
             for (Column col : columns) {
-                renderColumn(ctx, col, ease);
+                if (!visible(col).isEmpty()) {
+                    renderColumn(ctx, col, ease);
+                }
             }
             String hint = capturing != null
                     ? "Press a key or mouse button to bind  ·  Esc removes the bind  ·  Left-click cancels"
@@ -270,6 +305,40 @@ public final class ClickGuiScreen extends Screen {
         float sx = x + 14 + 16 + 7 + titleW + 9;
         Ui.rect(ctx, sx, y + 9, 1, h - 18, Ui.alpha(0x33FFFFFF, ease));
         Ui.text(ctx, stats, sx + 8, y + 10, TEXT_SMALL, Ui.alpha(Ui.TEXT_DIM, ease), false);
+        // Configs button (right of the bar).
+        configsBtnW = Ui.textWidth("Configs", TEXT_SMALL, true) + 20;
+        configsBtnH = h;
+        configsBtnX = x + w + 8;
+        configsBtnY = y;
+        boolean hov = lastMouseGuiX >= configsBtnX && lastMouseGuiX < configsBtnX + configsBtnW
+                && lastMouseGuiY >= configsBtnY && lastMouseGuiY < configsBtnY + configsBtnH;
+        Ui.shadow(ctx, configsBtnX, configsBtnY, configsBtnW, h, h / 2f, 8, Ui.alpha(0x77000000, ease));
+        Ui.pill(ctx, configsBtnX, configsBtnY, configsBtnW, h,
+                Ui.alpha(hov ? Ui.mix(Ui.BG_2, Ui.ACCENT, 0.25f) : Ui.BG_2, ease));
+        Ui.textCentered(ctx, "Configs", configsBtnX + configsBtnW / 2f, y + 9.5f, TEXT_SMALL,
+                Ui.alpha(Ui.ACCENT, ease), true);
+    }
+
+    private void renderSearch(DrawContext ctx, float ease) {
+        float w = 240, h = 18;
+        float x = (guiWidth() - w) / 2f, y = 46;
+        Ui.roundRect(ctx, x, y, w, h, 9, Ui.alpha(Ui.BG_2, ease));
+        boolean empty = search.isEmpty();
+        String shown = empty ? "Type to search modules and settings" : search;
+        // magnifier: ring + handle
+        int ic = Ui.alpha(Ui.TEXT_FAINT, ease);
+        Ui.circle(ctx, x + 11, y + 8, 3.6f, ic);
+        Ui.circle(ctx, x + 11, y + 8, 2.4f, Ui.alpha(Ui.BG_2, ease));
+        for (int i = 0; i < 3; i++) {
+            Ui.roundRect(ctx, x + 13.2f + i * 0.9f, y + 10.2f + i * 0.9f, 1.6f, 1.6f, 0.8f, ic);
+        }
+        float tx = Ui.text(ctx, shown, x + 20, y + 5, 8.5f, Ui.alpha(empty ? Ui.TEXT_FAINT : Ui.TEXT, ease), false);
+        if (!empty && (System.currentTimeMillis() / 500) % 2 == 0) {
+            Ui.rect(ctx, x + 21 + tx, y + 4, 1, 10, Ui.alpha(Ui.ACCENT, ease)); // caret
+        }
+        if (!empty) {
+            Ui.textRight(ctx, "Esc clears", x + w - 9, y + 5, 7.5f, Ui.alpha(Ui.TEXT_FAINT, ease), false);
+        }
     }
 
     private static int countEnabled() {
@@ -449,6 +518,11 @@ public final class ClickGuiScreen extends Screen {
         double mx = guiX(click.x());
         double my = guiY(click.y());
         int button = click.button();
+        if (capturing == null && button == 0 && mx >= configsBtnX && mx < configsBtnX + configsBtnW
+                && my >= configsBtnY && my < configsBtnY + configsBtnH) {
+            this.client.setScreen(new ConfigScreen(this));
+            return true;
+        }
         if (capturing != null) {
             // Binding: any mouse button except left binds it (side buttons, middle,
             // right); left click cancels so you can still click away.
@@ -595,11 +669,36 @@ public final class ClickGuiScreen extends Screen {
             ZephyrClient.config().save();
             return true;
         }
+        if (keyCode == GLFW.GLFW_KEY_BACKSPACE && !search.isEmpty()) {
+            boolean ctrl = (input.modifiers() & GLFW.GLFW_MOD_CONTROL) != 0;
+            search = ctrl ? "" : search.substring(0, search.length() - 1);
+            return true;
+        }
         if (keyCode == GLFW.GLFW_KEY_ESCAPE) {
+            if (!search.isEmpty()) {
+                search = ""; // first Escape clears the search, the next one closes
+                return true;
+            }
             this.close();
             return true;
         }
         return super.keyPressed(input);
+    }
+
+    @Override
+    public boolean charTyped(net.minecraft.client.input.CharInput input) {
+        if (capturing != null || !input.isValidChar()) {
+            return false;
+        }
+        String c = input.asString();
+        if (search.length() < 32 && !c.isBlank() || (!search.isEmpty() && c.equals(" "))) {
+            search += c;
+            for (Column col : columns) {
+                col.scroll = 0;
+            }
+            return true;
+        }
+        return false;
     }
 
     @Override

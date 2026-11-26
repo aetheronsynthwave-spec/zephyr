@@ -50,6 +50,15 @@ public final class ShieldBreaker extends Module {
                 || !(ehr.getEntity() instanceof LivingEntity t) || !t.isBlocking()) {
             return;
         }
+        // SMART: a raised shield only blocks hits from the front; from the side/back the
+        // sword already gets through, so do not waste the swap.
+        if (smart()) {
+            net.minecraft.util.math.Vec3d facing = t.getRotationVec(1.0f);
+            net.minecraft.util.math.Vec3d toUs = self.getEntityPos().subtract(t.getEntityPos()).normalize();
+            if (facing.x * toUs.x + facing.z * toUs.z < 0.0) {
+                return;
+            }
+        }
         int axe = InventoryManager.findHotbarSlot(self, s -> ItemUtil.id(s).endsWith("_axe"));
         if (axe < 0) {
             return;

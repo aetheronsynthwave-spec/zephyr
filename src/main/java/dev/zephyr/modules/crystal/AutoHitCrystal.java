@@ -297,7 +297,12 @@ public final class AutoHitCrystal extends Module {
         }
         // Hand rhythm: after the per-hit crystals (a double-tap by default) go back to the
         // sword after a short human pause, ready for the next hit when the target lands.
-        if (sinceHit >= perHit.get().intValue()) {
+        // SMART: finish low targets - keep crystalling while they are at 6 hp or less.
+        int wanted = perHit.get().intValue();
+        if (smart() && target.getHealth() + target.getAbsorptionAmount() <= 6.0f) {
+            wanted = Math.max(wanted, 3);
+        }
+        if (sinceHit >= wanted) {
             stage = Stage.MELEE;
             plan = null;
             swordAfterMs = System.currentTimeMillis() + (long) RandomController.uniform(220, 380);

@@ -62,6 +62,12 @@ public final class AimAssist extends Module {
             lastTarget = null;
             return;
         }
+        // SMART: once the crosshair is on them, stop pulling (no over-correction / shake).
+        if (smart() && client.crosshairTarget instanceof net.minecraft.util.hit.EntityHitResult ehr
+                && ehr.getEntity() == target) {
+            lastTarget = target;
+            return;
+        }
         Vec3d aim = MathUtil.aimPoint(target);
         double yawReq = MathUtil.yawTo(self.getEyePos(), aim);
         double pitchReq = verticalToo.get() ? MathUtil.pitchTo(self.getEyePos(), aim) : self.getPitch();

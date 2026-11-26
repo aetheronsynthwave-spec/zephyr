@@ -21,4 +21,22 @@ public abstract class MixinClientPlayNetworkHandler {
         String path = packet.getSound().getKey().map(k -> k.getValue().getPath()).orElse("");
         sd.onSound(path, packet.getX(), packet.getY(), packet.getZ());
     }
+
+    /**
+     * JumpReset: the knockback itself. Packet handlers run once on the network thread
+     * (which only re-schedules) and once on the client thread - only the latter counts.
+     */
+    @Inject(method = "onEntityVelocityUpdate", at = @At("TAIL"), require = 0)
+    private void zephyr$knockback(net.minecraft.network.packet.s2c.play.EntityVelocityUpdateS2CPacket packet,
+                                  CallbackInfo ci) {
+        var mc = net.minecraft.client.MinecraftClient.getInstance();
+        if (!mc.isOnThread() || mc.player == null || packet.getEntityId() != mc.player.getId()
+                || ZephyrClient.modules() == null) {
+            return;
+        }
+        var jr = ZephyrClient.modules().get(dev.zephyr.modules.combat.JumpReset.class);
+        if (jr != null) {
+            jr.onKnockback(packet.getVelocity());
+        }
+    }
 }

@@ -69,6 +69,10 @@ public final class TriggerBot extends Module {
         if (!timer.isDue() || ItemUtil.attackCooldownProgress(self) < cooldownGate.get()) {
             return;
         }
+        // SMART: never waste a charged hit into the target's invulnerability frames.
+        if (smart() && target.hurtTime > 1) {
+            return;
+        }
         if (CombatActions.attackEntity(client, target)) {
             hits++;
             timer.restart(reactMin.get() * 0.5, Math.max(reactMin.get(), reactMax.get()) * 0.6);

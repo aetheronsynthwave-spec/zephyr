@@ -43,6 +43,10 @@ public final class BreachSwap extends Module {
         if (!(target instanceof LivingEntity) || (playersOnly.get() && !(target instanceof PlayerEntity))) {
             return -1;
         }
+        // SMART: Breach only pays off against armour; on a naked target the sword hits harder.
+        if (smart() && target instanceof LivingEntity le && le.getArmor() < 8) {
+            return -1;
+        }
         ItemStack held = self.getMainHandStack();
         if (ItemUtil.isMace(held)) {
             return -1; // already a mace (e.g. AutoMace's own swap)

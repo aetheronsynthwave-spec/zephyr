@@ -34,6 +34,55 @@ public abstract class Module {
         this.category = category;
         this.bind = new KeySetting("bind", "Bind", defaultKey);
         this.settings.add(this.bind);
+        if (Profiles.has(name)) {
+            this.profile = new dev.zephyr.core.settings.ModeSetting("profile", "Profile", Profiles.MODES, "CUSTOM");
+            this.settings.add(this.profile);
+            this.profile.onChange(this::applyProfile);
+        } else {
+            this.profile = null;
+        }
+    }
+
+    /** CUSTOM / SMART / LEGIT for combat modules (null for the rest). */
+    private final dev.zephyr.core.settings.ModeSetting profile;
+
+    /** SMART profile: the module should use its adaptive behaviour. */
+    public boolean smart() {
+        return profile != null && profile.is("SMART");
+    }
+
+    /** LEGIT profile: the module should prefer the most human-looking behaviour. */
+    public boolean legit() {
+        return profile != null && profile.is("LEGIT");
+    }
+
+    public boolean hasProfile() {
+        return profile != null;
+    }
+
+    /** Writes the preset values of {@code mode} into this module's settings (and selects it). */
+    @SuppressWarnings("unchecked")
+    public void applyProfile(String mode) {
+        if (profile == null) {
+            return;
+        }
+        if (!profile.is(mode)) {
+            profile.loadRaw(mode);
+        }
+        java.util.Map<String, Object> preset = Profiles.preset(name, mode);
+        for (Setting<?> st : settings) {
+            Object v = preset.get(st.id());
+            if (v == null) {
+                continue;
+            }
+            if (st instanceof NumberSetting n && v instanceof Number num) {
+                n.set(num.doubleValue());
+            } else if (st instanceof BooleanSetting b && v instanceof Boolean bv) {
+                b.set(bv);
+            } else if (st instanceof dev.zephyr.core.settings.ModeSetting m && v instanceof String sv) {
+                m.set(sv);
+            }
+        }
     }
 
     /** Visible to subclasses for HUD label composition. */
