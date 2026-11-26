@@ -58,8 +58,15 @@ public final class LungeMacro extends Module {
         pending = false;
         ClientPlayerEntity self = client.player;
         if (self == null || client.interactionManager == null || client.getNetworkHandler() == null
-                || client.currentScreen != null || self.isUsingItem()) {
+                || client.currentScreen != null) {
             return;
+        }
+        // Lunging from behind a raised shield (the hand routine): drop the block for the jab,
+        // then raise it again right after if right-click is still held.
+        boolean wasBlocking = self.isUsingItem();
+        Hand blockHand = self.getActiveHand();
+        if (wasBlocking) {
+            client.interactionManager.stopUsingItem(self);
         }
         long now = System.currentTimeMillis();
         if (now - lastLunge < cooldownMs.get()) {
@@ -85,6 +92,9 @@ public final class LungeMacro extends Module {
         if (original != slot) {
             inv.setSelectedSlot(original);
             client.getNetworkHandler().sendPacket(new UpdateSelectedSlotC2SPacket(original));
+        }
+        if (wasBlocking && client.options.useKey.isPressed()) {
+            client.interactionManager.interactItem(self, blockHand); // shield back up (same hand)
         }
         lastLunge = now;
         lunges++;
