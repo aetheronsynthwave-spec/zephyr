@@ -22,6 +22,11 @@ public final class Freelook extends Module {
     private final NumberSetting sensitivity = num("sens", "Free-look sensitivity", 0.1, 3.0, 0.05, 1.0);
     private final BooleanSetting invertPitch = bool("invert", "Invert pitch", false);
     private final BooleanSetting rollOnToggle = bool("restore", "Sync player view on toggle", false);
+    private final BooleanSetting thirdPerson = bool("thirdPerson", "Switch to third person", true);
+    private final BooleanSetting front = bool("front", "Front view (else behind)", false);
+    private final BooleanSetting hold = bool("hold", "Hold key (release to stop)", true);
+
+    private net.minecraft.client.option.Perspective previous;
 
     private double freeYaw;
     private double freePitch;
@@ -38,10 +43,37 @@ public final class Freelook extends Module {
             freeYaw = player.getYaw();
             freePitch = player.getPitch();
         }
+        var options = MinecraftClient.getInstance().options;
+        previous = options.getPerspective();
+        if (thirdPerson.get()) {
+            // Real freelook: the camera orbits your player in third person while your
+            // body keeps facing (and moving) where it was.
+            options.setPerspective(front.get() ? net.minecraft.client.option.Perspective.THIRD_PERSON_FRONT
+                    : net.minecraft.client.option.Perspective.THIRD_PERSON_BACK);
+        }
+    }
+
+    @Override
+    public void onTick(MinecraftClient client) {
+        if (!hold.get() || bind().get() <= 0 || client.getWindow() == null) {
+            return;
+        }
+        int code = bind().get();
+        long w = client.getWindow().getHandle();
+        boolean down = dev.zephyr.core.input.BindInput.isMouse(code)
+                ? GLFW.glfwGetMouseButton(w, code - dev.zephyr.core.input.BindInput.MOUSE_BASE) == GLFW.GLFW_PRESS
+                : GLFW.glfwGetKey(w, code) == GLFW.GLFW_PRESS;
+        if (!down) {
+            setEnabled(false); // hold mode: released -> back to your normal view
+        }
     }
 
     @Override
     protected void onDisable() {
+        if (previous != null) {
+            MinecraftClient.getInstance().options.setPerspective(previous);
+            previous = null;
+        }
         if (rollOnToggle.get()) {
             ClientPlayerEntity player = MinecraftClient.getInstance().player;
             if (player != null) {

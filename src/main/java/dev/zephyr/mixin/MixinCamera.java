@@ -68,8 +68,11 @@ public abstract class MixinCamera {
         if (focused != MinecraftClient.getInstance().player) {
             return;
         }
-        args.set(0, freelook.freeYaw());
-        args.set(1, freelook.freePitch());
+        boolean front = MinecraftClient.getInstance().options.getPerspective()
+                == net.minecraft.client.option.Perspective.THIRD_PERSON_FRONT;
+        // Front view: vanilla turns the camera around (yaw + 180, pitch mirrored).
+        args.set(0, front ? freelook.freeYaw() + 180f : freelook.freeYaw());
+        args.set(1, front ? -freelook.freePitch() : freelook.freePitch());
     }
 
     /** Secondary hook: re-apply at RETURN in case the internal call was bypassed. */
