@@ -81,7 +81,12 @@ public final class SafeAnchor extends AnchorMacro {
     /** After cover: hold a non-glowstone item so the next anchor click detonates. */
     private boolean finishCover(MinecraftClient client, ClientPlayerEntity self) {
         if (ItemUtil.isGlowstone(self.getMainHandStack())) {
-            int slot = InventoryManager.findHotbarSlot(self, s -> !ItemUtil.isGlowstone(s));
+            // Detonate with the sword like the hand routine; any non-glowstone item as fallback.
+            int slot = InventoryManager.findHotbarSlot(self,
+                    s -> ItemUtil.id(s).endsWith("_sword") || ItemUtil.id(s).endsWith("_axe"));
+            if (slot == -1) {
+                slot = InventoryManager.findHotbarSlot(self, s -> !ItemUtil.isGlowstone(s));
+            }
             if (slot != -1) {
                 InventoryManager.selectHotbar(client, slot);
             }
@@ -114,6 +119,26 @@ public final class SafeAnchor extends AnchorMacro {
      * exposure term of the vanilla damage formula below the self-damage ceiling.
      */
     private BlockPos findCoverPosition(MinecraftClient client, ClientPlayerEntity self, BlockPos anchor) {
+        // The hand-played spot (from the player's clip): the floor cell touching the anchor
+        // on our side, so the shield sits directly between us and the blast. Try the
+        // dominant direction toward us first, then the other horizontal one.
+        double ddx = self.getX() - (anchor.getX() + 0.5);
+        double ddz = self.getZ() - (anchor.getZ() + 0.5);
+        Direction major = Math.abs(ddx) >= Math.abs(ddz)
+                ? (ddx > 0 ? Direction.EAST : Direction.WEST)
+                : (ddz > 0 ? Direction.SOUTH : Direction.NORTH);
+        Direction minor = Math.abs(ddx) >= Math.abs(ddz)
+                ? (ddz > 0 ? Direction.SOUTH : Direction.NORTH)
+                : (ddx > 0 ? Direction.EAST : Direction.WEST);
+        for (Direction d : new Direction[]{major, minor}) {
+            BlockPos cell = anchor.offset(d);
+            if (client.world.getBlockState(cell).isAir()
+                    && !self.getBoundingBox().intersects(new Box(cell))
+                    && dev.zephyr.core.crystal.CrystalSolver.blockCellPlaceable(client.world, cell, self)) {
+                return cell.toImmutable();
+            }
+        }
+
         Vec3d eye = self.getEyePos();
         Vec3d blast = Vec3d.ofCenter(anchor);
         Vec3d direction = blast.subtract(eye).normalize();
