@@ -1,0 +1,68 @@
+plugins {
+    id 'fabric-loom' version "${loom_version}"
+    id 'java'
+}
+
+version = project.mod_version
+group = project.maven_group
+
+base {
+    archivesName = project.archives_base_name
+}
+
+loom {
+    mixin {
+        // Loom 1.14 ships with the legacy mixin annotation processor DISABLED, which
+        // means mixin string targets (method/field names) are never remapped into the
+        // refmap - and in a production (obfuscated) runtime EVERY injection then fails
+        // silently. Enabling it produces zephyr-refmap.json, so the mixins actually
+        // apply outside the dev environment (freelook, nodelay, jump reset, ...).
+        useLegacyMixinAp = true
+        defaultRefmapName = 'zephyr-refmap.json'
+        add(sourceSets.main, 'zephyr-refmap.json')
+    }
+}
+
+repositories {
+    maven { name = 'CentralMirror'; url = 'https://maven-central.storage-download.googleapis.com/maven2/' }
+    mavenCentral()
+    maven { name = 'Fabric'; url = 'https://maven.fabricmc.net/' }
+}
+
+dependencies {
+    minecraft "com.mojang:minecraft:${project.minecraft_version}"
+    mappings "net.fabricmc:yarn:${project.yarn_mappings}:v2"
+    modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+    modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
+}
+
+processResources {
+    inputs.property "version", project.version
+    filesMatching("fabric.mod.json") {
+        expand "version": project.version
+    }
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+    withSourcesJar()
+}
+
+tasks.withType(JavaCompile).configureEach {
+    it.options.release = 21
+    it.options.encoding = "UTF-8"
+}
+
+loom {
+    runs {
+        client {
+            client()
+            vmArgs "-Dzephyr.gametest=1", "-Dzephyr.gametest.only=${System.getProperty('zephyr.only') ?: ''}"
+        programArgs "--quickPlaySingleplayer", "ZephyrTest"
+            property "java.awt.headless", "false"
+        }
+    }
+}
+
