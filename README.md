@@ -4,6 +4,12 @@ Open-source Fabric client mod for **Minecraft 1.21.11** (current version: v1.13.
 
 Licensed under the [MIT License](LICENSE).
 
+## Download
+
+**Latest: v1.13.5**: [zephyr-client-1.21.11-v1.13.5.jar](release/zephyr-client-1.21.11-v1.13.5.jar) (compiled mod for Minecraft 1.21.11).
+
+Needs Fabric Loader 0.18+ and Fabric API 0.141.x. Put the jar in `.minecraft/mods`.
+
 ## Build
 
 Requires Java 21 and Gradle (Fabric Loom 1.14):
