@@ -67,6 +67,12 @@ public final class AutoMace extends Module {
         ZephyrEvents.GROUND_LAND.subscribe(this::onLand); // once, not per toggle
     }
 
+    /** AutoMace, ElytraMaceBot and SmartMaceBot all time the same smash: only one may run. */
+    @Override
+    protected String exclusiveGroup() {
+        return "mace";
+    }
+
     /** True while a qualifying drop toward a target is in progress (other hitters hold off). */
     public boolean slamPending() {
         return slamPending;

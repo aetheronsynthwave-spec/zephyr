@@ -127,6 +127,8 @@ public final class ZephyrClient implements ClientModInitializer {
         modules.register(new ClickGui());
         // Combat
         modules.register(new AutoMace());
+        modules.register(new dev.zephyr.modules.combat.ElytraMaceBot());
+        modules.register(new dev.zephyr.modules.combat.SmartMaceBot());
         modules.register(new BreachSwap());
         modules.register(new LungeMacro());
         modules.register(new LegitAura());

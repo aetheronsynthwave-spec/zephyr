@@ -75,7 +75,15 @@ public final class CombatCoordinator {
     /** AutoMace is enabled and a slam is building on this tick. */
     public static boolean maceSlamPending() {
         AutoMace mace = module(AutoMace.class);
-        return mace != null && mace.isEnabled() && mace.slamPending();
+        if (mace != null && mace.isEnabled() && mace.slamPending()) {
+            return true;
+        }
+        dev.zephyr.modules.combat.ElytraMaceBot elytra = module(dev.zephyr.modules.combat.ElytraMaceBot.class);
+        if (elytra != null && elytra.isEnabled() && elytra.slamPending()) {
+            return true;
+        }
+        dev.zephyr.modules.combat.SmartMaceBot smart = module(dev.zephyr.modules.combat.SmartMaceBot.class);
+        return smart != null && smart.isEnabled() && smart.slamPending();
     }
 
     /** ShieldBreaker is enabled and wants to break this target's shield. */
