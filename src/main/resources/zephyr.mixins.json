@@ -1,0 +1,20 @@
+{
+  "required": true,
+  "package": "dev.zephyr.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "client": [
+    "MixinClientPlayerEntity",
+    "MixinClientConnection",
+    "MixinEntity",
+    "MixinLivingEntity",
+    "MixinMinecraftClient",
+    "MixinCamera",
+    "MixinMouse",
+    "MixinItemCooldownManager",
+    "accessor.MinecraftClientAccessor",
+    "accessor.LivingEntityAccessor"
+  ],
+  "injectors": {
+    "defaultRequire": 0
+  }
+}

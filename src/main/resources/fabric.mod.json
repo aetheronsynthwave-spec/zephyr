@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "id": "zephyr",
+  "version": "${version}",
+  "name": "Zephyr",
+  "description": "Multi-layered combat & utility client framework for 1.21.11 crystal / mace PvP engineering.",
+  "authors": ["zephyr"],
+  "environment": "client",
+  "entrypoints": {
+    "client": ["dev.zephyr.ZephyrClient"]
+  },
+  "mixins": ["zephyr.mixins.json"],
+  "depends": {
+    "fabricloader": ">=0.18.0",
+    "fabric-api": "*",
+    "minecraft": "~1.21.11",
+    "java": ">=21"
+  }
+}
