@@ -61,7 +61,7 @@ public final class SmartMaceBot extends Module {
     private final NumberSetting maxHurt = num("hurtTime", "Max target hurt time", 0, 10, 1, 3);
     private final NumberSetting meleeCooldown = num("meleeCooldown", "Melee min charge", 0.5, 1.0, 0.05, 0.92);
     private final NumberSetting wantHeight = num("wantHeight", "Wanted height over target", 2, 12, 0.5, 4.0);
-    private final NumberSetting launchRange = num("launchRange", "Wind charge launch range", 3, 24, 1, 14);
+    private final NumberSetting launchRange = num("launchRange", "Wind charge launch range", 3, 12, 1, 5);
     private final NumberSetting windGap = num("windGap", "Min ticks between launches", 10, 100, 1, 30);
     private final NumberSetting minHealth = num("minHealth", "Min health to launch", 2, 20, 1, 8);
     private final NumberSetting breachArmor = num("breachArmor", "Breach mace from armour", 0, 20, 1, 10);
@@ -224,7 +224,12 @@ public final class SmartMaceBot extends Module {
         }
         boolean inReach = s.reachDist() <= r;
         boolean enoughHeight = s.heightAdv() >= wantHeight.get();
-        if (!enoughHeight && canLaunch(self, s) && launchBeatsMelee(self, s, inReach)) {
+        // A wind charge is a vertical boost and air control is ~2% of ground control, so the
+        // descent can only close a few blocks. Launching from far away (the old default was
+        // 14) made every descent sail past the target and the bot just bounced up and down
+        // without ever landing the smash - launch from smash range, walk the rest.
+        if (!enoughHeight && s.horiz() <= launchRange.get() && canLaunch(self, s)
+                && launchBeatsMelee(self, s, inReach)) {
             return Intent.LAUNCH;
         }
         if (inReach && meleeFallback.get() && s.meleeAvailable() && s.los()) {
@@ -238,7 +243,11 @@ public final class SmartMaceBot extends Module {
 
     /** All gates for a smash strike this tick (the executor adds the aim/LOS convergence). */
     private boolean canSmash(Situation s) {
-        return s.descending() && s.fall() >= minFall.get() && s.reachDist() <= reach.get()
+        // Strike a hair inside the client-side reach: the server sees us a round trip behind,
+        // and a hit sent at exactly the 3.0 interaction limit was regularly dropped as out
+        // of range, which is why the smash used to whiff right at the target.
+        double r = Math.max(2.4, reach.get() - 0.2);
+        return s.descending() && s.fall() >= minFall.get() && s.reachDist() <= r
                 && s.heightAdv() > -0.5 && s.los()
                 && s.target().hurtTime <= maxHurt.get().intValue()
                 && !(respectShield.get() && s.shield());
@@ -287,7 +296,15 @@ public final class SmartMaceBot extends Module {
         Vec3d eye = self.getEyePos();
         Vec3d aim = MathUtil.bestAimPoint(self, t, RotationManager.currentYaw(), self.getPitch());
         steer(MathUtil.yawTo(eye, aim), MathUtil.pitchTo(eye, aim));
-        if (acted() || !RotationManager.isAimedAt(aim, aimTol.get())) {
+        // A qualifying fall is fast, and the aim point slews 15-25 deg/tick over the last
+        // blocks - holding the hit for a 10-degree convergence regularly flew the whole
+        // reach window past the target and the bot boosted itself back up for another
+        // launch. The server only needs reach + line of sight for a melee hit, so while a
+        // qualifying smash drop is under way the tolerance widens instead of blocking; the
+        // aim request above keeps the visible rotations looking human either way.
+        boolean fastFall = s.descending() && s.fall() >= minFall.get();
+        double tol = fastFall ? Math.max(aimTol.get() * 2.5, 30.0) : aimTol.get();
+        if (acted() || !RotationManager.isAimedAt(aim, tol)) {
             return;
         }
         int slot = findMace(self, s.fall(), s.armor());
@@ -361,6 +378,11 @@ public final class SmartMaceBot extends Module {
             case THROW -> {
                 if (!ItemUtil.isWindCharge(self.getMainHandStack())) {
                     launch = Launch.SELECT;
+                } else if (self.getVelocity().y < -0.30) {
+                    // Past the apex by more than a couple of ticks: throwing now would burst
+                    // at our feet while we are already descending onto the target and boost
+                    // us back up right before the smash - finish the drop instead.
+                    endLaunch(client);
                 } else if (self.getVelocity().y <= 0.12 && !acted()
                         && CombatActions.interactItemAt(client, self.getYaw(), 90.0f).isAccepted()) {
                     noteAct();

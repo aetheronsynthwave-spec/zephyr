@@ -107,7 +107,10 @@ public final class ElytraMaceBot extends Module {
     private int failures;
     private int losLost;
     private long actTick = Long.MIN_VALUE;
+    /** Tick the chest swap click was sent (diagnostics; the strike no longer times off it). */
     private long swapTick = Long.MIN_VALUE;
+    /** Tick the worn elytra actually came off client-side (free fall starts here). */
+    private long elytraOffTick = Long.MIN_VALUE;
     private long strikeTick = Long.MIN_VALUE;
     private boolean chestplateOn;
     private boolean swapSent;
@@ -177,6 +180,7 @@ public final class ElytraMaceBot extends Module {
         trackedId = -1;
         lastTargetPos = null;
         targetVel = Vec3d.ZERO;
+        elytraOffTick = Long.MIN_VALUE;
         lock.clear();
     }
 
@@ -494,11 +498,12 @@ public final class ElytraMaceBot extends Module {
             tryRocket(client, self, world);
         }
         if (swapReady(self, target) && impactSoon(self, target)) {
-            if (swapAttempts >= 2) {
+            if (swapAttempts >= 3) {
                 miss(); // the chest click keeps being rejected: climb and retry the whole dive
                 return;
             }
             swapSent = false;
+            elytraOffTick = Long.MIN_VALUE;
             enter(State.DROP);
             drop(client, self, target); // send the chest swap this tick
         }
@@ -513,6 +518,16 @@ public final class ElytraMaceBot extends Module {
         }
         enter(State.CLIMB);
         return false;
+    }
+
+    /**
+     * Strike reach with a server-side margin. The server sees us a round trip behind our
+     * client position, and a hit sent at exactly the 3.0 interaction limit was regularly
+     * dropped as out of range - which looked like the smash whiffing at the last moment.
+     */
+    private double strikeReach(MinecraftClient client) {
+        double margin = Math.min(0.3, 0.1 + 0.05 * CombatCoordinator.pingTicks(client));
+        return Math.max(2.4, reach.get() - margin);
     }
 
     /** Gear present, shield not raised at us, enough fall banked for a smash after the swap. */
@@ -534,6 +549,11 @@ public final class ElytraMaceBot extends Module {
      * Free-fall forecast after the swap (vanilla: pos += v; vy = (vy - 0.08) * 0.98; vxz *= 0.91)
      * against the target's tracked motion: true when the target hitbox comes inside reach within
      * lead+2 ticks. Each tick's path is sub-sampled so a fast pass through the reach sphere counts.
+     *
+     * <p>The swap click needs a full server round trip before free fall actually starts (the
+     * client keeps gliding until the equipment update comes back), so the horizon includes that
+     * lag - without it the swap fired too late, the elytra stayed on past the predicted impact
+     * and the strike window starved, which showed up as the dive pulling up right before the hit.
      */
     private boolean impactSoon(ClientPlayerEntity self, LivingEntity target) {
         double px = self.getX(), py = self.getY(), pz = self.getZ();
@@ -541,7 +561,8 @@ public final class ElytraMaceBot extends Module {
         double vx = v.x, vy = v.y, vz = v.z;
         Box base = target.getBoundingBox();
         double r2 = reach.get() * reach.get();
-        int horizon = swapLead.get().intValue() + 2;
+        int lagTicks = Math.min(6, 1 + CombatCoordinator.pingTicks(MinecraftClient.getInstance()));
+        int horizon = swapLead.get().intValue() + 2 + lagTicks;
         for (int t = 1; t <= horizon; t++) {
             double nx = px + vx, ny = py + vy, nz = pz + vz;
             Box tb = base.offset(targetVel.x * t, targetVel.y * t, targetVel.z * t);
@@ -573,7 +594,12 @@ public final class ElytraMaceBot extends Module {
         }
         aimAt(self, target);
         if (GearSlots.wearingElytra(self)) {
-            if (swapSent && stateTicks > 3) {
+            // The swap click needs a full server round trip before the worn item changes here
+            // (the client does not predict armour clicks), so the patience scales with ping -
+            // the old fixed 3-tick wait declared every drop's click dead on ~150 ms and the
+            // bot climbed away right before the hit, dive after dive.
+            int patience = (int) Math.min(8, 4 + 2L * CombatCoordinator.pingTicks(client));
+            if (swapSent && stateTicks > patience) {
                 swapAttempts++;
                 enter(State.DIVE); // the click did not take: keep diving, try again (capped)
                 return;
@@ -599,10 +625,13 @@ public final class ElytraMaceBot extends Module {
             return;
         }
         slamPending = true;
-        long elapsed = TickPhase.tickId() - swapTick;
+        if (elytraOffTick == Long.MIN_VALUE) {
+            elytraOffTick = TickPhase.tickId(); // free fall starts NOW, not at the click
+        }
+        long offElapsed = TickPhase.tickId() - elytraOffTick;
         Box tb = target.getBoundingBox();
         Vec3d eye = self.getEyePos();
-        if (elapsed > strikeWindow.get() || eye.y < tb.minY + 0.5) {
+        if (offElapsed > strikeWindow.get() || eye.y < tb.minY + 0.5) {
             if (!miss()) {
                 enter(State.RECOVER); // missed: elytra back on right away, never fall with the chestplate
             }
@@ -610,10 +639,10 @@ public final class ElytraMaceBot extends Module {
         }
         // The server must have dropped gliding (it does on its tick after the click) before
         // the hit, or the smash bonus is not applied.
-        if (elapsed < swapLead.get() || self.isGliding() || acted()) {
+        if (offElapsed < swapLead.get() || self.isGliding() || acted()) {
             return;
         }
-        double r = reach.get();
+        double r = strikeReach(client);
         if (tb.squaredMagnitude(eye) > r * r
                 || self.fallDistance < minFall.get()
                 || target.hurtTime > maxHurt.get().intValue()

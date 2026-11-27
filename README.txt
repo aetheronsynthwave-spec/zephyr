@@ -1,3 +1,34 @@
+Zephyr Client v1.13.2 - Minecraft 1.21.11 (Fabric)
+===================================================
+
+WHAT'S NEW IN v1.13.2 (macebot strike fixes)
+--------------------------------------------
+The three mace bots dove correctly but pulled back up right before the hit instead of
+landing the smash. Root causes found by replaying the dive math against the real
+1.21.11 mechanics (glide flag is server-authoritative; armour clicks are not predicted
+client-side, so the elytra stays on for a full round trip after the swap click):
+
+* ElytraMaceBot: the strike window was counted from the chest-swap CLICK while the
+  player keeps gliding until the server confirms the swap - at normal ping the whole
+  window burned away during that lag and every drop ended in the miss->climb swoop.
+  The window now counts from the tick the elytra actually comes off, the equipment
+  wait scales with ping (was a fixed 3 ticks), the free-fall impact forecast includes
+  the swap round trip so the swap fires early enough, and the strike reach keeps a
+  small margin under the server's 3.0 interaction limit (a hit at exactly 3.0
+  client-side was being dropped as out of range).
+* SmartMaceBot: launches from up to 14 blocks away (launchRange) - the wind charge is a
+  vertical boost and air control is ~2% of ground control, so the descent sailed past
+  and the bot just bounced up and down. Launch range is now capped at smash range
+  (default 5, the bot walks the rest first). The strike was also held for a 10-degree
+  aim lock while the aim point slews 15-25 deg/tick during a fast fall - the reach
+  window flew past with the hit still blocked; during a qualifying fall the tolerance
+  now widens instead (the server only needs reach + line of sight). A wind-charge
+  throw delayed past the jump apex aborts and finishes the drop instead of boosting
+  the bot back up right before the smash.
+* AutoMace: TRIGGER strikes at 2.85 instead of exactly 3.0 (server-side margin);
+  STANDARD/DENSITY widen the aim gate during fast qualifying falls for the same
+  reason as SmartMaceBot.
+
 Zephyr Client v1.11.0 - Minecraft 1.21.11 (Fabric)
 ===================================================
 

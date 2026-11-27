@@ -208,8 +208,10 @@ public final class AutoMace extends Module {
             triggerStreak = 0;
             return;
         }
-        // Reach is capped at 3 blocks so the trigger never reaches past vanilla melee range.
-        double reach = Math.min(3.0, maxTargetDist.get());
+        // Reach is capped just under the server's 3.0 interaction limit so the trigger
+        // never reaches past vanilla melee range - and never gets dropped as out of range
+        // because the server sees us a round trip behind our client position.
+        double reach = Math.min(2.85, maxTargetDist.get());
         LivingEntity target = triggerTarget(client, self, reach);
         if (target == null || target.hurtTime > maxHurtTime.get().intValue()
                 || dev.zephyr.core.combat.CombatCoordinator.shieldBlocks(target, self)) {
@@ -308,7 +310,11 @@ public final class AutoMace extends Module {
                 .validWhile(() -> target.isAlive())
                 .expiresAfter(4)
                 .build());
-        return RotationManager.isAimedAt(aim, 6.0);
+        // A qualifying fall is fast and the aim point slews hard over the last blocks, so the
+        // convergence tolerance widens with the fall instead of blocking the smash - waiting
+        // for a 6-degree lock is what made the strike window fly past the target.
+        double tol = fall >= Math.max(1.5, minFall.get()) ? Math.max(6.0, aimFov.get()) : 6.0;
+        return RotationManager.isAimedAt(aim, tol);
     }
 
     /**
