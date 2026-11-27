@@ -76,6 +76,7 @@ public final class SmartMaceBot extends Module {
     private final BooleanSetting meleeFallback = bool("melee", "Melee when no smash", true);
     private final BooleanSetting airControl = bool("airControl", "Steer in the air", true);
     private final BooleanSetting respectShield = bool("respectShield", "Hold strike into raised shield", true);
+    private final dev.zephyr.core.target.TargetLock lock = new dev.zephyr.core.target.TargetLock();
 
     private enum Intent { IDLE, STRIKE, LAUNCH, TRACK_AIR, MELEE, APPROACH, HOLD }
 
@@ -122,6 +123,7 @@ public final class SmartMaceBot extends Module {
         launchHome = -1;
         slamPending = false;
         intent = Intent.IDLE;
+        lock.clear();
         RotationManager.clear(PRIORITY);
     }
 
@@ -131,6 +133,7 @@ public final class SmartMaceBot extends Module {
         launchHome = -1;
         slamPending = false;
         intent = Intent.IDLE;
+        lock.clear();
     }
 
     // ------------------------------------------------------------------
@@ -157,8 +160,8 @@ public final class SmartMaceBot extends Module {
             setEnabled(false);
             return;
         }
-        LivingEntity target = TargetManager.acquire(client, new TargetCriteria().range(range.get()));
-        TargetManager.cleanup();
+        // Own lock (see TargetLock): other modules no longer flip this bot's target.
+        LivingEntity target = lock.update(client, range.get(), false);
         if (target == null) {
             intent = Intent.IDLE;
             abandonLaunch(client);

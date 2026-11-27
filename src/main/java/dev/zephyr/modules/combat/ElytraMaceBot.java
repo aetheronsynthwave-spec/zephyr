@@ -93,6 +93,8 @@ public final class ElytraMaceBot extends Module {
     private final BooleanSetting requireWindBurst = bool("windBurst", "Require Wind Burst mace", true);
     private final BooleanSetting respectShield = bool("respectShield", "Hold strike into raised shield", true);
     private final BooleanSetting rocketInDive = bool("diveRockets", "Rockets during dive", true);
+    private final BooleanSetting groundedOnly = bool("groundedOnly", "Only target players not flying", true);
+    private final dev.zephyr.core.target.TargetLock lock = new dev.zephyr.core.target.TargetLock();
 
     private enum State { PREFLIGHT, JUMP, GLIDE_START, CLIMB, DIVE, SWAP_OFF, STRIKE, SWAP_ON, REGLIDE, ABORT }
 
@@ -172,6 +174,7 @@ public final class ElytraMaceBot extends Module {
         trackedId = -1;
         targetVel = Vec3d.ZERO;
         lastTargetPos = null;
+        lock.clear();
     }
 
     private void enter(State next) {
@@ -208,8 +211,9 @@ public final class ElytraMaceBot extends Module {
         sinceRocket++;
         slamPending = false;
 
-        LivingEntity target = TargetManager.acquire(client, new TargetCriteria().range(range.get()));
-        TargetManager.cleanup();
+        // Own lock: the shared TargetManager target was overwritten by other modules every
+        // tick (TargetHUD's 16-block pick vs our 64), flipping the dive between players.
+        LivingEntity target = lock.update(client, range.get(), groundedOnly.get());
         trackTarget(target);
 
         boolean recovering = state == State.SWAP_ON || state == State.REGLIDE || state == State.ABORT;
@@ -361,7 +365,7 @@ public final class ElytraMaceBot extends Module {
         Vec3d lead = target.getEntityPos().add(targetVel.multiply(MathHelper.clamp(alt / 2.0, 0.0, 15.0)));
         double leadHoriz = Math.hypot(lead.x - self.getX(), lead.z - self.getZ());
         if (high && leadHoriz <= diveRadius.get() + Math.min(4.0, speed * 2.0)
-                && clearance >= groundClear.get()) {
+                && clearance >= groundClear.get() && !target.isGliding()) {
             losLost = 0;
             enter(State.DIVE);
             return;
@@ -411,6 +415,11 @@ public final class ElytraMaceBot extends Module {
         double pitch = MathHelper.clamp(MathUtil.pitchTo(eye, aim), minDivePitch.get(), 89.0);
         steer(MathUtil.yawTo(eye, aim), pitch);
 
+        // Target took off (elytra): a smash dive onto a flier cannot be timed. Hold altitude.
+        if (target.isGliding()) {
+            reposition();
+            return;
+        }
         // Overshoot: the target is now further sideways than a steep dive can correct.
         if (horiz > Math.max(6.0, alt * 0.9) && alt > 4.0) {
             reposition();

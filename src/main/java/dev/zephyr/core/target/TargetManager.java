@@ -31,6 +31,8 @@ public final class TargetManager {
     }
 
     private static LivingEntity target;
+    /** Tick in which a module's {@link TargetLock} pinned the target (see {@link #point}). */
+    private static long pointedTick = Long.MIN_VALUE;
     private static int heldTicks;
     private static final Map<UUID, Long> threatMemory = new HashMap<>();
     /** entityId -> last observed health (for DamageNumbers). */
@@ -38,7 +40,22 @@ public final class TargetManager {
     /** entityId -> tick at which the entity was last seen (for stale cleanup). */
     private static final Map<Integer, Integer> seenTick = new HashMap<>();
 
+    /**
+     * Pins the global target for this tick to a module's locked target, so every other
+     * {@link #acquire} this tick (TargetHUD, ESP outlines, ...) agrees with it instead of
+     * re-picking a different player and fighting the lock.
+     */
+    public static void point(LivingEntity locked) {
+        if (locked != null) {
+            target = locked;
+            pointedTick = dev.zephyr.core.timing.TickPhase.tickId();
+        }
+    }
+
     public static LivingEntity acquire(MinecraftClient client, TargetCriteria criteria) {
+        if (pointedTick == dev.zephyr.core.timing.TickPhase.tickId() && target != null && target.isAlive()) {
+            return target; // a module holds a lock this tick
+        }
         ClientPlayerEntity self = client.player;
         ClientWorld world = client.world;
         if (self == null || world == null) {
