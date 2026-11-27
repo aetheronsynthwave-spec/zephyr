@@ -51,7 +51,8 @@ public final class StaffDetector extends Module {
             if (name == null || name.equals(self)) {
                 continue;
             }
-            if (STAFF.contains(name.toLowerCase())) {
+            // Lower-casing allocates per tab entry per tick: skip it when no staff names are set.
+            if (!STAFF.isEmpty() && STAFF.contains(name.toLowerCase())) {
                 flag(mc, name, "listed staff is online");
             }
             if (spectators.get() && e.getGameMode() == GameMode.SPECTATOR) {

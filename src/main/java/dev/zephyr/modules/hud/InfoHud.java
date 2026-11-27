@@ -1,9 +1,8 @@
 package dev.zephyr.modules.hud;
 
-import dev.zephyr.core.Module;
 import dev.zephyr.core.ModuleCategory;
+import dev.zephyr.core.hud.HudModule;
 import dev.zephyr.core.settings.BooleanSetting;
-import dev.zephyr.core.settings.NumberSetting;
 import dev.zephyr.gui.render.Ui;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.DrawContext;
@@ -15,12 +14,15 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * InfoHUD - a compact top-right panel: coordinates, the matching Nether/Overworld
+ * InfoHUD - a compact panel (top-right by default): coordinates, the matching Nether/Overworld
  * coordinates, facing (with the axis you are walking along), horizontal speed, FPS and
  * ping. Values are sampled once per tick (speed from the real position delta) and the
  * panel is drawn per frame from those cached strings.
  */
-public final class InfoHud extends Module {
+public final class InfoHud extends HudModule {
+
+    private static final float SIZE = 8.5f;
+    private static final float ROW = 11f;
 
     private final BooleanSetting coords = bool("coords", "Coordinates", true);
     private final BooleanSetting otherDim = bool("otherDim", "Nether / Overworld coords", true);
@@ -28,15 +30,19 @@ public final class InfoHud extends Module {
     private final BooleanSetting speed = bool("speed", "Speed", true);
     private final BooleanSetting fps = bool("fps", "FPS", true);
     private final BooleanSetting ping = bool("ping", "Ping", true);
-    private final NumberSetting scale = num("scale", "Scale", 0.6, 2.0, 0.05, 1.0);
 
     private final List<String[]> lines = new ArrayList<>();
+    private final float[] size = new float[2];
+    private float labelW;
+    private float valueW;
+    private float contentW;
+    private boolean linesDirty = true;
     private double lastX = Double.NaN;
     private double lastZ;
     private double speedBps;
 
     public InfoHud() {
-        super("InfoHUD", ModuleCategory.RENDER, 0);
+        super("InfoHUD", ModuleCategory.RENDER, 100, 0, "TOP_RIGHT");
     }
 
     @Override
@@ -84,6 +90,7 @@ public final class InfoHud extends Module {
             PlayerListEntry entry = client.getNetworkHandler().getPlayerListEntry(p.getUuid());
             lines.add(new String[]{"Ping", entry == null ? "-" : entry.getLatency() + " ms"});
         }
+        linesDirty = true;
     }
 
     private static String facingText(float yaw) {
@@ -98,35 +105,34 @@ public final class InfoHud extends Module {
     }
 
     @Override
-    public void onHudRender(DrawContext ctx, float tickDelta) {
-        MinecraftClient client = MinecraftClient.getInstance();
-        if (client.player == null || client.options.hudHidden || lines.isEmpty()) {
-            return;
+    protected float[] measure() {
+        if (linesDirty) {
+            labelW = 0f;
+            valueW = 0f;
+            for (String[] l : lines) {
+                labelW = Math.max(labelW, Ui.textWidth(l[0], SIZE, false));
+                valueW = Math.max(valueW, Ui.textWidth(l[1], SIZE, false));
+            }
+            linesDirty = false;
         }
-        float s = scale.get().floatValue();
-        float screenW = client.getWindow().getScaledWidth() / s;
-        final float size = 8.5f;
-        float labelW = 0, valueW = 0;
-        for (String[] l : lines) {
-            labelW = Math.max(labelW, Ui.textWidth(l[0], size, false));
-            valueW = Math.max(valueW, Ui.textWidth(l[1], size, false));
+        if (lines.isEmpty()) {
+            size[0] = 0f;
+            size[1] = 0f;
+            return size;
         }
-        float w = 8 + labelW + 10 + valueW + 8;
-        float h = 6 + lines.size() * 11 + 4;
-        float x = screenW - w - 6;
-        float y = 6;
+        contentW = labelW + 12f + valueW;
+        size[0] = contentW;
+        size[1] = lines.size() * ROW - 3f;
+        return size;
+    }
 
-        ctx.getMatrices().pushMatrix();
-        ctx.getMatrices().scale(s, s);
-        Ui.beginFrame(s);
-        Ui.shadow(ctx, x, y, w, h, 6, 6, 0x55000000);
-        Ui.roundRect(ctx, x, y, w, h, 6, 0xB0101319);
-        float ly = y + 6;
+    @Override
+    protected void renderContent(DrawContext ctx, float x, float y, float alpha) {
+        float ly = y;
         for (String[] l : lines) {
-            Ui.text(ctx, l[0], x + 8, ly, size, Ui.TEXT_FAINT, false);
-            Ui.textRight(ctx, l[1], x + w - 8, ly, size, Ui.TEXT, false);
-            ly += 11;
+            drawText(ctx, l[0], x, ly, SIZE, textFaint(), false, alpha);
+            drawTextRight(ctx, l[1], x + contentW, ly, SIZE, text(), false, alpha);
+            ly += ROW;
         }
-        ctx.getMatrices().popMatrix();
     }
 }

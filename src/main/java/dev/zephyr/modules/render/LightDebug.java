@@ -72,6 +72,10 @@ public final class LightDebug extends Module implements WorldRenderParticipant {
             return;
         }
         for (Box b : marks) {
+            // Up to 512 marks around the player; about half sit behind the camera at any time.
+            if (RenderUtil.boxBehindCamera(b.minX, b.minY, b.minZ, b.maxX, b.maxY, b.maxZ)) {
+                continue;
+            }
             RenderUtil.drawBoxOutline(ctx.matrices(), ctx.consumers(), b, 1f, 0.15f, 0.15f, 1f);
         }
     }

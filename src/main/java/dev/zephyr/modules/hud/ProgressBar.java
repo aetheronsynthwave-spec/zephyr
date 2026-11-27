@@ -1,71 +1,85 @@
 package dev.zephyr.modules.hud;
 
-import dev.zephyr.core.Module;
 import dev.zephyr.core.ModuleCategory;
+import dev.zephyr.core.hud.HudModule;
 import dev.zephyr.core.settings.BooleanSetting;
 import dev.zephyr.core.settings.NumberSetting;
-import net.minecraft.client.MinecraftClient;
+import dev.zephyr.gui.render.Ui;
 import net.minecraft.client.gui.DrawContext;
 
 /**
  * ProgressBar - Donut Client's streaming overlay: three milestone tiles
  * (Overworld / Nether / End) plus a "Bases Found" counter. Milestones and the counter are
- * plain settings, so they are edited in the ClickGui (and persist in the config). The
- * overlay position is a corner setting and its size a percentage, like the original.
+ * plain settings, so they are edited in the ClickGui (and persist in the config). Position,
+ * scale and background come from the shared HUD settings.
  */
-public final class ProgressBar extends Module {
+public final class ProgressBar extends HudModule {
+
+    private static final String[] NAMES = {"Overworld", "Nether", "End"};
+    /** Milestone tile colours (semantic: they identify each dimension). */
+    private static final int[] COLORS = {0xFF4CAF50, 0xFFB84A3A, 0xFF8E7CC3};
+    private static final float LABEL = 8f;
+    private static final float TILE_TOP = 4f;
+    private static final float TILE_H = 34f;
+    private static final float CONTENT_H = 52f;
 
     private final BooleanSetting overworld = bool("overworld", "Overworld done", false);
     private final BooleanSetting nether = bool("nether", "Nether done", false);
     private final BooleanSetting end = bool("end", "End done", false);
     private final NumberSetting bases = num("bases", "Bases found", 0, 999, 1, 0);
-    private final NumberSetting size = num("size", "Size %", 50, 200, 10, 100);
-    private final NumberSetting posX = num("x", "Position X", 0, 2000, 5, 6);
-    private final NumberSetting posY = num("y", "Position Y", 0, 1200, 5, 40);
     private final BooleanSetting outline = bool("outline", "Shiny outline", true);
 
+    private final float[] size = new float[2];
+    private float tileW = -1f;
+    private int basesShown = -1;
+    private String basesText = "0";
+
     public ProgressBar() {
-        super("ProgressBar", ModuleCategory.RENDER, 0);
+        super("ProgressBar", ModuleCategory.RENDER, 0, 8, "TOP_LEFT");
     }
 
     @Override
-    public void onHudRender(DrawContext ctx, float tickDelta) {
-        MinecraftClient mc = MinecraftClient.getInstance();
-        if (mc.player == null || mc.options.hudHidden) {
-            return;
+    protected float[] measure() {
+        if (tileW < 0f) {
+            float widest = 0f;
+            for (String n : NAMES) {
+                widest = Math.max(widest, Ui.textWidth(n, LABEL, false));
+            }
+            tileW = Math.max(8f, widest + 8f); // tiles fit the widest label
         }
-        float s = size.get().floatValue() / 100f;
-        int x = posX.asInt(), y = posY.asInt();
-        ctx.getMatrices().pushMatrix();
-        ctx.getMatrices().translate(x, y);
-        ctx.getMatrices().scale(s, s);
-        String[] names = {"Overworld", "Nether", "End"};
-        boolean[] done = {overworld.get(), nether.get(), end.get()};
-        int[] colors = {0xFF4CAF50, 0xFFB84A3A, 0xFF8E7CC3};
-        // Tiles sized to the widest label ("Overworld" overflowed the old fixed 40px tile).
-        int tile = 8;
-        for (String label : names) {
-            tile = Math.max(tile, mc.textRenderer.getWidth(label) + 8);
-        }
-        int w = 3 * (tile + 4) + 4;
+        size[0] = 3 * (tileW + 4f) + 4f;
+        size[1] = CONTENT_H;
+        return size;
+    }
+
+    @Override
+    protected void drawPanel(DrawContext ctx, float w, float h, float alpha) {
         if (outline.get()) {
-            int glow = 0xFF000000 | (int) (180 + 70 * Math.sin(System.currentTimeMillis() / 400.0)) << 8 | 0xFF;
-            ctx.fill(-2, -2, w + 2, 62, glow);
+            float pulse = 0.6f + 0.4f * (float) Math.sin(System.currentTimeMillis() / 400.0);
+            Ui.roundRect(ctx, -2f, -2f, w + 4f, h + 4f, radius() + 2f, Ui.alpha(accent(), pulse * alpha));
         }
-        ctx.fill(0, 0, w, 60, 0xCC101216);
-        for (int i = 0; i < 3; i++) {
-            int tx = 4 + i * (tile + 4);
-            ctx.fill(tx, 4, tx + tile, 38, colors[i]);
-            ctx.drawText(mc.textRenderer, names[i], tx + tile / 2 - mc.textRenderer.getWidth(names[i]) / 2, 18,
-                    0xFFFFFFFF, true);
-            if (done[i]) {
-                ctx.drawText(mc.textRenderer, "X", tx + tile / 2 - 3, 6, 0xFFFF3030, true);
+        super.drawPanel(ctx, w, h, alpha);
+    }
+
+    @Override
+    protected void renderContent(DrawContext ctx, float x, float y, float alpha) {
+        for (int i = 0; i < NAMES.length; i++) {
+            float tx = x + 4f + i * (tileW + 4f);
+            Ui.roundRect(ctx, tx, y + TILE_TOP, tileW, TILE_H, 4f, Ui.alpha(COLORS[i], alpha));
+            float lw = Ui.textWidth(NAMES[i], LABEL, false);
+            drawText(ctx, NAMES[i], tx + (tileW - lw) / 2f, y + 18f, LABEL, text(), false, alpha);
+            boolean done = i == 0 ? overworld.get() : i == 1 ? nether.get() : end.get();
+            if (done) {
+                drawText(ctx, "X", tx + tileW / 2f - 3f, y + 6f, LABEL, 0xFFFF3030, true, alpha);
             }
         }
-        ctx.drawText(mc.textRenderer, "Bases Found: ", 6, 44, 0xFFFFFFFF, true);
-        ctx.drawText(mc.textRenderer, String.valueOf(bases.asInt()),
-                6 + mc.textRenderer.getWidth("Bases Found: "), 44, 0xFFFF4040, true);
-        ctx.getMatrices().popMatrix();
+        int count = bases.asInt();
+        if (count != basesShown) {
+            basesShown = count;
+            basesText = String.valueOf(count);
+        }
+        float bw = drawText(ctx, "Bases Found: ", x + 2f, y + 44f, LABEL, text(), false, alpha);
+        drawText(ctx, basesText, x + 2f + bw, y + 44f, LABEL, accent(), true, alpha);
     }
 
     @Override

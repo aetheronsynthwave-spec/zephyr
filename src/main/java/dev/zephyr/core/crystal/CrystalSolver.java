@@ -284,7 +284,8 @@ public final class CrystalSolver {
                 tPos.getX() + r, yMax, tPos.getZ() + r)) {
             // The obsidian cell itself must be empty and the crystal cell above empty
             // (both pure block-state checks; entity legality is a phase-B gate).
-            if (!world.getBlockState(cell).isAir() && !world.getBlockState(cell).isReplaceable()) {
+            BlockState cellState = world.getBlockState(cell);
+            if (!cellState.isAir() && !cellState.isReplaceable()) {
                 continue;
             }
             Vec3d blast = Vec3d.ofCenter(cell.up());

@@ -169,9 +169,10 @@ public final class DamageCalculator {
      */
     private static double exposure(World world, Vec3d origin, Entity target) {
         Box box = target.getBoundingBox();
-        double[] xs = {box.minX, box.getCenter().x, box.maxX};
-        double[] ys = {box.minY, box.getCenter().y, box.maxY};
-        double[] zs = {box.minZ, box.getCenter().z, box.maxZ};
+        Vec3d center = box.getCenter(); // one allocation instead of three
+        double[] xs = {box.minX, center.x, box.maxX};
+        double[] ys = {box.minY, center.y, box.maxY};
+        double[] zs = {box.minZ, center.z, box.maxZ};
         int visible = 0;
         int total = 0;
         for (double x : xs) {

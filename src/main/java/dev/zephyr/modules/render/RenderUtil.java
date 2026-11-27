@@ -53,9 +53,16 @@ public final class RenderUtil {
     private static Vec3d cachedCameraPos;
     private static boolean cameraValid;
 
+    /** Camera forward vector, cached per frame with the camera position (used by the culling test). */
+    private static double lookX;
+    private static double lookY;
+    private static double lookZ;
+    private static boolean lookValid;
+
     /** Called once per frame by the world-render dispatcher before modules run. */
     public static void beginFrame() {
         cameraValid = false;
+        lookValid = false;
     }
 
     /**
@@ -86,6 +93,35 @@ public final class RenderUtil {
         double pitch = Math.toRadians(camera.getPitch());
         Vec3d look = new Vec3d(-Math.sin(yaw) * Math.cos(pitch), -Math.sin(pitch), Math.cos(yaw) * Math.cos(pitch));
         return cameraPos().add(look.multiply(0.6));
+    }
+
+    /**
+     * True when an axis-aligned box lies entirely behind the camera, so none of its edges can
+     * reach the screen and submitting them is wasted vertex work. Conservative on purpose: a
+     * box is culled only when its centre sits behind the view direction by more than its own
+     * half-diagonal (so every corner is behind the camera plane), and never within 2 blocks.
+     */
+    public static boolean boxBehindCamera(double minX, double minY, double minZ,
+                                          double maxX, double maxY, double maxZ) {
+        Vec3d cam = cameraPos();
+        double cx = (minX + maxX) * 0.5 - cam.x;
+        double cy = (minY + maxY) * 0.5 - cam.y;
+        double cz = (minZ + maxZ) * 0.5 - cam.z;
+        if (cx * cx + cy * cy + cz * cz <= 4.0) {
+            return false;
+        }
+        if (!lookValid) {
+            var camera = MinecraftClient.getInstance().gameRenderer.getCamera();
+            double yaw = Math.toRadians(camera.getYaw());
+            double pitch = Math.toRadians(camera.getPitch());
+            lookX = -Math.sin(yaw) * Math.cos(pitch);
+            lookY = -Math.sin(pitch);
+            lookZ = Math.cos(yaw) * Math.cos(pitch);
+            lookValid = true;
+        }
+        double hx = (maxX - minX) * 0.5, hy = (maxY - minY) * 0.5, hz = (maxZ - minZ) * 0.5;
+        double radius = Math.sqrt(hx * hx + hy * hy + hz * hz);
+        return cx * lookX + cy * lookY + cz * lookZ < -radius;
     }
 
     // ------------------------------------------------------------------
@@ -268,6 +304,17 @@ public final class RenderUtil {
     public static void drawBillboardText(MatrixStack matrices, VertexConsumerProvider consumers,
                                          double wx, double wy, double wz, Text text, int color,
                                          int backgroundColor, boolean seeThrough) {
+        drawBillboardText(matrices, consumers, wx, wy, wz, text,
+                MinecraftClient.getInstance().textRenderer.getWidth(text), color, backgroundColor, seeThrough);
+    }
+
+    /**
+     * Billboard text with the pixel width supplied by the caller. {@code getWidth} walks the
+     * whole styled text, so callers drawing the same label every frame cache the width once.
+     */
+    public static void drawBillboardText(MatrixStack matrices, VertexConsumerProvider consumers,
+                                         double wx, double wy, double wz, Text text, float width,
+                                         int color, int backgroundColor, boolean seeThrough) {
         MinecraftClient client = MinecraftClient.getInstance();
         Vec3d cameraPos = cameraPos();
 
@@ -279,7 +326,6 @@ public final class RenderUtil {
         float scale = 0.02f;
         matrices.scale(scale, -scale, scale);
 
-        float width = client.textRenderer.getWidth(text);
         Matrix4f matrix = matrices.peek().getPositionMatrix();
         client.textRenderer.draw(text, -width / 2.0f, 0, color, false, matrix,
                 consumers, seeThrough

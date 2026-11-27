@@ -29,6 +29,7 @@ import java.util.Map;
 public final class CrystalEsp extends Module implements WorldRenderParticipant {
 
     private static final int REFRESH_TICKS = 5;
+    private static final int PRUNE_TICKS = 100;
 
     private final NumberSetting range = num("range", "Range", 8.0, 64.0, 1.0, 32.0);
     private final NumberSetting dangerHealth = num("danger", "Red below self-dmg", 0.0, 20.0, 0.5, 6.0);
@@ -71,6 +72,12 @@ public final class CrystalEsp extends Module implements WorldRenderParticipant {
             if (self.squaredDistanceTo(crystal) > rangeSq) {
                 continue;
             }
+            // Crystals behind the camera are not drawn, so skip their exposure math too
+            // (the damage cache refreshes on demand, so the value is still correct on return).
+            Box bb = crystal.getBoundingBox();
+            if (RenderUtil.boxBehindCamera(bb.minX, bb.minY, bb.minZ, bb.maxX, bb.maxY, bb.maxZ)) {
+                continue;
+            }
             double selfDmg = cachedSelfDamage(crystal, tick);
             float r = 1.0f;
             float g = 1.0f;
@@ -89,7 +96,7 @@ public final class CrystalEsp extends Module implements WorldRenderParticipant {
                 b = 0.2f;
             }
             // Crystals are stationary entities; the raw box is already render-accurate.
-            RenderUtil.drawBoxOutline(matrices, consumers, crystal.getBoundingBox(), r, g, b, 1.0f);
+            RenderUtil.drawBoxOutline(matrices, consumers, bb, r, g, b, 1.0f);
         }
     }
 
@@ -97,6 +104,9 @@ public final class CrystalEsp extends Module implements WorldRenderParticipant {
     private List<EndCrystalEntity> scanCrystals(MinecraftClient client, ClientPlayerEntity self, int tick) {
         if (scanned == null || scanTick != tick) {
             scanTick = tick;
+            // Crystal ids only ever grow, and a crystal that is gone is never looked up again:
+            // drop entries not refreshed for a while so the cache stays bounded on long sessions.
+            damageCache.values().removeIf(c -> tick - c.tick > PRUNE_TICKS);
             scanned = new java.util.ArrayList<>();
             for (var e : dev.zephyr.core.world.EntityScan.around(
                     client.world, self.getLerpedPos(1.0F), range.get())) {

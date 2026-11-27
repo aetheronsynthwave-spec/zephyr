@@ -23,7 +23,7 @@ public final class ModuleDescriptions {
     static {
         // Combat
         d("AimAssist", "Gently pulls your view toward the nearest enemy while you hold attack. Never snaps.");
-        d("AutoMace", "Times mace smashes while falling, swapping to the mace for the hit and back.");
+        d("AutoMace", "Strikes the moment you fall onto a player in reach (TRIGGER default), swapping to the mace for that hit and back.");
         d("ElytraMaceBot", "Elytra + rocket dive loop: climb, dive, swap the elytra off, Wind Burst mace strike, swap back, repeat.");
         d("SmartMaceBot", "No-elytra mace bot: weighs height, fall, reach and weapons to launch (wind charge), drop-smash, melee or approach.");
         d("BreachSwap", "Swaps every melee hit to your Breach mace for that hit, then back to your sword.");

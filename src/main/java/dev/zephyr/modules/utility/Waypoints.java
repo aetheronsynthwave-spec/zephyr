@@ -42,7 +42,14 @@ public final class Waypoints extends Module implements WorldRenderParticipant {
     /** key = "server|dimension" -> waypoints. */
     private Map<String, List<Waypoint>> all = new LinkedHashMap<>();
     private boolean loaded;
-    private final Map<String, Text> labelCache = new java.util.HashMap<>();
+    /** Label per waypoint name, rebuilt only when the rounded distance changes (no per-frame key strings). */
+    private final Map<String, Label> labelCache = new java.util.HashMap<>();
+
+    private static final class Label {
+        int dist = -1;
+        Text text;
+        float width;
+    }
 
     public Waypoints() {
         super("Waypoints", ModuleCategory.UTILITY, 0);
@@ -139,17 +146,22 @@ public final class Waypoints extends Module implements WorldRenderParticipant {
             // Label is pulled toward the camera when far away so it stays readable on screen.
             double len = Math.sqrt(distSq);
             double k = len > 12 ? 12 / len : 1.0;
-            String cacheKey = w.name() + "|" + dist;
-            Text label = labelCache.get(cacheKey);
+            Label label = labelCache.get(w.name());
             if (label == null) {
                 if (labelCache.size() > 256) {
                     labelCache.clear();
                 }
-                label = Text.literal(w.name() + " - " + dist + "m");
-                labelCache.put(cacheKey, label);
+                label = new Label();
+                labelCache.put(w.name(), label);
+            }
+            if (label.dist != dist) {
+                label.dist = dist;
+                label.text = Text.literal(w.name() + " - " + dist + "m");
+                label.width = mc.textRenderer.getWidth(label.text);
             }
             RenderUtil.drawBillboardText(ctx.matrices(), ctx.consumers(),
-                    cam.x + dx * k, cam.y + (dy + 1.5) * k, cam.z + dz * k, label, 0xFFFFFFFF, 0x66000000, true);
+                    cam.x + dx * k, cam.y + (dy + 1.5) * k, cam.z + dz * k, label.text, label.width,
+                    0xFFFFFFFF, 0x66000000, true);
         }
     }
 

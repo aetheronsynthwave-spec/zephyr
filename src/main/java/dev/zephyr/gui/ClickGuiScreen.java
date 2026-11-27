@@ -72,6 +72,7 @@ public final class ClickGuiScreen extends Screen {
     /** Live search: typing anywhere filters modules (and their setting names). */
     private static String search = "";
     private float configsBtnX, configsBtnY, configsBtnW, configsBtnH;
+    private float hudBtnX, hudBtnY, hudBtnW, hudBtnH;
     private long lastFrame;
     private float dt;
 
@@ -318,6 +319,18 @@ public final class ClickGuiScreen extends Screen {
         Ui.pill(ctx, configsBtnX, configsBtnY, configsBtnW, h,
                 Ui.alpha(hov ? Ui.mix(Ui.BG_2, Ui.ACCENT, 0.25f) : Ui.BG_2, ease));
         Ui.textCentered(ctx, "Configs", configsBtnX + configsBtnW / 2f, y + 9.5f, TEXT_SMALL,
+                Ui.alpha(Ui.ACCENT, ease), true);
+        // Edit HUD button (right of Configs): opens the drag-to-move HUD editor.
+        hudBtnW = Ui.textWidth("Edit HUD", TEXT_SMALL, true) + 20;
+        hudBtnH = h;
+        hudBtnX = configsBtnX + configsBtnW + 6;
+        hudBtnY = y;
+        boolean hudHov = lastMouseGuiX >= hudBtnX && lastMouseGuiX < hudBtnX + hudBtnW
+                && lastMouseGuiY >= hudBtnY && lastMouseGuiY < hudBtnY + hudBtnH;
+        Ui.shadow(ctx, hudBtnX, hudBtnY, hudBtnW, h, h / 2f, 8, Ui.alpha(0x77000000, ease));
+        Ui.pill(ctx, hudBtnX, hudBtnY, hudBtnW, h,
+                Ui.alpha(hudHov ? Ui.mix(Ui.BG_2, Ui.ACCENT, 0.25f) : Ui.BG_2, ease));
+        Ui.textCentered(ctx, "Edit HUD", hudBtnX + hudBtnW / 2f, y + 9.5f, TEXT_SMALL,
                 Ui.alpha(Ui.ACCENT, ease), true);
     }
 
@@ -603,6 +616,11 @@ public final class ClickGuiScreen extends Screen {
         if (capturing == null && button == 0 && mx >= configsBtnX && mx < configsBtnX + configsBtnW
                 && my >= configsBtnY && my < configsBtnY + configsBtnH) {
             this.client.setScreen(new ConfigScreen(this));
+            return true;
+        }
+        if (capturing == null && button == 0 && mx >= hudBtnX && mx < hudBtnX + hudBtnW
+                && my >= hudBtnY && my < hudBtnY + hudBtnH) {
+            this.client.setScreen(new HudEditorScreen());
             return true;
         }
         if (capturing != null) {

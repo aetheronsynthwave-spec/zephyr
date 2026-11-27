@@ -1,9 +1,8 @@
 package dev.zephyr.modules.hud;
 
-import dev.zephyr.core.Module;
 import dev.zephyr.core.ModuleCategory;
+import dev.zephyr.core.hud.HudModule;
 import dev.zephyr.core.settings.BooleanSetting;
-import dev.zephyr.core.settings.NumberSetting;
 import dev.zephyr.gui.render.Ui;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.DrawContext;
@@ -16,33 +15,72 @@ import java.util.Locale;
 /**
  * Keystrokes - the classic streaming overlay in the bottom-right corner: forward/left/
  * back/right (labelled with your actual binds), both mouse buttons with clicks-per-second,
- * and the jump bar. Keys light up while held. Purely visual; it only reads key state.
+ * and the jump bar. Keys light up in the accent colour while held. Purely visual; it only
+ * reads key state.
  *
  * <p>CPS counts press edges seen each frame over a sliding one-second window.
  */
-public final class Keystrokes extends Module {
+public final class Keystrokes extends HudModule {
+
+    private static final float K = 22f;
+    private static final float GAP = 2f;
+    private static final float KEY_SIZE = 8f;
+    private static final float JUMP_H = 10f;
 
     private final BooleanSetting mouse = bool("mouse", "Mouse buttons + CPS", true);
     private final BooleanSetting jump = bool("jump", "Jump bar", true);
-    private final NumberSetting scale = num("scale", "Scale", 0.6, 2.0, 0.05, 1.0);
 
     private final ArrayDeque<Long> leftClicks = new ArrayDeque<>();
     private final ArrayDeque<Long> rightClicks = new ArrayDeque<>();
     private boolean leftWas;
     private boolean rightWas;
     private final float[] glow = new float[7];
+    private final float[] size = new float[2];
     private long lastNanos;
 
+    // Key labels are read from the bindings once per tick, not per frame.
+    private String forwardLabel = "";
+    private String leftLabel = "";
+    private String backLabel = "";
+    private String rightLabel = "";
+
+    // CPS strings are rebuilt only when the click count changes.
+    private int lmbShown = -1;
+    private int rmbShown = -1;
+    private String lmbText = "";
+    private String rmbText = "";
+
     public Keystrokes() {
-        super("Keystrokes", ModuleCategory.RENDER, 0);
+        super("Keystrokes", ModuleCategory.RENDER, 100, 100, "BOTTOM_RIGHT");
     }
 
     @Override
-    public void onHudRender(DrawContext ctx, float tickDelta) {
+    public void onTick(MinecraftClient client) {
+        GameOptions o = client.options;
+        forwardLabel = label(o.forwardKey);
+        leftLabel = label(o.leftKey);
+        backLabel = label(o.backKey);
+        rightLabel = label(o.rightKey);
+    }
+
+    @Override
+    protected boolean drawsPanel() {
+        return false; // every key is its own card
+    }
+
+    @Override
+    protected float[] measure() {
+        float gridH = K * 2 + GAP
+                + (mouse.get() ? GAP + K : 0f)
+                + (jump.get() ? GAP + JUMP_H : 0f);
+        size[0] = K * 3 + GAP * 2;
+        size[1] = gridH;
+        return size;
+    }
+
+    @Override
+    protected void renderContent(DrawContext ctx, float x, float y, float alpha) {
         MinecraftClient client = MinecraftClient.getInstance();
-        if (client.player == null || client.options.hudHidden) {
-            return;
-        }
         GameOptions o = client.options;
         long now = System.currentTimeMillis();
         long nanos = System.nanoTime();
@@ -62,46 +100,52 @@ public final class Keystrokes extends Module {
         trim(leftClicks, now);
         trim(rightClicks, now);
 
-        float s = scale.get().floatValue();
-        float sw = client.getWindow().getScaledWidth() / s;
-        float sh = client.getWindow().getScaledHeight() / s;
-        final float k = 22, gap = 2;
-        float gridW = k * 3 + gap * 2;
-        float gridH = k * 2 + gap
-                + (mouse.get() ? gap + k : 0)
-                + (jump.get() ? gap + 10 : 0);
-        float x0 = sw - gridW - 6;
-        float y0 = sh - gridH - 6;
-
-        ctx.getMatrices().pushMatrix();
-        ctx.getMatrices().scale(s, s);
-        Ui.beginFrame(s);
-        float y = y0;
-        key(ctx, 0, label(o.forwardKey), x0 + k + gap, y, k, k, o.forwardKey.isPressed(), dt);
-        y += k + gap;
-        key(ctx, 1, label(o.leftKey), x0, y, k, k, o.leftKey.isPressed(), dt);
-        key(ctx, 2, label(o.backKey), x0 + k + gap, y, k, k, o.backKey.isPressed(), dt);
-        key(ctx, 3, label(o.rightKey), x0 + (k + gap) * 2, y, k, k, o.rightKey.isPressed(), dt);
-        y += k + gap;
+        float gridW = size[0];
+        float y0 = y;
+        float ly = y0;
+        key(ctx, 0, forwardLabel, x + K + GAP, ly, K, K, o.forwardKey.isPressed(), dt, alpha);
+        ly += K + GAP;
+        key(ctx, 1, leftLabel, x, ly, K, K, o.leftKey.isPressed(), dt, alpha);
+        key(ctx, 2, backLabel, x + K + GAP, ly, K, K, o.backKey.isPressed(), dt, alpha);
+        key(ctx, 3, rightLabel, x + (K + GAP) * 2, ly, K, K, o.rightKey.isPressed(), dt, alpha);
+        ly += K + GAP;
         if (mouse.get()) {
-            float mw = (gridW - gap) / 2f;
-            key(ctx, 4, "LMB  " + leftClicks.size(), x0, y, mw, k, left, dt);
-            key(ctx, 5, "RMB  " + rightClicks.size(), x0 + mw + gap, y, mw, k, right, dt);
-            y += k + gap;
+            float mw = (gridW - GAP) / 2f;
+            int lc = leftClicks.size();
+            if (lc != lmbShown) {
+                lmbShown = lc;
+                lmbText = "LMB  " + lc;
+            }
+            int rc = rightClicks.size();
+            if (rc != rmbShown) {
+                rmbShown = rc;
+                rmbText = "RMB  " + rc;
+            }
+            key(ctx, 4, lmbText, x, ly, mw, K, left, dt, alpha);
+            key(ctx, 5, rmbText, x + mw + GAP, ly, mw, K, right, dt, alpha);
+            ly += K + GAP;
         }
         if (jump.get()) {
             float a = glow[6] = Ui.approach(glow[6], o.jumpKey.isPressed() ? 1f : 0f, 20f, dt);
-            Ui.roundRect(ctx, x0, y, gridW, 10, 4, Ui.mix(0xB0101319, 0xE0FFFFFF, a));
-            Ui.roundRect(ctx, x0 + gridW / 2f - 14, y + 4, 28, 2, 1, Ui.mix(Ui.TEXT_DIM, 0xFF101319, a));
+            card(ctx, x, ly, gridW, JUMP_H, radius(), alpha);
+            if (a > 0.01f) {
+                Ui.roundRect(ctx, x, ly, gridW, JUMP_H, radius(), Ui.alpha(accent(), 0.85f * a * alpha));
+            }
+            Ui.roundRect(ctx, x + gridW / 2f - 14f, ly + 4f, 28f, 2f, 1f,
+                    Ui.alpha(Ui.mix(textDim(), 0xFF101319, a), alpha));
         }
-        ctx.getMatrices().popMatrix();
     }
 
-    private void key(DrawContext ctx, int idx, String text, float x, float y, float w, float h,
-                     boolean down, float dt) {
+    /** One keystroke tile: a card that fills with the accent colour while held. */
+    private void key(DrawContext ctx, int idx, String textValue, float x, float y, float w, float h,
+                     boolean down, float dt, float alpha) {
         float a = glow[idx] = Ui.approach(glow[idx], down ? 1f : 0f, 20f, dt);
-        Ui.roundRect(ctx, x, y, w, h, 4, Ui.mix(0xB0101319, 0xE0FFFFFF, a));
-        Ui.textCentered(ctx, text, x + w / 2f, y + h / 2f - 4f, 8f, Ui.mix(Ui.TEXT, 0xFF101319, a), true);
+        card(ctx, x, y, w, h, radius(), alpha);
+        if (a > 0.01f) {
+            Ui.roundRect(ctx, x, y, w, h, radius(), Ui.alpha(accent(), 0.85f * a * alpha));
+        }
+        drawTextCentered(ctx, textValue, x + w / 2f, y + h / 2f - 4f, KEY_SIZE,
+                Ui.mix(text(), 0xFF101319, a), true, alpha);
     }
 
     private static String label(KeyBinding binding) {

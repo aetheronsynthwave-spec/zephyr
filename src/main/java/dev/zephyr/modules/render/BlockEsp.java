@@ -5,6 +5,7 @@ import dev.zephyr.core.ModuleCategory;
 import dev.zephyr.core.settings.ModeSetting;
 import dev.zephyr.core.settings.NumberSetting;
 import net.fabricmc.fabric.api.client.rendering.v1.world.WorldRenderContext;
+import net.minecraft.block.Block;
 import net.minecraft.block.BlockState;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.registry.Registries;
@@ -12,7 +13,9 @@ import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Box;
 
 import java.util.ArrayList;
+import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * BlockESP - outlines selected block families inside already-loaded chunks. Presets cover
@@ -41,6 +44,15 @@ public final class BlockEsp extends Module implements WorldRenderParticipant {
     private boolean scanning;
     public int lastCount;
 
+    /**
+     * Per-block-type verdict for the active preset. The scan visits up to {@code budget}
+     * block states every tick; resolving the registry id and string-matching it per state
+     * dominated the tick. A block type's id never changes, so the verdict is memoized per
+     * Block instance and the memo is dropped when the preset changes.
+     */
+    private final Map<Block, Boolean> matchMemo = new IdentityHashMap<>();
+    private String memoPreset = "";
+
     public BlockEsp() {
         super("BlockESP", ModuleCategory.RENDER, 0);
     }
@@ -55,7 +67,16 @@ public final class BlockEsp extends Module implements WorldRenderParticipant {
         if (st.isAir()) {
             return false;
         }
-        String id = Registries.BLOCK.getId(st.getBlock()).getPath();
+        Block block = st.getBlock();
+        Boolean hit = matchMemo.get(block);
+        if (hit == null) {
+            hit = matchesId(Registries.BLOCK.getId(block).getPath());
+            matchMemo.put(block, hit);
+        }
+        return hit;
+    }
+
+    private boolean matchesId(String id) {
         return switch (preset.get()) {
             case "DIAMOND" -> id.equals("diamond_ore") || id.equals("deepslate_diamond_ore");
             case "DEBRIS" -> id.equals("ancient_debris");
@@ -78,6 +99,11 @@ public final class BlockEsp extends Module implements WorldRenderParticipant {
             scanning = true;
         }
         int left = budget.asInt();
+        String presetName = preset.get();
+        if (!presetName.equals(memoPreset)) {
+            matchMemo.clear();
+            memoPreset = presetName;
+        }
         BlockPos.Mutable m = new BlockPos.Mutable();
         int minY = mc.world.getBottomY(), maxY = mc.world.getTopYInclusive();
         while (left > 0 && scanning) {
@@ -126,6 +152,10 @@ public final class BlockEsp extends Module implements WorldRenderParticipant {
                 break;
             }
             int x = p.getX(), y = p.getY(), z = p.getZ();
+            // Blocks fully behind the camera cannot reach the screen; skip their line submission.
+            if (RenderUtil.boxBehindCamera(x, y, z, x + 1, y + 1, z + 1)) {
+                continue;
+            }
             RenderUtil.drawBoxOutline(ctx.matrices(), ctx.consumers(), x, y, z, x + 1, y + 1, z + 1,
                     c[0], c[1], c[2], 1f, false);
         }

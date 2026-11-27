@@ -15,9 +15,12 @@ import dev.zephyr.core.target.TargetManager;
 import dev.zephyr.core.target.TargetCriteria;
 import dev.zephyr.core.util.ItemUtil;
 import dev.zephyr.core.util.MathUtil;
+import dev.zephyr.core.world.RaycastValidator;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.entity.LivingEntity;
+import net.minecraft.entity.player.PlayerEntity;
+import net.minecraft.util.hit.EntityHitResult;
 import net.minecraft.util.math.Vec3d;
 
 /**
@@ -33,17 +36,30 @@ import net.minecraft.util.math.Vec3d;
  * the gate - the attack goes out in the same tick the server registers the smash landing,
  * which is exactly the timing a Density-mace player performs by hand.
  *
- * <p>Both modes respect target hurt-time (server invulnerability frames), rotation
- * convergence, weapon cooldown, and the BreachSwap hotbar transition.
+ * <p><b>TRIGGER</b> (default): strikes like a TriggerBot for falls. The tick the local
+ * player is falling with a qualifying fall and a player is inside reach, it attacks,
+ * swapping to the mace for that hit. No rotations are requested: it fires at whatever is
+ * under the crosshair, or at the nearest visible player in reach when the crosshair is off
+ * them. The server only needs the target in reach, so no aim help is needed.
+ *
+ * <p>All modes respect target hurt-time (server invulnerability frames), shields, and the
+ * BreachSwap hotbar transition. STANDARD and DENSITY also use rotation convergence and
+ * weapon cooldown.
  */
 public final class AutoMace extends Module {
 
     private final ModeSetting mode = s(new ModeSetting("mode", "Mode",
-            java.util.List.of("STANDARD", "DENSITY"), "STANDARD"));
+            java.util.List.of("TRIGGER", "STANDARD", "DENSITY"), "TRIGGER"));
 
     private final NumberSetting minFall = num("minFall", "Min fall (blocks)", 0.5, 8.0, 0.25, 1.5);
     private final NumberSetting maxTargetDist = num("maxDist", "Max target dist", 1.5, 4.0, 0.1, 3.2);
     private final NumberSetting maxHurtTime = num("hurtTime", "Max target hurt time", 0, 10, 1, 5);
+    /** TRIGGER: only players are struck (off has no effect on the nearest-player scan). */
+    private final BooleanSetting playersOnly = bool("playersOnly", "Players only", true);
+    /** TRIGGER: strike the nearest visible player in reach when the crosshair is off them. */
+    private final BooleanSetting aimless = bool("aimless", "Strike without crosshair", true);
+    /** TRIGGER: consecutive qualifying ticks required before the strike (0 = same tick). */
+    private final NumberSetting triggerDelay = num("triggerDelay", "Trigger delay ticks", 0, 5, 1, 0);
     private final NumberSetting minCooldown = num("cooldown", "Min cooldown progress", 0.5, 1.0, 0.05, 0.9);
     private final NumberSetting rotSpeedMin = num("rotMin", "Rotation min deg/t", 5, 120, 5, 15);
     private final NumberSetting rotSpeedMax = num("rotMax", "Rotation max deg/t", 5, 180, 5, 30);
@@ -61,6 +77,8 @@ public final class AutoMace extends Module {
     /** A slam is building this tick (read by CombatCoordinator; AutoMace ticks first). */
     private boolean slamPending;
     private int tickCounter;
+    /** TRIGGER: consecutive ticks the strike conditions have held (compared to triggerDelay). */
+    private int triggerStreak;
 
     public AutoMace() {
         super("AutoMace", ModuleCategory.COMBAT, 0);
@@ -82,6 +100,7 @@ public final class AutoMace extends Module {
     protected void onDisable() {
         armedZeroTick = false;
         slamPending = false;
+        triggerStreak = 0;
         RotationManager.clear(0);
     }
 
@@ -110,6 +129,12 @@ public final class AutoMace extends Module {
         }
         ClientPlayerEntity self = client.player;
         if (self == null) {
+            return;
+        }
+        if (mode.is("TRIGGER")) {
+            // TRIGGER picks its own target (crosshair or nearest in reach), so skip the
+            // camera-tracking acquisition below.
+            triggerTick(client, self);
             return;
         }
         // Acquire early (8 blocks) so the camera can track smoothly during the whole drop;
@@ -160,6 +185,86 @@ public final class AutoMace extends Module {
             return;
         }
         strike(client, self, target, fall);
+    }
+
+    /**
+     * TRIGGER: strikes the tick a qualifying fall and a target in reach first coincide.
+     * Uses no rotation requests, mirroring TriggerBot: the hit goes to whatever is in reach
+     * and visible. Cooldown is not gated because the smash bonus ignores it at fall >= 1.5.
+     */
+    private void triggerTick(MinecraftClient client, ClientPlayerEntity self) {
+        double fall = self.fallDistance;
+        boolean falling = self.getVelocity().y < 0.0 && !self.isOnGround() && !self.isGliding()
+                && !self.isTouchingWater() && !self.isInLava();
+        // Other hitters yield while a slam is building toward a player within 6 blocks.
+        slamPending = falling && fall >= minFall.get() * 0.5 && anyPlayerWithin(client, self, 6.0);
+        if (!falling || fall < minFall.get()
+                || dev.zephyr.core.inventory.InventoryManager.findHotbarSlot(self, ItemUtil::isMace) == -1) {
+            triggerStreak = 0;
+            return;
+        }
+        // Reach is capped at 3 blocks so the trigger never reaches past vanilla melee range.
+        double reach = Math.min(3.0, maxTargetDist.get());
+        LivingEntity target = triggerTarget(client, self, reach);
+        if (target == null || target.hurtTime > maxHurtTime.get().intValue()
+                || dev.zephyr.core.combat.CombatCoordinator.shieldBlocks(target, self)) {
+            triggerStreak = 0;
+            return;
+        }
+        triggerStreak++;
+        if (triggerStreak <= triggerDelay.get().intValue()) {
+            return;
+        }
+        if (strike(client, self, target, fall)) {
+            triggerStreak = 0;
+        }
+    }
+
+    /**
+     * TRIGGER target choice. The crosshair player wins when it is a valid enemy in reach.
+     * Otherwise, with aimless on, the nearest visible player in reach is used. Only the
+     * world's player list is scanned, never every entity.
+     */
+    private LivingEntity triggerTarget(MinecraftClient client, ClientPlayerEntity self, double reach) {
+        Vec3d eye = self.getEyePos();
+        double reachSq = reach * reach;
+        if (client.crosshairTarget instanceof EntityHitResult ehr
+                && ehr.getEntity() instanceof LivingEntity living
+                && living != self && living.isAlive() && !self.isTeammate(living)
+                && (!playersOnly.get() || living instanceof PlayerEntity)
+                && living.getBoundingBox().squaredMagnitude(eye) <= reachSq) {
+            return living;
+        }
+        if (!aimless.get()) {
+            return null;
+        }
+        LivingEntity best = null;
+        double bestSq = Double.MAX_VALUE;
+        for (PlayerEntity p : client.world.getPlayers()) {
+            if (p == self || !p.isAlive() || p.isSpectator() || self.isTeammate(p)) {
+                continue;
+            }
+            double distSq = p.getBoundingBox().squaredMagnitude(eye);
+            if (distSq > reachSq || distSq >= bestSq
+                    || !RaycastValidator.hitboxVisible(eye, p.getBoundingBox(), self)) {
+                continue;
+            }
+            best = p;
+            bestSq = distSq;
+        }
+        return best;
+    }
+
+    /** True when a living, non-teammate player stands within {@code radius} blocks. */
+    private static boolean anyPlayerWithin(MinecraftClient client, ClientPlayerEntity self, double radius) {
+        double radiusSq = radius * radius;
+        for (PlayerEntity p : client.world.getPlayers()) {
+            if (p != self && p.isAlive() && !p.isSpectator() && !self.isTeammate(p)
+                    && self.squaredDistanceTo(p) <= radiusSq) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Shared pre-strike gates: hurt-time, cooldown, reach, rotation aim. */
@@ -222,7 +327,7 @@ public final class AutoMace extends Module {
     }
 
     /** Requests the BreachSwap transition, then attacks through the vanilla path. */
-    private void strike(MinecraftClient client, ClientPlayerEntity self, LivingEntity target, double fall) {
+    private boolean strike(MinecraftClient client, ClientPlayerEntity self, LivingEntity target, double fall) {
         // Attribute swap: the hit goes out with the mace's attributes (smash damage) while
         // you keep holding your sword. With BreachSwap on, a Breach mace is preferred.
         BreachSwap breach = ZephyrClient.modules().get(BreachSwap.class);
@@ -235,19 +340,21 @@ public final class AutoMace extends Module {
             slot = dev.zephyr.core.inventory.InventoryManager.findHotbarSlot(self, ItemUtil::isMace);
         }
         if (slot == -1) {
-            return; // no mace on the hotbar
+            return false; // no mace on the hotbar
         }
         if (weaponOnly.get()) {
             String held = ItemUtil.id(self.getMainHandStack());
             if (!(held.endsWith("_sword") || held.endsWith("_axe"))) {
-                return;
+                return false;
             }
         }
         int back = showSwap.get() ? backTicks.get().intValue() : 0;
         if (CombatActions.attributeSwapAttack(client, slot, target, back)) {
             ticksSinceStrike = 0;
             armedZeroTick = false;
+            return true;
         }
+        return false;
     }
 
     private void aimAt(MinecraftClient client, ClientPlayerEntity self, LivingEntity target) {

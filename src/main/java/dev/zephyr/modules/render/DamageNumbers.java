@@ -41,6 +41,8 @@ public final class DamageNumbers extends Module implements WorldRenderParticipan
         boolean active;
         /** Cached display text - formatted ONCE at spawn, not per frame. */
         Text display;
+        /** Cached pixel width of {@link #display}, measured once at spawn. */
+        float width;
     }
 
     public DamageNumbers() {
@@ -102,6 +104,7 @@ public final class DamageNumbers extends Module implements WorldRenderParticipan
         slot.age = 0;
         slot.active = true;
         slot.display = Text.literal(String.format("%.1f", amount)).formatted(Formatting.BOLD);
+        slot.width = MinecraftClient.getInstance().textRenderer.getWidth(slot.display);
     }
 
     @Override
@@ -125,7 +128,7 @@ public final class DamageNumbers extends Module implements WorldRenderParticipan
             int alpha = Math.max(4, (int) ((1.0f - progress) * 255.0f));
             int color = (alpha << 24) | 0xFF5050;
             RenderUtil.drawBillboardText(matrices, consumers, f.x, f.y + age * rise, f.z,
-                    f.display, color, 0x00000000, true);
+                    f.display, f.width, color, 0x00000000, true);
         }
     }
 

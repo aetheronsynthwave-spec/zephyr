@@ -45,10 +45,14 @@ public final class Esp extends Module implements WorldRenderParticipant {
             EspTargets.color(e, byHealth, rgb);
             EspTargets.lerpOffset(e, td, off);
             net.minecraft.util.math.Box bb = e.getBoundingBox();
+            double minX = bb.minX + off[0] - 0.05, minY = bb.minY + off[1] - 0.05, minZ = bb.minZ + off[2] - 0.05;
+            double maxX = bb.maxX + off[0] + 0.05, maxY = bb.maxY + off[1] + 0.05, maxZ = bb.maxZ + off[2] + 0.05;
+            // Entities fully behind the camera are not visible; skip their line submission.
+            if (RenderUtil.boxBehindCamera(minX, minY, minZ, maxX, maxY, maxZ)) {
+                continue;
+            }
             RenderUtil.drawBoxOutline(ctx.matrices(), ctx.consumers(),
-                    bb.minX + off[0] - 0.05, bb.minY + off[1] - 0.05, bb.minZ + off[2] - 0.05,
-                    bb.maxX + off[0] + 0.05, bb.maxY + off[1] + 0.05, bb.maxZ + off[2] + 0.05,
-                    rgb[0], rgb[1], rgb[2], 1f, walls);
+                    minX, minY, minZ, maxX, maxY, maxZ, rgb[0], rgb[1], rgb[2], 1f, walls);
         }
         RenderUtil.lineWidth = 2.0f;
     }

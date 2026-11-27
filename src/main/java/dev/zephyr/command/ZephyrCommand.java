@@ -41,6 +41,12 @@ public final class ZephyrCommand {
         return ClientCommandManager.literal("zephyr")
                 .then(ClientCommandManager.literal("list").executes(ZephyrCommand::list))
                 .then(ClientCommandManager.literal("coords").executes(ZephyrCommand::coords))
+                .then(ClientCommandManager.literal("hud").executes(ctx -> {
+                    // Opened on the next client tick so the chat screen has closed first.
+                    var client = net.minecraft.client.MinecraftClient.getInstance();
+                    client.send(() -> client.setScreen(new dev.zephyr.gui.HudEditorScreen()));
+                    return 1;
+                }))
                 .then(ClientCommandManager.literal("calc")
                         .then(ClientCommandManager.argument("expr", StringArgumentType.greedyString())
                                 .executes(ZephyrCommand::calc)))

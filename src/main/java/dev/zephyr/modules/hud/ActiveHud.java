@@ -3,31 +3,32 @@ package dev.zephyr.modules.hud;
 import dev.zephyr.ZephyrClient;
 import dev.zephyr.core.Module;
 import dev.zephyr.core.ModuleCategory;
+import dev.zephyr.core.hud.HudModule;
 import dev.zephyr.core.settings.BooleanSetting;
-import dev.zephyr.core.settings.NumberSetting;
 import dev.zephyr.gui.render.Ui;
-import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.DrawContext;
 
-import java.util.ArrayList;
-import java.util.HashMap;
+import java.util.Arrays;
 import java.util.List;
-import java.util.Map;
 
 /**
  * HUD - the Zephyr watermark (logo + name) and a smooth list of active modules, top-left,
- * sorted longest-first, with each entry sliding/fading in and out when toggled.
+ * sorted longest-first, with each entry sliding/fading in and out when toggled. Every entry
+ * is its own card, so this element draws no shared panel behind the list.
  */
-public final class ActiveHud extends Module {
+public final class ActiveHud extends HudModule {
+
+    private static final float ROW_H = 14f;
+    private static final float ROW_SIZE = 8.5f;
+    private static final float WATERMARK_H = 22f;
 
     private final BooleanSetting watermark = bool("watermark", "Logo watermark", true);
     private final BooleanSetting showInfo = bool("info", "Show module info", true);
-    private final NumberSetting scale = num("scale", "Scale", 0.6, 2.0, 0.05, 1.0);
 
     /*
      * Per-module state indexed by position in ModuleManager.all() (stable after init).
-     * The old version boxed a Float per module per frame in a HashMap and re-measured
-     * text inside the sort comparator (O(n log n) textWidth + substring per frame).
+     * Measuring text happens only when a module's label changes (at most 20 times a
+     * second), and sorting is an in-place insertion sort: nothing is allocated per frame.
      */
     private float[] slide = new float[0];
     private float[] widths = new float[0];
@@ -35,54 +36,47 @@ public final class ActiveHud extends Module {
     private String[] infoOf = new String[0];
     private boolean infoFlagSeen;
     private int[] order = new int[0];
+    private int drawCount;
+    private float watermarkTextW = -1f;
+    private final float[] size = new float[2];
     private long lastNanos;
 
     public ActiveHud() {
-        super("HUD", ModuleCategory.RENDER, 0);
+        super("HUD", ModuleCategory.RENDER, 0, 0, "TOP_LEFT");
     }
 
     @Override
-    public void onHudRender(DrawContext ctx, float tickDelta) {
-        MinecraftClient client = MinecraftClient.getInstance();
-        if (client.player == null || client.options.hudHidden) {
-            return;
-        }
+    protected boolean drawsPanel() {
+        return false;
+    }
+
+    /** Advances the slide animations and lays out the visible rows for this frame. */
+    @Override
+    protected float[] measure() {
         long now = System.nanoTime();
         float dt = lastNanos == 0 ? 0f : Math.min(0.1f, (now - lastNanos) / 1.0e9f);
         lastNanos = now;
-
-        float s = scale.get().floatValue();
-        ctx.getMatrices().pushMatrix();
-        ctx.getMatrices().scale(s, s);
-        Ui.beginFrame(s);
-
-        float x = 6, y = 6;
-        if (watermark.get()) {
-            float tw = Ui.textWidth("Zephyr", 10f, true);
-            float w = 8 + 14 + 6 + tw + 10;
-            Ui.shadow(ctx, x, y, w, 22, 11, 6, 0x66000000);
-            Ui.pill(ctx, x, y, w, 22, Ui.BG_2);
-            Ui.logo(ctx, x + 6, y + 4, 14, Ui.ACCENT);
-            Ui.text(ctx, "Zephyr", x + 8 + 14 + 6, y + 7, 10f, Ui.TEXT, true);
-            y += 28;
-        }
 
         List<Module> all = ZephyrClient.modules().all();
         ensureCapacity(all.size());
         boolean showInfoNow = showInfo.get();
         if (showInfoNow != infoFlagSeen) {
-            java.util.Arrays.fill(labelSeen, null); // info toggled: re-measure everything
+            Arrays.fill(labelSeen, null); // info toggled: re-measure everything
             infoFlagSeen = showInfoNow;
         }
         int n = 0;
+        float rowsW = 0f;
+        float rowsH = 0f;
         for (int i = 0; i < all.size(); i++) {
             Module m = all.get(i);
             float target = m.isEnabled() && m != this ? 1f : 0f;
             float v = Ui.approach(slide[i], target, 12f, dt);
             slide[i] = v;
             if (v > 0.01f) {
-                measure(i, m);
+                measureRow(i, m);
                 order[n++] = i;
+                rowsW = Math.max(rowsW, widths[i] + 14f);
+                rowsH += 15f * v + 1f;
             }
         }
         // Longest first. Insertion sort on cached widths: n is tiny and nearly sorted
@@ -96,32 +90,58 @@ public final class ActiveHud extends Module {
             }
             order[b + 1] = idx;
         }
-        for (int k = 0; k < n; k++) {
+        drawCount = n;
+
+        float w = rowsW;
+        float h = rowsH;
+        if (watermark.get()) {
+            if (watermarkTextW < 0f) {
+                watermarkTextW = Ui.textWidth("Zephyr", 10f, true);
+            }
+            w = Math.max(w, 8 + 14 + 6 + watermarkTextW + 10);
+            h += WATERMARK_H + 6f;
+        }
+        size[0] = w;
+        size[1] = h;
+        return size;
+    }
+
+    @Override
+    protected void renderContent(DrawContext ctx, float x, float y, float alpha) {
+        List<Module> all = ZephyrClient.modules().all();
+        float ly = y;
+        if (watermark.get()) {
+            float w = 8 + 14 + 6 + watermarkTextW + 10;
+            card(ctx, x, ly, w, WATERMARK_H, 11f, alpha);
+            Ui.logo(ctx, x + 6, ly + 4, 14, Ui.alpha(accent(), alpha));
+            drawText(ctx, "Zephyr", x + 8 + 14 + 6, ly + 7, 10f, text(), true, alpha);
+            ly += 28f;
+        }
+        for (int k = 0; k < drawCount; k++) {
             int i = order[k];
             Module m = all.get(i);
             float v = slide[i];
-            String label = m.name();
             String info = infoOf[i];
-            float w = widths[i] + 14;
-            float rx = x - (1f - v) * (w + 8);
-            Ui.roundRect(ctx, rx, y, w, 14, 4, Ui.alpha(0xB0101319, v));
-            Ui.roundRect(ctx, rx, y + 3, 2, 8, 1, Ui.alpha(Ui.ACCENT, v));
-            float tx = Ui.text(ctx, label, rx + 7, y + 3.5f, 8.5f, Ui.alpha(Ui.TEXT, v), false);
+            float w = widths[i] + 14f;
+            float rx = x - (1f - v) * (w + 8f);
+            float a = alpha * v;
+            card(ctx, rx, ly, w, ROW_H, radius(), a);
+            Ui.roundRect(ctx, rx, ly + 3f, 2f, 8f, 1f, Ui.alpha(accent(), a));
+            float tx = drawText(ctx, m.name(), rx + 7f, ly + 3.5f, ROW_SIZE, text(), false, a);
             if (!info.isEmpty()) {
-                Ui.text(ctx, info, rx + 7 + tx + 4, y + 3.5f, 8.5f, Ui.alpha(Ui.TEXT_FAINT, v), false);
+                drawText(ctx, info, rx + 7f + tx + 4f, ly + 3.5f, ROW_SIZE, textFaint(), false, a);
             }
-            y += 15 * v + 1;
+            ly += 15f * v + 1f;
         }
-        ctx.getMatrices().popMatrix();
     }
 
-    private void ensureCapacity(int size) {
-        if (slide.length != size) {
-            slide = java.util.Arrays.copyOf(slide, size);
-            widths = new float[size];
-            labelSeen = new String[size];
-            infoOf = new String[size];
-            order = new int[size];
+    private void ensureCapacity(int count) {
+        if (slide.length != count) {
+            slide = Arrays.copyOf(slide, count);
+            widths = new float[count];
+            labelSeen = new String[count];
+            infoOf = new String[count];
+            order = new int[count];
         }
     }
 
@@ -130,7 +150,7 @@ public final class ActiveHud extends Module {
      * instance for a whole tick, so the substring + text measurement run only when the
      * label actually changes (at most 20 times a second), not every frame.
      */
-    private void measure(int i, Module m) {
+    private void measureRow(int i, Module m) {
         String full = m.hudLabelCached() == null ? "" : m.hudLabelCached();
         if (full == labelSeen[i]) {
             return;
@@ -142,8 +162,8 @@ public final class ActiveHud extends Module {
             info = cut < 0 ? "" : full.substring(cut + 3);
         }
         infoOf[i] = info;
-        widths[i] = Ui.textWidth(m.name(), 8.5f, false)
-                + (info.isEmpty() ? 0 : 4 + Ui.textWidth(info, 8.5f, false));
+        widths[i] = Ui.textWidth(m.name(), ROW_SIZE, false)
+                + (info.isEmpty() ? 0 : 4 + Ui.textWidth(info, ROW_SIZE, false));
     }
 
     @Override

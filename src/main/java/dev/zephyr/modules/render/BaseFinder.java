@@ -137,12 +137,18 @@ public final class BaseFinder extends Module implements WorldRenderParticipant {
         if (ctx.consumers() == null || list.isEmpty()) {
             return;
         }
-        Vec3d cam = RenderUtil.cameraPos();
+        // One tracer origin per frame (it allocates); the per-hit loop uses raw coordinates.
+        boolean drawTracers = tracers.get();
+        Vec3d from = drawTracers ? RenderUtil.crosshairOrigin() : null;
         for (Hit h : list) {
-            RenderUtil.drawBoxOutline(ctx.matrices(), ctx.consumers(), h.box, h.r, h.g, h.b, 1f);
-            if (tracers.get()) {
-                RenderUtil.drawLine(ctx.matrices(), ctx.consumers(), RenderUtil.crosshairOrigin(),
-                        h.box.getCenter(), h.r, h.g, h.b, 0.7f);
+            Box b = h.box;
+            if (!RenderUtil.boxBehindCamera(b.minX, b.minY, b.minZ, b.maxX, b.maxY, b.maxZ)) {
+                RenderUtil.drawBoxOutline(ctx.matrices(), ctx.consumers(), b, h.r, h.g, h.b, 1f);
+            }
+            if (drawTracers) {
+                RenderUtil.drawLine(ctx.matrices(), ctx.consumers(), from,
+                        (b.minX + b.maxX) * 0.5, (b.minY + b.maxY) * 0.5, (b.minZ + b.maxZ) * 0.5,
+                        h.r, h.g, h.b, 0.7f, false);
             }
         }
     }

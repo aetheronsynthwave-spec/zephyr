@@ -1,10 +1,8 @@
 package dev.zephyr.modules.hud;
 
-import dev.zephyr.core.Module;
 import dev.zephyr.core.ModuleCategory;
 import dev.zephyr.core.event.ZephyrEvents;
-import dev.zephyr.core.settings.NumberSetting;
-import dev.zephyr.gui.render.Ui;
+import dev.zephyr.core.hud.HudModule;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.network.ClientPlayerEntity;
@@ -14,10 +12,12 @@ import net.minecraft.client.network.ClientPlayerEntity;
  * hits landed, deaths and blocks mined (from the vanilla client-side counters we can see).
  * Resets when you join a world.
  */
-public final class SessionHud extends Module {
+public final class SessionHud extends HudModule {
 
-    private final NumberSetting scale = num("scale", "Scale", 0.6, 2.0, 0.05, 1.0);
-    private final NumberSetting yPct = num("yPct", "Y position %", 0, 100, 0.5, 35);
+    private static final String[] LABELS = {"Session", "Travelled", "Hits", "Deaths"};
+    private static final float SIZE = 8.5f;
+    private static final float ROW = 11f;
+    private static final float CONTENT_W = 98f;
 
     private long startMs;
     private double travelled;
@@ -27,10 +27,11 @@ public final class SessionHud extends Module {
     private boolean wasDead;
     private Object worldSeen;
     private final String[] lines = new String[4];
+    private final float[] size = new float[2];
     private int lastSecond = -1;
 
     public SessionHud() {
-        super("SessionHUD", ModuleCategory.RENDER, 0);
+        super("SessionHUD", ModuleCategory.RENDER, 0, 50, "CENTER");
         ZephyrEvents.ATTACK_LANDED.subscribe(e -> {
             if (isEnabled() && e.landed) {
                 hits++;
@@ -88,29 +89,25 @@ public final class SessionHud extends Module {
         }
     }
 
-    private static final String[] LABELS = {"Session", "Travelled", "Hits", "Deaths"};
+    @Override
+    protected float[] measure() {
+        if (lines[0] == null) {
+            size[0] = 0f;
+            size[1] = 0f;
+            return size;
+        }
+        size[0] = CONTENT_W;
+        size[1] = LABELS.length * ROW - 3f;
+        return size;
+    }
 
     @Override
-    public void onHudRender(DrawContext ctx, float tickDelta) {
-        MinecraftClient mc = MinecraftClient.getInstance();
-        if (mc.player == null || mc.options.hudHidden || lines[0] == null) {
-            return;
-        }
-        float s = scale.get().floatValue();
-        float sh = mc.getWindow().getScaledHeight() / s;
-        float w = 110, h = 6 + LABELS.length * 11 + 4;
-        float x = 6, y = (sh - h) * yPct.get().floatValue() / 100f;
-        ctx.getMatrices().pushMatrix();
-        ctx.getMatrices().scale(s, s);
-        Ui.beginFrame(s);
-        Ui.shadow(ctx, x, y, w, h, 6, 6, 0x55000000);
-        Ui.roundRect(ctx, x, y, w, h, 6, 0xB0101319);
-        float ly = y + 6;
+    protected void renderContent(DrawContext ctx, float x, float y, float alpha) {
+        float ly = y;
         for (int i = 0; i < LABELS.length; i++) {
-            Ui.text(ctx, LABELS[i], x + 8, ly, 8.5f, Ui.TEXT_FAINT, false);
-            Ui.textRight(ctx, lines[i], x + w - 8, ly, 8.5f, Ui.TEXT, false);
-            ly += 11;
+            drawText(ctx, LABELS[i], x, ly, SIZE, textFaint(), false, alpha);
+            drawTextRight(ctx, lines[i], x + CONTENT_W, ly, SIZE, text(), false, alpha);
+            ly += ROW;
         }
-        ctx.getMatrices().popMatrix();
     }
 }

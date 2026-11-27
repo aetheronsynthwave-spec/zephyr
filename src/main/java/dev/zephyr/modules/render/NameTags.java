@@ -31,12 +31,16 @@ public final class NameTags extends Module implements WorldRenderParticipant {
     private final BooleanSetting seeThrough = bool("seeThrough", "See through walls", false);
 
     private final Map<UUID, CachedTag> tagCache = new HashMap<>();
+    /** Tick of the last stale-entry sweep (see the end of onWorldRender). */
+    private int lastPruneTick;
 
     private static final class CachedTag {
         Text text;
         int hpBucket = -1;
         /** Cached pixel width - recomputed only when the text rebuilds. */
         float width;
+        /** Last client tick this player was drawn on. */
+        int seenTick;
     }
 
     public NameTags() {
@@ -60,6 +64,7 @@ public final class NameTags extends Module implements WorldRenderParticipant {
         double rangeSq = range.get() * range.get();
         float td = RenderUtil.tickProgress();
         Vec3d cam = RenderUtil.cameraPos();
+        int tick = RenderUtil.currentTick();
 
         for (PlayerEntity player : RenderUtil.cachedPlayers()) {
             if (player == self || !player.isAlive() || player.isSpectator()) {
@@ -69,6 +74,7 @@ public final class NameTags extends Module implements WorldRenderParticipant {
                 continue;
             }
             CachedTag cached = tagCache.computeIfAbsent(player.getUuid(), u -> new CachedTag());
+            cached.seenTick = tick;
             int hpBucket = (int) Math.ceil(player.getHealth());
             if (cached.text == null || cached.hpBucket != hpBucket) {
                 cached.hpBucket = hpBucket;
@@ -99,9 +105,11 @@ public final class NameTags extends Module implements WorldRenderParticipant {
             matrices.pop();
         }
 
-        // Prune cache for players that left the render range or the world.
-        if (RenderUtil.currentTick() % 100 == 0) {
-            tagCache.clear();
+        // Drop entries for players not drawn for 100+ ticks, once per 100 ticks. Clearing the
+        // whole map on every frame of that tick used to rebuild every nameplate's text.
+        if (tick - lastPruneTick >= 100) {
+            lastPruneTick = tick;
+            tagCache.values().removeIf(c -> tick - c.seenTick > 100);
         }
     }
 

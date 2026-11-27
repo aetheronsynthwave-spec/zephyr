@@ -9,12 +9,13 @@ import com.sun.jna.platform.win32.User32;
 import com.sun.jna.platform.win32.WinDef;
 import com.sun.jna.platform.win32.WinNT;
 import com.sun.jna.ptr.IntByReference;
-import dev.zephyr.core.Module;
 import dev.zephyr.core.ModuleCategory;
+import dev.zephyr.core.hud.HudModule;
 import dev.zephyr.core.settings.BooleanSetting;
 import dev.zephyr.core.settings.NumberSetting;
 import dev.zephyr.gui.render.Ui;
 import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.font.TextRenderer;
 import net.minecraft.client.gui.DrawContext;
 
 import java.net.URI;
@@ -48,11 +49,9 @@ import java.util.regex.Pattern;
  * </ul>
  * Windows only (the window-title probe). Nothing is drawn while nothing is playing.
  */
-public final class SpotifyLyrics extends Module {
+public final class SpotifyLyrics extends HudModule {
 
     private final NumberSetting offsetMs = num("offset", "Sync offset ms", -10000, 10000, 100, 0);
-    private final NumberSetting scale = num("scale", "Scale", 0.6, 2.0, 0.05, 1.0);
-    private final NumberSetting yPct = num("yPct", "Y position %", 0, 100, 0.5, 8);
     private final BooleanSetting showTrack = bool("track", "Show song name", true);
     private final BooleanSetting showNext = bool("next", "Show next line", true);
 
@@ -71,8 +70,16 @@ public final class SpotifyLyrics extends Module {
     private ScheduledFuture<?> task;
     private String lastTitleTrack;
 
+    /* Per-frame layout, computed in measure() and drawn in renderContent(). */
+    private final float[] size = new float[2];
+    private String shownCurrent = "";
+    private String shownNext;
+    private String shownTrack;
+    private String trackSource;
+    private String trackLine;
+
     public SpotifyLyrics() {
-        super("SpotifyLyrics", ModuleCategory.RENDER, 0);
+        super("SpotifyLyrics", ModuleCategory.RENDER, 50, 5, "CENTER");
     }
 
     @Override
@@ -247,19 +254,17 @@ public final class SpotifyLyrics extends Module {
     // ------------------------------------------------------------------
 
     @Override
-    public void onHudRender(DrawContext ctx, float tickDelta) {
-        MinecraftClient mc = MinecraftClient.getInstance();
-        if (mc.player == null || mc.options.hudHidden) {
-            return;
-        }
+    protected float[] measure() {
         State s = state;
         String current;
         String next = null;
         if (s.track == null || !s.status.isEmpty() || s.lines.length == 0) {
             if (s.track == null && s.status.startsWith("Waiting")) {
-                return;
+                size[0] = 0f;
+                size[1] = 0f;
+                return size;
             }
-            current = s.status.isEmpty() ? "" : s.status;
+            current = s.status;
         } else if (s.synced) {
             long now = s.pausedSinceMs != 0 ? s.pausedSinceMs : System.currentTimeMillis();
             long pos = now - s.startedAtMs - s.pausedTotalMs + offsetMs.get().longValue();
@@ -271,43 +276,51 @@ public final class SpotifyLyrics extends Module {
         } else {
             current = "(unsynced) " + s.lines[0];
         }
-        float sc = scale.get().floatValue();
-        float sw = mc.getWindow().getScaledWidth() / sc;
-        float sh = mc.getWindow().getScaledHeight() / sc;
-        float cx = sw / 2f;
-        float y = (sh - 40) * yPct.get().floatValue() / 100f;
+        // The "♫ title" string is rebuilt only when the track changes.
+        if (s.track != trackSource) {
+            trackSource = s.track;
+            trackLine = s.track == null ? null : "♫ " + s.track;
+        }
+        shownCurrent = current;
+        shownNext = next != null && showNext.get() ? next : null;
+        shownTrack = showTrack.get() ? trackLine : null;
 
-        ctx.getMatrices().pushMatrix();
-        ctx.getMatrices().scale(sc, sc);
-        Ui.beginFrame(sc);
         // Vanilla text renderer for the lyric text: full Unicode (any language, ♪),
         // which the Ui atlas font does not cover.
-        var tr = mc.textRenderer;
-        boolean withNext = next != null && showNext.get();
-        String track = showTrack.get() && s.track != null ? "♫ " + s.track : null;
+        var tr = MinecraftClient.getInstance().textRenderer;
         int w = tr.getWidth(current);
-        if (withNext) {
-            w = Math.max(w, tr.getWidth(next));
+        if (shownNext != null) {
+            w = Math.max(w, tr.getWidth(shownNext));
         }
-        if (track != null) {
-            w = Math.max(w, tr.getWidth(track));
+        if (shownTrack != null) {
+            w = Math.max(w, tr.getWidth(shownTrack));
         }
-        w += 20;
-        float h = 6 + (track != null ? 11 : 0) + 11 + (withNext ? 11 : 0) + 3;
-        Ui.shadow(ctx, cx - w / 2f, y, w, h, 7, 6, 0x55000000);
-        Ui.roundRect(ctx, cx - w / 2f, y, w, h, 7, 0xB0101319);
-        int ly = (int) y + 6;
-        int icx = (int) cx;
-        if (track != null) {
-            ctx.drawCenteredTextWithShadow(tr, track, icx, ly, 0xFF1ED760);
-            ly += 11;
+        int rows = 1 + (shownTrack != null ? 1 : 0) + (shownNext != null ? 1 : 0);
+        size[0] = w + 8f;
+        size[1] = rows * 11f - 1f;
+        return size;
+    }
+
+    @Override
+    protected void renderContent(DrawContext ctx, float x, float y, float alpha) {
+        var tr = MinecraftClient.getInstance().textRenderer;
+        float cx = x + size[0] / 2f;
+        float ly = y;
+        if (shownTrack != null) {
+            drawVanilla(ctx, tr, shownTrack, cx, ly, accent(), alpha);
+            ly += 11f;
         }
-        ctx.drawCenteredTextWithShadow(tr, current, icx, ly, 0xFFFFFFFF);
-        ly += 11;
-        if (withNext) {
-            ctx.drawCenteredTextWithShadow(tr, next, icx, ly, 0xFF8F9AAD);
+        drawVanilla(ctx, tr, shownCurrent, cx, ly, text(), alpha);
+        ly += 11f;
+        if (shownNext != null) {
+            drawVanilla(ctx, tr, shownNext, cx, ly, textDim(), alpha);
         }
-        ctx.getMatrices().popMatrix();
+    }
+
+    private void drawVanilla(DrawContext ctx, TextRenderer tr, String line, float cx, float y, int color,
+                             float alpha) {
+        ctx.drawText(tr, line, Math.round(cx - tr.getWidth(line) / 2f), Math.round(y),
+                Ui.alpha(color, alpha), textShadow());
     }
 
     /** Index of the last line whose timestamp is <= pos (binary search), or -1. */
