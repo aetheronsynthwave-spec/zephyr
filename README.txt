@@ -1,3 +1,10 @@
+v1.16.0
+  - ElytraMaceBot and Fly are no longer limited to singleplayer / hosted LAN worlds.
+    This replaces the restriction described in older entries. Servers may kick or ban for it.
+  - ElytraMaceBot: can fetch an elytra from the hotbar or inventory; revised aiming and
+    wind charge use.
+  - Spotify lyrics HUD layout and shared combat code updated.
+
 v1.15.0 - ElytraMaceBot: rocket-down chain (practice only)
   - Chains hits off a Wind Burst I bounce: elytra on, rocket DOWN, elytra off, strike.
   - Waits out the target's invulnerability window, so swings are not wasted.

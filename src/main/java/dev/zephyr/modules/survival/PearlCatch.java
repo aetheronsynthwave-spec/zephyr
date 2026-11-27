@@ -5,6 +5,7 @@ import dev.zephyr.core.ModuleCategory;
 import dev.zephyr.core.combat.ActionState;
 import dev.zephyr.core.combat.CombatActions;
 import dev.zephyr.core.combat.CombatCoordinator;
+import dev.zephyr.core.combat.SwapManager;
 import dev.zephyr.core.inventory.InventoryManager;
 import dev.zephyr.core.settings.NumberSetting;
 import dev.zephyr.core.timing.MsTimer;
@@ -122,7 +123,7 @@ public final class PearlCatch extends Module {
             return;
         }
         int slot = InventoryManager.selectedHotbar(self);
-        returnSlot = slot >= 0 && slot <= 8 ? slot : -1;
+        returnSlot = SwapManager.isValidSlot(slot) ? slot : -1;
         stageTicks = 0;
         stage = Stage.PEARL;
     }
@@ -172,7 +173,8 @@ public final class PearlCatch extends Module {
         if (ItemUtil.coolingDown(self, pearl) || ActionState.attackedThisTick()) {
             return; // 1.21.11 pearls: useCooldown(1.0) - wait it out, never use into it
         }
-        ActionResult r = CombatActions.interactItemAt(client, self.getYaw(), (float) -lookPitch.get());
+        ActionResult r = CombatActions.interactItemFromSlot(client, InventoryManager.selectedHotbar(self),
+                ItemUtil::isPearl, self.getYaw(), (float) -lookPitch.get());
         if (r != ActionResult.FAIL) {
             // The use-item packet went out through the vanilla manager - one throw, one
             // packet. The prediction result (Success or cooldown-PASS) never re-fires.
@@ -203,7 +205,8 @@ public final class PearlCatch extends Module {
         if (!solve(self, pearl, lead)) {
             return;
         }
-        ActionResult r = CombatActions.interactItemAt(client, aimYaw, aimPitch);
+        ActionResult r = CombatActions.interactItemFromSlot(client, InventoryManager.selectedHotbar(self),
+                ItemUtil::isWindCharge, aimYaw, aimPitch);
         if (r != ActionResult.FAIL) {
             beginRestore(); // one wind charge, one packet - never re-fire the intercept
         }
@@ -305,9 +308,11 @@ public final class PearlCatch extends Module {
         if (slot != -1) {
             return InventoryManager.selectHotbar(client, slot) && pred.test(self.getMainHandStack());
         }
-        if (client.currentScreen != null) {
+        if (client.currentScreen != null || self.currentScreenHandler != self.playerScreenHandler
+                || self.isUsingItem() || ActionState.attackedThisTick() || ActionState.itemUsedThisTick()) {
             // currentScreenHandler belongs to the open screen (chest, anvil, ...): a
             // clickSlot here lands in the wrong container. Wait for the screen to close.
+            // No inventory click on a tick that already attacked or used an item either.
             return false;
         }
         int handler = InventoryManager.findHandlerSlot(self, pred);

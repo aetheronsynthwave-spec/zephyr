@@ -24,7 +24,7 @@ public final class ModuleDescriptions {
         // Combat
         d("AimAssist", "Gently pulls your view toward the nearest enemy while you hold attack. Never snaps.");
         d("AutoMace", "Strikes the moment you fall onto a player in reach (TRIGGER default), swapping to the mace for that hit and back.");
-        d("ElytraMaceBot", "Practice bot for worlds you host: climbs with rockets, dives, takes the elytra off, mace smashes, repeats.");
+        d("ElytraMaceBot", "Elytra mace bot: climbs with rockets, dives, takes the elytra off, mace smashes, repeats.");
         d("SmartMaceBot", "No-elytra mace bot: weighs height, fall, reach and weapons to launch (wind charge), drop-smash, melee or approach.");
         d("BreachSwap", "Swaps every melee hit to your Breach mace for that hit, then back to your sword.");
         d("JumpReset", "Jumps in the same tick you take a hit to reduce knockback.");
@@ -52,7 +52,7 @@ public final class ModuleDescriptions {
         d("AutoTool", "While mining, switches to the fastest hotbar tool for the block, then back.");
         d("Zoom", "Hold the bind to zoom in smoothly, like a spyglass. Lower mouse sensitivity while zoomed.");
         // Movement
-        d("Fly", "Creative-style flight. Only works in singleplayer or your own LAN world.");
+        d("Fly", "Creative-style flight (double-tap jump).");
         d("Freecam", "Moves the camera freely while your player stays still.");
         d("Freelook", "Hold the bind to look around without changing where you walk or face.");
         d("NoDelay", "Removes the vanilla attack, item-use and jump delays.");

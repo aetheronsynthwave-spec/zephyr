@@ -37,6 +37,9 @@ public final class RotationManager {
     private static boolean seeded;
 
     public static void request(RotationRequest request) {
+        if (!Double.isFinite(request.targetYaw) || !Double.isFinite(request.targetPitch)) {
+            return; // a NaN angle would stick in the server rotation and the camera
+        }
         if (active == null || request.priority >= active.priority || !active.validity.getAsBoolean()) {
             active = request;
             ageTicks = 0;
@@ -138,6 +141,16 @@ public final class RotationManager {
         applyFrameFraction(player, frac);
     }
 
+    /**
+     * Pre-movement stage, before modules tick: completes last tick's visible turn so that
+     * modules judge their aim against the rotation this tick will actually use.
+     */
+    public static void settle(MinecraftClient client) {
+        if (client.player != null) {
+            flushFrameTurn(client.player);
+        }
+    }
+
     private static void flushFrameTurn(ClientPlayerEntity player) {
         if (frameApplied < 1.0 && (frameYaw != 0 || framePitch != 0)) {
             applyFrameFraction(player, 1.0);
@@ -225,21 +238,23 @@ public final class RotationManager {
         return new double[]{MathUtil.yawTo(eyes, point), MathUtil.pitchTo(eyes, point)};
     }
 
-    /** @return true if the server rotation is within {@code toleranceDeg} of the point's angles. */
+    /**
+     * @return true if the rotation an interaction sent now would use is within
+     * {@code toleranceDeg} of the point's angles: the packet rotation while a silent request
+     * is active, otherwise the player's live view (not a turn that is only planned).
+     */
     public static boolean isAimedAt(Vec3d point, double toleranceDeg) {
-        if (active != null && active.silent && !hasConverged(point, toleranceDeg)) {
+        ClientPlayerEntity player = MinecraftClient.getInstance().player;
+        if (player == null || point == null) {
             return false;
         }
+        boolean silent = isSilentActive();
+        double yaw = silent ? serverYaw : player.getYaw();
+        double pitch = silent ? serverPitch : player.getPitch();
         double[] req = requiredAngles(point);
-        double yawDelta = Math.abs(MathUtil.angleDelta(currentYaw(), req[0]));
-        double pitchDelta = Math.abs(currentPitch() - req[1]);
-        return yawDelta <= toleranceDeg && pitchDelta <= toleranceDeg;
-    }
-
-    private static boolean hasConverged(Vec3d point, double toleranceDeg) {
-        double[] req = requiredAngles(point);
-        return Math.abs(MathUtil.angleDelta(serverYaw, req[0])) <= toleranceDeg
-                && Math.abs(serverPitch - req[1]) <= toleranceDeg;
+        // NaN input fails both comparisons.
+        return Math.abs(MathUtil.angleDelta(yaw, req[0])) <= toleranceDeg
+                && Math.abs(pitch - req[1]) <= toleranceDeg;
     }
 
     public static double currentYaw() {

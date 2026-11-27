@@ -215,8 +215,14 @@ public abstract class HudModule extends Module {
         return textShadowSetting.get();
     }
 
-    private float bgAlpha() {
+    /** The shared background opacity, 0..1. */
+    protected final float bgAlpha() {
         return (float) bgSetting.get().doubleValue();
+    }
+
+    /** The element's own scale setting. */
+    protected final float hudScale() {
+        return (float) scaleSetting.get().doubleValue();
     }
 
     private int tint(int argb) {

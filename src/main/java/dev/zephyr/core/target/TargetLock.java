@@ -21,13 +21,23 @@ public final class TargetLock {
     public java.util.function.Predicate<LivingEntity> extra;
 
     private LivingEntity locked;
+    private boolean inRange;
 
     public LivingEntity get() {
         return locked;
     }
 
+    /**
+     * Whether the lock was inside the configured range (no hysteresis) at the last
+     * {@link #update}. A lock kept only by the hysteresis band may be chased, not acted on.
+     */
+    public boolean inRange() {
+        return inRange;
+    }
+
     public void clear() {
         locked = null;
+        inRange = false;
     }
 
     /**
@@ -39,10 +49,12 @@ public final class TargetLock {
     public LivingEntity update(MinecraftClient client, double range, boolean groundedOnly) {
         ClientPlayerEntity self = client.player;
         if (self == null || client.world == null) {
-            locked = null;
+            clear();
             return null;
         }
-        if (locked != null && !valid(self, locked, range * 1.25)) {
+        // The id check drops an entity that was replaced or belongs to a previous world.
+        if (locked != null && (client.world.getEntityById(locked.getId()) != locked
+                || !valid(self, locked, range * 1.25))) {
             locked = null;
         }
         if (locked == null) {
@@ -68,6 +80,7 @@ public final class TargetLock {
                 }
             }
         }
+        inRange = locked != null && self.squaredDistanceTo(locked) <= range * range;
         TargetManager.point(locked);
         return locked;
     }
@@ -79,6 +92,8 @@ public final class TargetLock {
         if (e instanceof PlayerEntity p && p.isCreative()) {
             return false;
         }
-        return self.squaredDistanceTo(e) <= range * range;
+        // Also false for a NaN or infinite position.
+        double distSq = self.squaredDistanceTo(e);
+        return Double.isFinite(distSq) && distSq <= range * range;
     }
 }

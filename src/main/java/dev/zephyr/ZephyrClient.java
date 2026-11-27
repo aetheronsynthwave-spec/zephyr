@@ -224,6 +224,7 @@ public final class ZephyrClient implements ClientModInitializer {
         // Per-tick caches: exposure memo table keys off this tick.
         dev.zephyr.core.combat.DamageCalculator.advanceTick();
         dev.zephyr.core.combat.SwapManager.tick(client);
+        RotationManager.settle(client);
         modules.tick(client);
         RotationManager.tick(client);
         dev.zephyr.core.ZephyrProfiler.addTick(System.nanoTime() - t0);

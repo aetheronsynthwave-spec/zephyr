@@ -60,6 +60,14 @@ public final class GearSlots {
         return isUsableElytra(worn(p));
     }
 
+    /** The elytra wherever it is: chest slot, hotbar or main inventory. */
+    public static ElytraLocator.Found locateElytra(ClientPlayerEntity p) {
+        ScreenHandler h = p.playerScreenHandler;
+        return ElytraLocator.locate(worn(p), i -> p.getInventory().getStack(i),
+                slot -> slot < h.slots.size() ? h.slots.get(slot).getStack() : ItemStack.EMPTY,
+                GearSlots::isElytra, GearSlots::isUsableElytra);
+    }
+
     /** First main-inventory handler slot (9..35, hotbar excluded) matching the predicate, or -1. */
     public static int findMainSlot(ClientPlayerEntity p, Predicate<ItemStack> pred) {
         ScreenHandler h = p.playerScreenHandler;
@@ -96,7 +104,8 @@ public final class GearSlots {
                 && TickPhase.actionWindowOpen()
                 && p.currentScreenHandler == p.playerScreenHandler
                 && !p.isUsingItem()
-                && !ActionState.attackedThisTick();
+                && !ActionState.attackedThisTick()
+                && !ActionState.itemUsedThisTick();
     }
 
     /**

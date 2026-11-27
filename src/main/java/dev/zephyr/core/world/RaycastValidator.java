@@ -71,6 +71,30 @@ public final class RaycastValidator {
     }
 
     /**
+     * True when some point of {@code box} is both within {@code reach} of {@code from} and
+     * visible. Unlike {@link #hitboxVisible}, a visible corner that is too far away does not
+     * make a blocked near side hittable. The nearest point is probed first.
+     */
+    public static boolean visibleWithin(Vec3d from, Box box, double reach, Entity context) {
+        if (!HitGeometry.withinReach(from, box, reach)) {
+            return false;
+        }
+        if (canSee(from, HitGeometry.closestPoint(box, from), context)) {
+            return true;
+        }
+        for (Vec3d offset : CORNER_OFFSETS) {
+            Vec3d point = new Vec3d(
+                    box.minX + (box.maxX - box.minX) * offset.x,
+                    box.minY + (box.maxY - box.minY) * offset.y,
+                    box.minZ + (box.maxZ - box.minZ) * offset.z);
+            if (HitGeometry.withinReach(from, point, reach) && canSee(from, point, context)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
      * Full crystal placement legality for the block position {@code base} (the crystal
      * would occupy {@code base.up()}):
      * support block is obsidian/bedrock, crystal cell is air, no entity intersects the

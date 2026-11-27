@@ -17,7 +17,8 @@ import net.minecraft.client.network.ClientPlayerEntity;
  *   <li>A digging action is ended with {@code cancelBlockBreaking()}, which sends
  *       {@code PlayerActionC2SPacket(ABORT_DESTROY_BLOCK)} and clears the break state.</li>
  * </ul>
- * On top of that, automated actions are limited to one attack per tick, one item use
+ * On top of that, an automated attack and an item use never share a tick, and automated
+ * actions are limited to one attack per tick, one item use
  * per tick (a second {@code PlayerInteractItemC2SPacket} in the same tick is a textbook
  * macro signature - vanilla's {@code doItemUse} pass can only ever emit one accepted
  * use), and nothing is attacked or used in the same tick as a use-release or a module
@@ -32,6 +33,8 @@ public final class ActionState {
     private static long lastReleaseTick = Long.MIN_VALUE;
     private static long lastInventoryClickTick = Long.MIN_VALUE;
     private static long lastItemUseTick = Long.MIN_VALUE;
+    /** Item type -> tick of the last guarded module use (see {@link #usedRecently}). */
+    private static final java.util.Map<Object, Long> guardedUses = new java.util.HashMap<>();
 
     /** Any entity attack (vanilla click, module, BreachSwap re-entry, spear jab). */
     public static void noteAttack() {
@@ -55,6 +58,17 @@ public final class ActionState {
      */
     public static void noteItemUse() {
         lastItemUseTick = TickPhase.tickId();
+    }
+
+    /** A guarded module use of {@code itemKey} went out this tick. */
+    public static void noteGuardedUse(Object itemKey) {
+        guardedUses.put(itemKey, TickPhase.tickId());
+    }
+
+    /** True when a guarded use of {@code itemKey} went out this tick or the one before. */
+    public static boolean usedRecently(Object itemKey) {
+        Long tick = guardedUses.get(itemKey);
+        return tick != null && TickPhase.tickId() - tick <= 1;
     }
 
     public static boolean attackedThisTick() {
@@ -101,7 +115,7 @@ public final class ActionState {
 
     /** Side-effect-free check: would {@link #prepareAttack} allow an attack right now? */
     public static boolean canAttack(MinecraftClient client) {
-        return baseReady(client) && !attackedThisTick();
+        return baseReady(client) && !attackedThisTick() && !itemUsedThisTick();
     }
 
     /**
@@ -120,6 +134,6 @@ public final class ActionState {
      * (vanilla right-clicks a block and then uses the item in the same pass).
      */
     public static boolean prepareItemUse(MinecraftClient client) {
-        return prepareUse(client) && !itemUsedThisTick();
+        return prepareUse(client) && !itemUsedThisTick() && !attackedThisTick();
     }
 }

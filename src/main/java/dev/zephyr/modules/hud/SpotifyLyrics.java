@@ -15,18 +15,15 @@ import dev.zephyr.core.settings.BooleanSetting;
 import dev.zephyr.core.settings.ModeSetting;
 import dev.zephyr.core.settings.NumberSetting;
 import dev.zephyr.gui.render.Ui;
-import dev.zephyr.modules.render.RenderUtil;
 import dev.zephyr.modules.render.WorldRenderParticipant;
 import net.fabricmc.fabric.api.client.rendering.v1.world.WorldRenderContext;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.font.TextRenderer;
 import net.minecraft.client.gui.DrawContext;
+import net.minecraft.client.render.VertexConsumerProvider;
 import net.minecraft.client.util.math.MatrixStack;
 import net.minecraft.text.Text;
-import net.minecraft.util.hit.HitResult;
 import net.minecraft.util.math.RotationAxis;
-import net.minecraft.util.math.Vec3d;
-import net.minecraft.world.RaycastContext;
 
 import java.net.URI;
 import java.net.URLEncoder;
@@ -37,6 +34,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
@@ -68,12 +66,12 @@ public final class SpotifyLyrics extends HudModule implements WorldRenderPartici
     private final BooleanSetting smoothLines = bool("smooth", "Line transition animation", true);
     private final NumberSetting maxWidth = num("maxWidth", "Max line width", 120, 480, 10, 260);
 
-    /** HUD = the on-screen panel; the rest draw the lyrics inside the world. */
+    /** HUD = the on-screen panel; SKY and 3D draw the lyrics inside the world. */
     private final ModeSetting display = s(new ModeSetting("display", "Display",
-            List.of("HUD", "GROUND", "SKY", "3D"), "HUD"));
+            List.of("HUD", "SKY", "3D"), "HUD"));
     private final NumberSetting worldScale = num("worldScale", "World text scale", 0.25, 4.0, 0.05, 1.0);
-    private final NumberSetting worldDist = num("worldDist", "Distance ahead (ground / 3D)", 2, 24, 0.5, 7);
-    private final NumberSetting depth = num("depth", "3D depth layers", 1, 14, 1, 7);
+    private final NumberSetting worldDist = num("worldDist", "Distance ahead (3D)", 2, 24, 0.5, 7);
+    private final NumberSetting depth = num("depth", "3D depth layers", 1, 14, 1, 6);
     private final BooleanSetting lockDir = bool("lockDir", "Lock direction (set when enabled)", true);
     private final BooleanSetting seeThrough = bool("throughWalls", "World text through walls", false);
 
@@ -97,14 +95,6 @@ public final class SpotifyLyrics extends HudModule implements WorldRenderPartici
     private java.util.concurrent.ExecutorService fetcher;
     private ScheduledFuture<?> task;
     private String lastTitleTrack;
-
-    /* Per-frame layout, computed in measure() and drawn in renderContent(). */
-    private final float[] size = new float[2];
-    private String shownCurrent = "";
-    private String shownNext;
-    private String shownTrack;
-    private String trackSource;
-    private String trackLine;
 
     public SpotifyLyrics() {
         super("SpotifyLyrics", ModuleCategory.RENDER, 50, 5, "CENTER");
@@ -302,31 +292,32 @@ public final class SpotifyLyrics extends HudModule implements WorldRenderPartici
     // Shared per-frame preparation
     // ------------------------------------------------------------------
 
-    /** Per-frame content, filled by {@link #prepare()} for both the HUD and the world modes. */
-    private long posMs;
+    /** A clipped line with its width cached, so nothing is measured or built per frame. */
+    private record Line(Text text, float width) {
+    }
+
+    private static final long TRANSITION_MS = 320L;
+
+    /* Filled by prepare() once per frame for both the HUD and the world modes. */
     private float progress = -1f;
     private int lineIdx = -2;
     private long lineChangedAt;
-    private Text curText = Text.empty();
-    private Text nextText;
-    private Text trackText;
-    private float curW;
-    private float nextW;
-    private float trackW;
-    private String curSrc = "";
+    private int laidOutLimit = -1;
+    private String curSrc;
     private String nextSrc;
     private String trackSrc;
+    private Line cur;
+    /** The line that is animating out. */
+    private Line prev;
+    private Line next;
+    private Line track;
 
     private String[] unsyncedFor;
     private String unsyncedLine = "";
-    /** GROUND mode: surface height is sampled once per client tick, not every frame. */
-    private int groundSampleTick = Integer.MIN_VALUE;
-    private double groundTarget = Double.NaN;
 
     private boolean anchorSet;
     private float anchorYaw;
     private String lastDisplay = "HUD";
-    private double groundY = Double.NaN;
 
     /**
      * Computes what to show this frame. @return false when there is nothing to draw (Spotify
@@ -334,22 +325,25 @@ public final class SpotifyLyrics extends HudModule implements WorldRenderPartici
      */
     private boolean prepare() {
         State s = state;
+        long wall = System.currentTimeMillis();
+        long pos = (s.pausedSinceMs != 0 ? s.pausedSinceMs : wall) - s.startedAtMs - s.pausedTotalMs
+                + offsetMs.get().longValue();
         String current;
-        String next = null;
-        progress = -1f;
+        String upcoming = null;
         int idx = -1;
         if (s.track == null || !s.status.isEmpty() || s.lines.length == 0) {
             if (s.track == null && (s.status.startsWith("Waiting") || s.status.startsWith("Spotify is not"))) {
+                curSrc = null;
+                cur = null;
+                prev = null;
                 return false;
             }
             current = s.status;
         } else if (s.synced) {
-            long now = s.pausedSinceMs != 0 ? s.pausedSinceMs : System.currentTimeMillis();
-            posMs = now - s.startedAtMs - s.pausedTotalMs + offsetMs.get().longValue();
-            idx = lineAt(s.times, posMs);
+            idx = lineAt(s.times, pos);
             current = idx < 0 ? "♪" : s.lines[idx];
             if (idx + 1 < s.lines.length) {
-                next = s.lines[idx + 1];
+                upcoming = s.lines[idx + 1];
             }
         } else {
             if (s.lines != unsyncedFor) {
@@ -358,77 +352,77 @@ public final class SpotifyLyrics extends HudModule implements WorldRenderPartici
             }
             current = unsyncedLine;
         }
-        if (s.durationMs > 0 && s.track != null) {
-            long now = s.pausedSinceMs != 0 ? s.pausedSinceMs : System.currentTimeMillis();
-            long pos = now - s.startedAtMs - s.pausedTotalMs + offsetMs.get().longValue();
-            progress = Math.max(0f, Math.min(1f, pos / (float) s.durationMs));
+        progress = s.durationMs > 0 && s.track != null
+                ? Math.max(0f, Math.min(1f, pos / (float) s.durationMs))
+                : -1f;
+        if (!showNext.get()) {
+            upcoming = null;
         }
-        if (idx != lineIdx) {
-            lineIdx = idx;
-            lineChangedAt = System.currentTimeMillis();
-        }
-        if (s.track != trackSource) {
-            trackSource = s.track;
-            trackLine = s.track == null ? null : "♫ " + s.track;
-        }
-        shownCurrent = current;
-        shownNext = next != null && showNext.get() ? next : null;
-        shownTrack = showTrack.get() ? trackLine : null;
+        String title = showTrack.get() ? s.track : null;
 
-        var tr = MinecraftClient.getInstance().textRenderer;
+        TextRenderer tr = MinecraftClient.getInstance().textRenderer;
         int limit = maxWidth.get().intValue();
-        if (!current.equals(curSrc)) {
+        boolean relayout = limit != laidOutLimit;
+        laidOutLimit = limit;
+        // The index matters too: a repeated lyric is still a new line.
+        if (idx != lineIdx || !current.equals(curSrc)) {
+            prev = cur;
+            lineIdx = idx;
             curSrc = current;
-            String c = clip(tr, current, limit);
-            curText = Text.literal(c);
-            curW = tr.getWidth(c);
+            cur = line(tr, current, limit);
+            lineChangedAt = wall;
+        } else if (relayout) {
+            cur = line(tr, current, limit);
         }
-        if (shownNext == null) {
-            nextSrc = null;
-            nextText = null;
-            nextW = 0f;
-        } else if (!shownNext.equals(nextSrc)) {
-            nextSrc = shownNext;
-            String c = clip(tr, shownNext, limit);
-            nextText = Text.literal(c);
-            nextW = tr.getWidth(c);
+        if (relayout || !Objects.equals(upcoming, nextSrc)) {
+            nextSrc = upcoming;
+            next = upcoming == null ? null : line(tr, upcoming, limit);
         }
-        if (shownTrack == null) {
-            trackSrc = null;
-            trackText = null;
-            trackW = 0f;
-        } else if (!shownTrack.equals(trackSrc)) {
-            trackSrc = shownTrack;
-            String c = clip(tr, shownTrack, limit);
-            trackText = Text.literal(c);
-            trackW = tr.getWidth(c);
+        if (relayout || !Objects.equals(title, trackSrc)) {
+            trackSrc = title;
+            track = title == null ? null : line(tr, "♫ " + title, limit);
         }
         return true;
     }
 
-    private static String clip(TextRenderer tr, String s, int limit) {
-        if (tr.getWidth(s) <= limit) {
-            return s;
-        }
-        return tr.trimToWidth(s, limit - tr.getWidth("…")) + "…";
+    private static Line line(TextRenderer tr, String s, int limit) {
+        String clipped = tr.getWidth(s) <= limit ? s : tr.trimToWidth(s, limit - tr.getWidth("…")) + "…";
+        return new Line(Text.literal(clipped), tr.getWidth(clipped));
     }
 
-    /** 0..1 progress of the line-change animation (ease-out cubic); 1 when animation is off. */
+    /** 0..1 progress of the line-change animation; 1 when animation is off. */
     private float lineEase() {
-        if (!smoothLines.get()) {
-            return 1f;
-        }
-        float p = Math.min(1f, (System.currentTimeMillis() - lineChangedAt) / 320f);
-        float q = 1f - p;
-        return 1f - q * q * q;
+        return LyricsLayout.ease(System.currentTimeMillis() - lineChangedAt,
+                smoothLines.get() ? TRANSITION_MS : 0L);
     }
 
     // ------------------------------------------------------------------
     // HUD rendering
     // ------------------------------------------------------------------
 
-    private static final float CUR_SCALE = 1.12f;
-    private static final float ROW = 11f;
+    private static final float CUR_SCALE = 1.5f;
+    private static final float TEXT_H = 9f;
+    private static final float GAP = 4f;
+    private static final float BAR_H = 2f;
+    private static final float MIN_WIDTH = 120f;
+    private static final float SIDE = 4f;
+    /** How far a finished line travels while fading out. */
+    private static final float EXIT_RISE = 8f;
+
+    /* HUD scales for this frame, snapped to whole screen pixels. */
+    private float smallScale = 1f;
+    private float bigScale = CUR_SCALE;
+    private final float[] size = new float[2];
+    /** This frame's on-screen box, used to snap text to whole pixels. */
+    private float[] box;
+
+    private float pixelsPerUnit() {
+        return (float) MinecraftClient.getInstance().getWindow().getScaleFactor() * hudScale();
+    }
+
+    private float currentScale(Line l, float ppu) {
+        return LyricsLayout.fitScale(CUR_SCALE, smallScale, l.width, laidOutLimit, ppu);
+    }
 
     @Override
     protected float[] measure() {
@@ -438,64 +432,122 @@ public final class SpotifyLyrics extends HudModule implements WorldRenderPartici
             size[1] = 0f;
             return size;
         }
-        float w = Math.max(curW * CUR_SCALE, Math.max(nextW, trackW));
-        w = Math.max(w, 90f);
-        float h = ROW * CUR_SCALE;
-        if (trackText != null) {
-            h += ROW + 1f;
+        float ppu = pixelsPerUnit();
+        smallScale = LyricsLayout.crispScale(1f, ppu);
+        bigScale = Math.max(LyricsLayout.crispScale(CUR_SCALE, ppu), smallScale + 1f / ppu);
+
+        float w = Math.max(MIN_WIDTH, cur.width * currentScale(cur, ppu));
+        if (next != null) {
+            w = Math.max(w, next.width * smallScale);
         }
-        if (nextText != null) {
-            h += ROW + 1f;
+        if (track != null) {
+            w = Math.max(w, track.width * smallScale);
         }
-        if (showProgress.get() && progress >= 0f) {
-            h += 6f;
+        // Ease the panel from the old width instead of jumping with every line.
+        float ease = lineEase();
+        if (ease < 1f && size[0] > 0f) {
+            w = LyricsLayout.lerp(size[0] - SIDE * 2f, w, ease);
         }
-        size[0] = w + 8f;
+
+        // Rows are reserved by setting, so the height does not change from line to line.
+        float h = TEXT_H * bigScale;
+        if (showTrack.get()) {
+            h += TEXT_H * smallScale + GAP;
+        }
+        if (showNext.get()) {
+            h += GAP + TEXT_H * smallScale;
+        }
+        if (showProgress.get()) {
+            h += GAP + BAR_H;
+        }
+        size[0] = w + SIDE * 2f;
         size[1] = h;
         return size;
     }
 
     @Override
     protected void renderContent(DrawContext ctx, float x, float y, float alpha) {
-        var tr = MinecraftClient.getInstance().textRenderer;
+        box = screenBounds();
+        float ppu = pixelsPerUnit();
         float cx = x + size[0] / 2f;
-        float ly = y;
+        float top = y;
+        if (showTrack.get()) {
+            if (track != null) {
+                drawHudLine(ctx, track, cx, top, smallScale, accent(), alpha, textShadow());
+            }
+            top += TEXT_H * smallScale + GAP;
+        }
+        float curY = top;
+        float nextY = curY + TEXT_H * bigScale + GAP;
         float ease = lineEase();
-        if (trackText != null) {
-            drawVanilla(ctx, tr, trackText, trackW, cx, ly, accent(), alpha);
-            ly += ROW + 1f;
+        float out = 1f - ease;
+        if (prev != null && ease < 1f) {
+            drawHudLine(ctx, prev, cx, curY - EXIT_RISE * ease, currentScale(prev, ppu), text(),
+                    alpha * out * out, true);
+        }
+        // The new line rises out of the "next" row, growing and brightening as it arrives.
+        float target = currentScale(cur, ppu);
+        float scale = LyricsLayout.lerp(smallScale, target, ease);
+        float rest = curY + TEXT_H * (bigScale - target) / 2f;
+        float from = showNext.get() ? nextY : curY + GAP;
+        drawHudLine(ctx, cur, cx, LyricsLayout.lerp(from, rest, ease), scale,
+                Ui.mix(textDim(), text(), ease), alpha * (0.6f + 0.4f * ease), true);
+        top = curY + TEXT_H * bigScale;
+        if (showNext.get()) {
+            if (next != null) {
+                drawHudLine(ctx, next, cx, nextY + GAP * out, smallScale, textDim(), alpha * ease, textShadow());
+            }
+            top = nextY + TEXT_H * smallScale;
         }
         if (showProgress.get() && progress >= 0f) {
-            float bw = size[0] - 8f;
-            float bx = x + 4f;
-            Ui.roundRect(ctx, bx, ly + 1f, bw, 2f, 1f, Ui.alpha(textFaint(), 0.45f * alpha));
-            if (progress > 0.002f) {
-                Ui.roundRect(ctx, bx, ly + 1f, Math.max(2f, bw * progress), 2f, 1f, Ui.alpha(accent(), alpha));
+            float bx = x + SIDE;
+            float bw = size[0] - SIDE * 2f;
+            float by = top + GAP;
+            Ui.roundRect(ctx, bx, by, bw, BAR_H, BAR_H / 2f, Ui.alpha(textFaint(), 0.55f * alpha));
+            float filled = bw * progress;
+            if (filled > 0.5f) {
+                Ui.roundRect(ctx, bx, by, filled, BAR_H, BAR_H / 2f, Ui.alpha(accent(), alpha));
             }
-            ly += 6f;
+            Ui.circle(ctx, bx + filled, by + BAR_H / 2f, BAR_H, Ui.alpha(text(), alpha));
         }
-        // Current line: slightly larger, slides up and fades in when the line changes.
-        float slide = (1f - ease) * 5f;
-        float curAlpha = alpha * (0.3f + 0.7f * ease);
+    }
+
+    private void drawHudLine(DrawContext ctx, Line line, float cx, float y, float scale, int color,
+                             float alpha, boolean shadow) {
+        int argb = Ui.alpha(color, alpha);
+        if (!visible(argb)) {
+            return;
+        }
+        float px = cx - line.width * scale / 2f;
+        float py = y;
+        if (box != null) {
+            float gui = (float) MinecraftClient.getInstance().getWindow().getScaleFactor();
+            px = LyricsLayout.snap(px, box[0], hudScale(), gui);
+            py = LyricsLayout.snap(py, box[1], hudScale(), gui);
+        }
         ctx.getMatrices().pushMatrix();
-        ctx.getMatrices().translate(cx, ly + slide);
-        ctx.getMatrices().scale(CUR_SCALE, CUR_SCALE);
-        drawVanilla(ctx, tr, curText, curW, 0f, 0f, text(), curAlpha);
+        ctx.getMatrices().translate(px, py);
+        ctx.getMatrices().scale(scale, scale);
+        ctx.drawText(MinecraftClient.getInstance().textRenderer, line.text, 0, 0, argb, shadow);
         ctx.getMatrices().popMatrix();
-        ly += ROW * CUR_SCALE + 1f;
-        if (nextText != null) {
-            drawVanilla(ctx, tr, nextText, nextW, cx, ly, textDim(), alpha * (0.55f + 0.45f * ease));
-        }
     }
 
-    private void drawVanilla(DrawContext ctx, TextRenderer tr, Text line, float width, float cx, float y,
-                             int color, float alpha) {
-        ctx.drawText(tr, line, Math.round(cx - width / 2f), Math.round(y), Ui.alpha(color, alpha), textShadow());
+    /** Nearly transparent text is skipped: the font renderer may treat very low alpha as opaque. */
+    private static boolean visible(int argb) {
+        return (argb >>> 24) >= 8;
     }
 
     // ------------------------------------------------------------------
-    // World rendering (GROUND / SKY / 3D)
+    // World rendering (SKY / 3D)
     // ------------------------------------------------------------------
+
+    private static final float TRACK_Y = -22f;
+    private static final float TRACK_MUL = 0.8f;
+    private static final float CUR_Y = -10f;
+    private static final float CUR_MUL = 1.6f;
+    private static final float NEXT_Y = 10f;
+    private static final float LAYER_STEP = 0.45f;
+    private static final double SKY_DISTANCE = 80.0;
 
     @Override
     public void onWorldRender(WorldRenderContext wctx) {
@@ -515,108 +567,92 @@ public final class SpotifyLyrics extends HudModule implements WorldRenderPartici
         if (!anchorSet) {
             anchorYaw = client.player.getYaw();
             anchorSet = true;
-            groundY = Double.NaN;
         }
         float yaw = lockDir.get() ? anchorYaw : client.player.getYaw();
         double yr = Math.toRadians(yaw);
         double fx = -Math.sin(yr);
         double fz = Math.cos(yr);
-        Vec3d cam = RenderUtil.cameraPos();
         float t = (System.currentTimeMillis() % 3_600_000L) / 1000f;
-        float ease = lineEase();
         float scale = (float) worldScale.get().doubleValue();
         MatrixStack m = wctx.matrices();
-        var consumers = wctx.consumers();
-        boolean through = seeThrough.get();
-        int accent = accent();
-        int layers = 1;
-        double px;
-        double py;
-        double pz;
-        float rowSlide = (1f - ease) * 5f;
+        VertexConsumerProvider consumers = wctx.consumers();
+        boolean sky = mode.equals("SKY");
+        boolean through = sky || seeThrough.get(); // terrain must never hide the sky text
 
         m.push();
-        switch (mode) {
-            case "GROUND" -> {
-                double d = worldDist.get();
-                px = cam.x + fx * d;
-                pz = cam.z + fz * d;
-                int tick = RenderUtil.currentTick();
-                if (tick != groundSampleTick || Double.isNaN(groundTarget)) {
-                    groundSampleTick = tick; // one raycast per tick instead of per frame
-                    groundTarget = groundHeight(client, px, pz);
-                }
-                double target = groundTarget;
-                groundY = Double.isNaN(groundY) ? target : groundY + (target - groundY) * 0.2;
-                py = groundY + 0.03;
-                m.translate(px - cam.x, py - cam.y, pz - cam.z);
-                m.multiply(RotationAxis.POSITIVE_Y.rotationDegrees(180f - yaw));
-                m.multiply(RotationAxis.POSITIVE_X.rotationDegrees(-90f));
-                float sc = 0.08f * scale;
-                m.scale(sc, -sc, sc);
-            }
-            case "SKY" -> {
-                double el = Math.toRadians(32.0);
-                double dist = 80.0;
-                px = cam.x + fx * Math.cos(el) * dist;
-                pz = cam.z + fz * Math.cos(el) * dist;
-                py = cam.y + Math.sin(el) * dist + Math.sin(t * 0.7f) * 1.5;
-                m.translate(px - cam.x, py - cam.y, pz - cam.z);
-                var camera = client.gameRenderer.getCamera();
-                m.multiply(RotationAxis.POSITIVE_Y.rotationDegrees(180f - camera.getYaw()));
-                m.multiply(RotationAxis.POSITIVE_X.rotationDegrees(-camera.getPitch()));
-                float sc = 0.01f * (float) dist * scale;
-                m.scale(sc, -sc, sc);
-                through = true; // terrain must never hide the sky text
-            }
-            default -> { // 3D
-                double d = worldDist.get();
-                px = cam.x + fx * d;
-                pz = cam.z + fz * d;
-                py = cam.y + 0.35 + Math.sin(t * 1.4f) * 0.08;
-                m.translate(px - cam.x, py - cam.y, pz - cam.z);
-                // Slow sway so the thickness catches the eye; layers below give the extrusion.
-                m.multiply(RotationAxis.POSITIVE_Y.rotationDegrees(180f - yaw + (float) Math.sin(t * 0.9f) * 16f));
-                float sc = 0.03f * scale;
-                m.scale(sc, -sc, sc);
-                layers = depth.get().intValue() + 1;
-            }
+        if (sky) {
+            double el = Math.toRadians(32.0);
+            double px = fx * Math.cos(el) * SKY_DISTANCE;
+            double pz = fz * Math.cos(el) * SKY_DISTANCE;
+            double py = Math.sin(el) * SKY_DISTANCE + Math.sin(t * 0.7f) * 0.6;
+            m.translate(px, py, pz);
+            var camera = client.gameRenderer.getCamera();
+            m.multiply(RotationAxis.POSITIVE_Y.rotationDegrees(180f - camera.getYaw()));
+            m.multiply(RotationAxis.POSITIVE_X.rotationDegrees(-camera.getPitch()));
+            float sc = 0.003f * (float) SKY_DISTANCE * scale;
+            m.scale(sc, -sc, sc);
+        } else {
+            double d = worldDist.get();
+            double px = fx * d;
+            double pz = fz * d;
+            double py = 0.35 + Math.sin(t * 1.4f) * 0.05; // relative to the camera
+            m.translate(px, py, pz);
+            // A slow sway shows off the extrusion without ever turning the text hard to read.
+            m.multiply(RotationAxis.POSITIVE_Y.rotationDegrees(180f - yaw + (float) Math.sin(t * 0.9f) * 10f));
+            float sc = 0.022f * scale;
+            m.scale(sc, -sc, sc);
         }
-
-        int bg = mode.equals("GROUND") ? 0x55000000 : 0;
-        float step = 1.3f;
-        for (int layer = layers - 1; layer >= 0; layer--) {
-            boolean front = layer == 0;
-            m.push();
-            m.translate(0f, 0f, -layer * step);
-            float fade = 0.3f + 0.7f * ease;
-            float shade = front ? 1f : Math.max(0.12f, 0.55f - layer * 0.04f);
-            int curColor = front ? Ui.alpha(text(), fade) : Ui.alpha(shadeOf(accent, shade), 1f);
-            int trackColor = front ? Ui.alpha(accent, 1f) : Ui.alpha(shadeOf(accent, shade * 0.8f), 1f);
-            int nextColor = front ? Ui.alpha(textDim(), 0.7f + 0.3f * ease) : Ui.alpha(shadeOf(accent, shade * 0.6f), 1f);
-            int rowBg = front ? bg : 0;
-            float y = -24f;
-            if (trackText != null) {
-                drawWorldRow(m, consumers, trackText, trackW, y, 0.85f, trackColor, rowBg, through);
-            }
-            drawWorldRow(m, consumers, curText, curW, -6f + rowSlide, 1.6f, curColor, rowBg, through);
-            if (nextText != null) {
-                drawWorldRow(m, consumers, nextText, nextW, 17f, 1.0f, nextColor, rowBg, through);
-            }
-            m.pop();
-        }
+        drawWorldLyrics(m, consumers, sky ? 0 : depth.get().intValue(), through);
         m.pop();
     }
 
-    private void drawWorldRow(MatrixStack m, net.minecraft.client.render.VertexConsumerProvider consumers, Text text,
-                              float width, float y, float mul, int color, int bg, boolean through) {
-        var tr = MinecraftClient.getInstance().textRenderer;
+    private void drawWorldLyrics(MatrixStack m, VertexConsumerProvider consumers, int layers, boolean through) {
+        float ease = lineEase();
+        float out = 1f - ease;
+        int accent = accent();
+        float plate = 0.65f * bgAlpha();
+
+        if (track != null) {
+            drawWorldRow(m, consumers, track, TRACK_Y, TRACK_MUL, 0f, accent, true,
+                    Ui.alpha(0xFF000000, plate), through);
+        }
+        if (prev != null && ease < 1f) {
+            drawWorldRow(m, consumers, prev, CUR_Y - EXIT_RISE * ease, worldMul(prev), 0f,
+                    Ui.alpha(text(), out * out), false, 0, through);
+        }
+        float y = LyricsLayout.lerp(NEXT_Y, CUR_Y, ease);
+        float mul = LyricsLayout.lerp(1f, worldMul(cur), ease);
+        int plateColor = Ui.alpha(0xFF000000, plate * ease);
+        // Back to front. The backdrop belongs to the deepest layer so it never covers the extrusion.
+        for (int layer = layers; layer >= 1; layer--) {
+            float k = LyricsLayout.lerp(0.6f, 0.2f, (layer - 1) / (float) Math.max(1, layers - 1));
+            drawWorldRow(m, consumers, cur, y, mul, -layer * LAYER_STEP, Ui.alpha(shadeOf(accent, k), ease), false,
+                    layer == layers ? plateColor : 0, through);
+        }
+        drawWorldRow(m, consumers, cur, y, mul, 0f, Ui.alpha(Ui.mix(textDim(), text(), ease), 0.6f + 0.4f * ease),
+                layers == 0, layers == 0 ? plateColor : 0, through);
+        if (next != null) {
+            drawWorldRow(m, consumers, next, NEXT_Y + GAP * out, 1f, 0f, Ui.alpha(textDim(), ease), true,
+                    Ui.alpha(0xFF000000, plate * ease), through);
+        }
+    }
+
+    private float worldMul(Line l) {
+        return Math.max(1f, Math.min(CUR_MUL, laidOutLimit / Math.max(1f, l.width)));
+    }
+
+    private void drawWorldRow(MatrixStack m, VertexConsumerProvider consumers, Line line, float y, float mul, float z,
+                              int color, boolean shadow, int backdrop, boolean through) {
+        if (!visible(color)) {
+            return;
+        }
         m.push();
-        m.translate(0f, y, 0f);
+        m.translate(0f, y, z);
         m.scale(mul, mul, 1f);
-        tr.draw(text, -width / 2f, 0f, color, false, m.peek().getPositionMatrix(), consumers,
+        MinecraftClient.getInstance().textRenderer.draw(line.text, -line.width / 2f, 0f, color, shadow,
+                m.peek().getPositionMatrix(), consumers,
                 through ? TextRenderer.TextLayerType.SEE_THROUGH : TextRenderer.TextLayerType.NORMAL,
-                bg, 0xF000F0);
+                backdrop, 0xF000F0);
         m.pop();
     }
 
@@ -626,16 +662,6 @@ public final class SpotifyLyrics extends HudModule implements WorldRenderPartici
         int g = (int) (((argb >> 8) & 0xFF) * k);
         int b = (int) ((argb & 0xFF) * k);
         return 0xFF000000 | (r << 16) | (g << 8) | b;
-    }
-
-    /** Y of the first solid surface below the point (searching 8 blocks down), else the player's feet. */
-    private double groundHeight(MinecraftClient client, double x, double z) {
-        var p = client.player;
-        Vec3d from = new Vec3d(x, p.getY() + 2.0, z);
-        Vec3d to = new Vec3d(x, p.getY() - 6.0, z);
-        var hit = client.world.raycast(new RaycastContext(from, to, RaycastContext.ShapeType.COLLIDER,
-                RaycastContext.FluidHandling.NONE, p));
-        return hit.getType() == HitResult.Type.BLOCK ? hit.getPos().y : p.getY();
     }
 
     /** Index of the last line whose timestamp is <= pos (binary search), or -1. */

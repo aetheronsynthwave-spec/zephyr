@@ -8,9 +8,9 @@ import net.minecraft.entity.player.PlayerAbilities;
 import net.minecraft.server.network.ServerPlayerEntity;
 
 /**
- * Fly - vanilla flight controls (double-tap jump). Ported from Donut Client (MIT):
- * authority is granted ONLY on a hosted (integrated server) world. On a remote server this
- * module refuses to enable, because the server would reject it and nothing is spoofed.
+ * Fly - vanilla flight controls (double-tap jump). Ported from Donut Client (MIT).
+ * Flight is granted on the client everywhere; a hosted (integrated server) world also grants
+ * it to the server-side player. A remote server keeps its own abilities and may kick for it.
  */
 public final class Fly extends Module {
 
@@ -34,11 +34,6 @@ public final class Fly extends Module {
         MinecraftClient mc = MinecraftClient.getInstance();
         if (mc.player == null) {
             throw new IllegalStateException("no player");
-        }
-        if (mc.getServer() == null) {
-            mc.player.sendMessage(net.minecraft.text.Text.literal(
-                    "[Zephyr] Fly only works on a hosted (singleplayer/LAN) world."), true);
-            throw new IllegalStateException("remote server");
         }
         PlayerAbilities a = mc.player.getAbilities();
         prevAllow = a.allowFlying;

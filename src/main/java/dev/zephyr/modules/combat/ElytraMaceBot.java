@@ -8,6 +8,7 @@ import dev.zephyr.core.combat.SwapManager;
 import dev.zephyr.core.flight.DiveLearner;
 import dev.zephyr.core.flight.FlightModel;
 import dev.zephyr.core.input.InputOverride;
+import dev.zephyr.core.inventory.ElytraLocator;
 import dev.zephyr.core.inventory.GearSlots;
 import dev.zephyr.core.inventory.InventoryManager;
 import dev.zephyr.core.rotation.RotationManager;
@@ -18,6 +19,7 @@ import dev.zephyr.core.target.TargetLock;
 import dev.zephyr.core.timing.TickPhase;
 import dev.zephyr.core.util.ItemUtil;
 import dev.zephyr.core.util.MathUtil;
+import dev.zephyr.core.world.HitGeometry;
 import dev.zephyr.core.world.RaycastValidator;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
@@ -27,6 +29,7 @@ import net.minecraft.entity.projectile.FireworkRocketEntity;
 import net.minecraft.item.ItemStack;
 import net.minecraft.item.Items;
 import net.minecraft.text.Text;
+import net.minecraft.util.ActionResult;
 import net.minecraft.util.math.Box;
 import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.Vec3d;
@@ -34,8 +37,7 @@ import net.minecraft.util.math.Vec3d;
 import java.util.function.Predicate;
 
 /**
- * Elytra + mace practice bot. Runs only in a world hosted by this client (singleplayer, or a
- * LAN world you opened); it switches itself off anywhere else.
+ * Elytra + mace bot.
  *
  * <pre>
  *  PREPARE -> TAKEOFF -> CLIMB -> DIVE -> STRIKE -> RECOVER -> CLIMB ...
@@ -55,6 +57,8 @@ import java.util.function.Predicate;
 public final class ElytraMaceBot extends Module {
 
     private static final int PRIORITY = 5;
+    /** Slack around the hitbox for the crosshair test, in blocks. Not tuned in game. */
+    private static final double AIM_MARGIN = 0.1;
 
     private final NumberSetting range = num("range", "Target range", 16, 128, 2, 64);
     private final NumberSetting height = num("diveHeight", "Dive height above target", 8, 60, 1, 12);
@@ -94,6 +98,9 @@ public final class ElytraMaceBot extends Module {
     private int trackedId = -1;
     private Vec3d lastTargetPos;
     private Vec3d targetVel = Vec3d.ZERO;
+    /** The target's unsmoothed movement over the last tick; valid only when {@code stepKnown}. */
+    private Vec3d targetStep = Vec3d.ZERO;
+    private boolean stepKnown;
 
     public ElytraMaceBot() {
         super("ElytraMaceBot", ModuleCategory.COMBAT, 0);
@@ -108,11 +115,6 @@ public final class ElytraMaceBot extends Module {
     /** CombatCoordinator: other hitters hold off while a dive is under way. */
     public boolean slamPending() {
         return slamPending;
-    }
-
-    /** The only worlds this bot runs in: ones hosted by this client. */
-    private static boolean hostedHere(MinecraftClient client) {
-        return client.isIntegratedServerRunning() && client.getServer() != null;
     }
 
     // ------------------------------------------------------------------
@@ -158,6 +160,8 @@ public final class ElytraMaceBot extends Module {
         trackedId = -1;
         lastTargetPos = null;
         targetVel = Vec3d.ZERO;
+        targetStep = Vec3d.ZERO;
+        stepKnown = false;
         lock.clear();
     }
 
@@ -184,10 +188,6 @@ public final class ElytraMaceBot extends Module {
         ClientPlayerEntity self = client.player;
         if (self == null || client.world == null || client.interactionManager == null) {
             reset();
-            return;
-        }
-        if (!hostedHere(client)) {
-            stop(self, "practice only - it runs in singleplayer or a world you host.");
             return;
         }
         if (!self.isAlive()) {
@@ -249,9 +249,12 @@ public final class ElytraMaceBot extends Module {
             return;
         }
         if (!GearSlots.isElytra(worn)) {
-            if (ready(client, self, GearSlots::isUsableElytra, "usable elytra") && !acted()
-                    && GearSlots.swapWorn(client, InventoryManager.findHotbarSlot(self, GearSlots::isUsableElytra))) {
-                noteAct();
+            ElytraLocator.Found elytra = GearSlots.locateElytra(self);
+            if (elytra.usable()) {
+                equipElytra(client, self, elytra);
+            } else if (stateTicks > 10 && client.currentScreen == null) {
+                // The grace period covers an inventory that is still settling.
+                stop(self, "no usable elytra in the chest slot, hotbar or inventory.");
             }
             return;
         }
@@ -277,6 +280,28 @@ public final class ElytraMaceBot extends Module {
         return false;
     }
 
+    /**
+     * One step towards wearing the elytra found at {@code at}: the chest swap when it is in the
+     * hotbar, otherwise first the move from the main inventory into the hotbar.
+     */
+    private void equipElytra(MinecraftClient client, ClientPlayerEntity self, ElytraLocator.Found at) {
+        if (acted()) {
+            return;
+        }
+        boolean sent = switch (at.place()) {
+            case HOTBAR -> GearSlots.swapWorn(client, at.slot());
+            case MAIN -> GearSlots.stageToHotbar(client,
+                    at.usable() ? GearSlots::isUsableElytra : GearSlots::isElytra,
+                    maceSlot(self), rocketSlot(self),
+                    InventoryManager.findHotbarSlot(self, s -> s.isOf(Items.WIND_CHARGE)),
+                    InventoryManager.findHotbarSlot(self, s -> ItemUtil.id(s).endsWith("_axe")));
+            case WORN, NONE -> false;
+        };
+        if (sent) {
+            noteAct();
+        }
+    }
+
     private void takeoff(MinecraftClient client, ClientPlayerEntity self, LivingEntity target) {
         if (self.isGliding()) {
             enter(State.RECOVER); // same choice as after a bounce: dive now if high enough, else climb
@@ -292,14 +317,11 @@ public final class ElytraMaceBot extends Module {
         }
         // Close to the target, a wind charge at the feet is a much faster launch than climbing.
         int wind = InventoryManager.findHotbarSlot(self, s -> s.isOf(Items.WIND_CHARGE));
-        if (self.isOnGround() && target != null && wind != -1 && self.distanceTo(target) < 9.0f) {
-            if (self.getInventory().getSelectedSlot() != wind && !SwapManager.select(client, wind)) {
-                return;
-            }
+        if (self.isOnGround() && target != null && lock.inRange() && wind != -1 && self.distanceTo(target) < 9.0f
+                && !acted() && !ItemUtil.coolingDown(self, self.getInventory().getStack(wind))) {
             RotationManager.clear(PRIORITY);
             self.setPitch(90.0f);
-            if (!acted() && CombatActions.interactItem(client).isAccepted()) {
-                noteAct();
+            if (useItem(client, self, wind, ItemUtil::isWindCharge)) {
                 InputOverride.requestJump();
                 return;
             }
@@ -441,7 +463,7 @@ public final class ElytraMaceBot extends Module {
     private boolean swapAllowed(ClientPlayerEntity self, LivingEntity target) {
         // A raised shield is no reason to wait: the strike breaks it with an axe, or the dive
         // line (see aimBox) comes down behind it.
-        return maceSlot(self) != -1 && GearSlots.counterpartHotbarSlot(self) != -1;
+        return lock.inRange() && maceSlot(self) != -1 && GearSlots.counterpartHotbarSlot(self) != -1;
     }
 
     private void strike(MinecraftClient client, ClientPlayerEntity self, LivingEntity target) {
@@ -452,8 +474,11 @@ public final class ElytraMaceBot extends Module {
         slamPending = true;
         Vec3d eye = self.getEyePos();
         Box box = target.getBoundingBox();
-        Vec3d aim = MathUtil.bestAimPoint(self, target, RotationManager.currentYaw(), self.getPitch());
-        steer(MathUtil.yawTo(eye, aim), MathUtil.pitchTo(eye, aim));
+        Vec3d aim = MathUtil.bestAimPoint(self, target, self.getYaw(), self.getPitch());
+        // The turn lands next tick, so aim from where the eyes will be at where the target will be.
+        Vec3d nextEye = eye.add(self.getVelocity());
+        Vec3d nextAim = aim.add(targetStep);
+        steer(MathUtil.yawTo(nextEye, nextAim), MathUtil.pitchTo(nextEye, nextAim));
 
         if (GearSlots.wearingElytra(self)) {
             if (stateTicks > 8) {
@@ -468,11 +493,12 @@ public final class ElytraMaceBot extends Module {
             return;
         }
         boolean inReach = box.squaredMagnitude(eye) <= reach.get() * reach.get();
+        boolean hittable = inReach && hittable(self, target);
         if (!inReach && Math.hypot(box.getCenter().x - eye.x, box.getCenter().z - eye.z) > 0.8) {
             InputOverride.requestForward(targetVel.horizontalLength() > 0.2); // air control: drift towards a target that moved
         }
         // Stun slam: the axe disables the shield this tick, the mace lands on a following one.
-        if (inReach && !acted() && !self.isGliding() && axeBreak.get()
+        if (hittable && !acted() && !self.isGliding() && axeBreak.get()
                 && CombatCoordinator.shieldBlocks(target, self)) {
             int axe = InventoryManager.findHotbarSlot(self, s -> ItemUtil.id(s).endsWith("_axe"));
             if (axe != -1 && CombatActions.attributeSwapAttack(client, axe, target, 3)) {
@@ -482,7 +508,7 @@ public final class ElytraMaceBot extends Module {
                 return;
             }
         }
-        if (inReach && !acted() && !self.isGliding() && self.fallDistance >= minFall.get() && target.hurtTime <= 1
+        if (hittable && !acted() && !self.isGliding() && self.fallDistance >= minFall.get() && target.hurtTime <= 1
                 && !(respectShield.get() && CombatCoordinator.shieldBlocks(target, self))) {
             int mace = maceSlot(self);
             if (mace == -1) {
@@ -517,6 +543,23 @@ public final class ElytraMaceBot extends Module {
         }
     }
 
+    /**
+     * Everything a hit sent this tick needs: the locked target inside the target range, in
+     * reach both now and one movement step ahead, under the crosshair, and a visible point of
+     * its hitbox within reach.
+     */
+    private boolean hittable(ClientPlayerEntity self, LivingEntity target) {
+        if (target != lock.get() || !lock.inRange() || !stepKnown || target.getId() != trackedId) {
+            return false;
+        }
+        Vec3d eye = self.getEyePos();
+        Box box = target.getBoundingBox();
+        double max = reach.get();
+        return HitGeometry.withinReachThroughStep(eye, box, targetStep, max)
+                && HitGeometry.lookCrosses(eye, self.getYaw(), self.getPitch(), box, max, AIM_MARGIN)
+                && RaycastValidator.visibleWithin(eye, box, max, self);
+    }
+
     /** With the elytra already off: does the remaining free fall still pass within reach? */
     private boolean stillReaching(ClientPlayerEntity self, Box box) {
         return FlightModel.ticksToSmash(self.getEntityPos(), self.getVelocity(), self.getYaw(), self.getPitch(),
@@ -530,20 +573,15 @@ public final class ElytraMaceBot extends Module {
             steer(MathUtil.yawTo(self.getEyePos(), aim), Math.max(30.0, MathUtil.pitchTo(self.getEyePos(), aim)));
         }
         if (!GearSlots.wearingElytra(self)) {
+            // Not found is not final: keep looking until the timeout, the fall save stays armed.
+            ElytraLocator.Found elytra = GearSlots.locateElytra(self);
             if (stateTicks > 40) {
-                stop(self, "could not put the elytra back on.");
+                stop(self, elytra.place() == ElytraLocator.Place.NONE
+                        ? "no elytra in the chest slot, hotbar or inventory."
+                        : "could not put the elytra back on.");
                 return;
             }
-            if (!acted()) {
-                int h = GearSlots.counterpartHotbarSlot(self);
-                if (h == -1) {
-                    stop(self, "the elytra left the hotbar.");
-                    return;
-                }
-                if (GearSlots.swapWorn(client, h)) {
-                    noteAct();
-                }
-            }
+            equipElytra(client, self, elytra);
             return;
         }
         if (self.isGliding()) {
@@ -645,13 +683,12 @@ public final class ElytraMaceBot extends Module {
         if (RaycastValidator.canSee(feet, feet.add(0, -(fallSpeed * 3.0 + 1.0), 0), self)) {
             return false; // ground is still more than three ticks away
         }
-        if (self.getInventory().getSelectedSlot() != slot && !SwapManager.select(client, slot)) {
-            return false;
+        if (ItemUtil.coolingDown(self, self.getInventory().getStack(slot))) {
+            return false; // leave the tick to recovery
         }
         RotationManager.clear(PRIORITY);
         self.setPitch(90.0f);
-        if (CombatActions.interactItem(client).isAccepted()) {
-            noteAct();
+        if (useItem(client, self, slot, ItemUtil::isWindCharge)) {
             clutchTick = TickPhase.tickId();
             clutches++;
             return true;
@@ -672,14 +709,17 @@ public final class ElytraMaceBot extends Module {
             return true;
         }
         Box box = target.getBoundingBox();
-        if (box.squaredMagnitude(self.getEyePos()) <= reach.get() * reach.get()) {
+        boolean inReach = box.squaredMagnitude(self.getEyePos()) <= reach.get() * reach.get();
+        if (inReach && hittable(self, target)) {
             return false;
         }
-        // Out of reach: save as soon as the fall stops lining up, and in any case once the
+        // No valid hit this tick: save as soon as the fall stops lining up, and in any case once the
         // ground is about to arrive (a target that moved can look reachable for a few ticks).
         Vec3d feet = self.getEntityPos();
         double nextTicks = -self.getVelocity().y * 2.0;
-        return !stillReaching(self, box) || !RaycastValidator.canSee(feet, feet.add(0, -nextTicks, 0), self);
+        // In reach but refused (aim, sight or movement): only the ground distance decides.
+        return !inReach && !stillReaching(self, box)
+                || !RaycastValidator.canSee(feet, feet.add(0, -nextTicks, 0), self);
     }
 
     // ------------------------------------------------------------------
@@ -704,10 +744,22 @@ public final class ElytraMaceBot extends Module {
         if (boosting(client, self) || ItemUtil.coolingDown(self, self.getMainHandStack())) {
             return;
         }
-        if (CombatActions.interactItem(client).isAccepted()) {
-            noteAct();
+        if (useItem(client, self, slot, GearSlots::isFirework)) {
             sinceRocket = 0;
         }
+    }
+
+    /**
+     * One item use from a hotbar slot at the live view. Any result but FAIL means the packet
+     * went out, so it counts as this tick's act even if the client prediction passed.
+     */
+    private boolean useItem(MinecraftClient client, ClientPlayerEntity self, int slot, Predicate<ItemStack> wanted) {
+        if (CombatActions.interactItemFromSlot(client, slot, wanted, self.getYaw(), self.getPitch())
+                == ActionResult.FAIL) {
+            return false;
+        }
+        noteAct();
+        return true;
     }
 
     private static boolean boosting(MinecraftClient client, ClientPlayerEntity self) {
@@ -765,6 +817,8 @@ public final class ElytraMaceBot extends Module {
 
     /** Smoothed per-tick velocity of the target (teleports ignored). */
     private void trackTarget(LivingEntity target) {
+        stepKnown = false;
+        targetStep = Vec3d.ZERO;
         if (target == null) {
             trackedId = -1;
             lastTargetPos = null;
@@ -774,7 +828,9 @@ public final class ElytraMaceBot extends Module {
         Vec3d p = target.getEntityPos();
         if (target.getId() == trackedId && lastTargetPos != null) {
             Vec3d delta = p.subtract(lastTargetPos);
-            targetVel = delta.length() > 4.0 ? Vec3d.ZERO : targetVel.multiply(0.5).add(delta.multiply(0.5));
+            stepKnown = HitGeometry.finite(delta) && delta.length() <= 4.0;
+            targetStep = stepKnown ? delta : Vec3d.ZERO;
+            targetVel = stepKnown ? targetVel.multiply(0.5).add(delta.multiply(0.5)) : Vec3d.ZERO;
         } else {
             targetVel = Vec3d.ZERO;
         }

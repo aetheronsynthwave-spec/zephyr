@@ -86,6 +86,16 @@ public final class SwapManager {
         return true;
     }
 
+    /**
+     * Makes sure the server holds the currently selected slot before an item use, without
+     * cancelling a pending swap-back.
+     *
+     * @return false when it cannot be synced this tick; the item must not be used then
+     */
+    public static boolean syncHeld(MinecraftClient client) {
+        return client.player != null && apply(client, client.player.getInventory().getSelectedSlot());
+    }
+
     /** The slot to return to: the pending original if a swap is already in progress. */
     public static int homeSlot(ClientPlayerEntity player) {
         return originalSlot != -1 ? originalSlot : player.getInventory().getSelectedSlot();

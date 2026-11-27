@@ -2,8 +2,10 @@ package dev.zephyr.core.combat;
 
 import dev.zephyr.core.rotation.RotationManager;
 import dev.zephyr.core.timing.TickPhase;
+import dev.zephyr.core.util.ItemUtil;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.entity.Entity;
+import net.minecraft.item.ItemStack;
 import net.minecraft.util.ActionResult;
 import net.minecraft.util.Hand;
 
@@ -32,7 +34,7 @@ public final class CombatActions {
 
     /** Melee/entity attack through the vanilla path (sets cooldown + sends swing). */
     public static boolean attackEntity(MinecraftClient client, Entity target) {
-        if (target == null || !ActionState.prepareAttack(client)) {
+        if (target == null || target.isRemoved() || !ActionState.prepareAttack(client)) {
             return false; // mid-use, screen open, already attacked this tick, or window closed
         }
         // Exactly what vanilla doAttack does: attack packet, then the hand swing (which
@@ -62,7 +64,7 @@ public final class CombatActions {
      */
     public static boolean attributeSwapAttack(MinecraftClient client, int hotbarSlot, Entity target, int backTicks) {
         if (client.player == null || client.getNetworkHandler() == null || !SwapManager.isValidSlot(hotbarSlot)
-                || !ActionState.canAttack(client)) {
+                || target == null || target.isRemoved() || !ActionState.canAttack(client)) {
             return false; // check BEFORE swapping, so a refused hit never leaves a stray slot change
         }
         return SwapManager.withSwap(client, hotbarSlot, backTicks, () -> attackEntity(client, target));
@@ -90,7 +92,7 @@ public final class CombatActions {
      * cooling-down item), so a non-accepted result does NOT mean "nothing happened".
      */
     public static ActionResult interactItem(MinecraftClient client) {
-        if (!ActionState.prepareItemUse(client)) {
+        if (!ActionState.prepareItemUse(client) || !heldItemReady(client)) {
             return ActionResult.FAIL;
         }
         ActionResult r = RotationManager.withServerRotation(() ->
@@ -110,7 +112,8 @@ public final class CombatActions {
      * client prediction itself returned PASS (e.g. the item went on cooldown mid-use).
      */
     public static ActionResult interactItemAt(MinecraftClient client, float yaw, float pitch) {
-        if (!ActionState.prepareItemUse(client)) {
+        if (!Float.isFinite(yaw) || !Float.isFinite(pitch)
+                || !ActionState.prepareItemUse(client) || !heldItemReady(client)) {
             return ActionResult.FAIL;
         }
         var p = client.player;
@@ -127,6 +130,43 @@ public final class CombatActions {
         }
         swingIfVanillaWould(client, r);
         return r;
+    }
+
+    /**
+     * Selects hotbar slot {@code slot} and uses the item in it at the given rotation. Every
+     * check that can refuse runs before the slot changes; the same item type is refused on
+     * the tick after a use made through this method.
+     *
+     * @return {@link ActionResult#FAIL} when no use-item packet was sent
+     */
+    public static ActionResult interactItemFromSlot(MinecraftClient client, int slot,
+                                                    java.util.function.Predicate<ItemStack> wanted,
+                                                    float yaw, float pitch) {
+        var p = client.player;
+        if (p == null || !SwapManager.isValidSlot(slot)) {
+            return ActionResult.FAIL;
+        }
+        ItemStack stack = p.getInventory().getStack(slot);
+        if (stack.isEmpty() || !wanted.test(stack) || ItemUtil.coolingDown(p, stack)) {
+            return ActionResult.FAIL;
+        }
+        var item = stack.getItem(); // read before the use can empty the stack
+        if (ActionState.usedRecently(item) || !ActionState.prepareItemUse(client)
+                || !SwapManager.select(client, slot)
+                || p.getInventory().getSelectedSlot() != slot || !wanted.test(p.getMainHandStack())) {
+            return ActionResult.FAIL;
+        }
+        ActionResult r = interactItemAt(client, yaw, pitch);
+        if (r != ActionResult.FAIL) {
+            ActionState.noteGuardedUse(item);
+        }
+        return r;
+    }
+
+    /** The held stack exists, is off cooldown, and its slot is the one the server holds. */
+    private static boolean heldItemReady(MinecraftClient client) {
+        ItemStack held = client.player.getMainHandStack();
+        return !held.isEmpty() && !ItemUtil.coolingDown(client.player, held) && SwapManager.syncHeld(client);
     }
 
     private static void swingIfVanillaWould(MinecraftClient client, ActionResult r) {
