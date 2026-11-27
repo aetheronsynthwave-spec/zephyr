@@ -13,7 +13,6 @@ import dev.zephyr.core.timing.MsTimer;
 import dev.zephyr.core.timing.RandomController;
 import dev.zephyr.core.util.ItemUtil;
 import dev.zephyr.core.util.MathUtil;
-import dev.zephyr.core.world.RaycastValidator;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.entity.LivingEntity;
@@ -25,13 +24,18 @@ import net.minecraft.util.math.Vec3d;
  * <p>Discipline pipeline per tick:
  * <ol>
  *   <li>Target acquisition via the scoring pipeline (sticky lock).</li>
- *   <li>Visibility: the target hitbox must be raycast-visible from the eye.</li>
- *   <li>Rotation: bounded smoothing toward the aim point with min/max deg-per-tick caps
- *       and micro-jitter; attack only fires once the server rotation is within tolerance
- *       of the required angles.</li>
+ *   <li>Visibility: at least one sampled point of the target hitbox must be
+ *       raycast-visible from the eye.</li>
+ *   <li>Aim-point optimization: the attack aims at the VISIBLE hitbox sample with the
+ *       smallest angular error to the current view ({@link MathUtil#bestAimPoint}) -
+ *       the point a human drag-tracking with the crosshair would actually click, which
+ *       keeps hits landing even when only a sliver of the hitbox is exposed.</li>
+ *   <li>Rotation: bounded smoothing (min/max deg-per-tick caps, micro-jitter); the
+ *       swing fires only once the server rotation is inside the tolerance cone.</li>
  *   <li>Attack pacing: gaussian-randomized CPS interval (never a fixed period).</li>
- *   <li>Human gates: weapon cooldown progress, target hurt-time, and a small random
- *       chance to skip a swing entirely (reaction imperfection).</li>
+ *   <li>Human gates: weapon cooldown progress, target hurt-time, a randomized
+ *       acquisition reaction delay (60-140 ms on every NEW target, like real
+ *       recognition time), and a small chance to skip a swing entirely.</li>
  * </ol>
  */
 public final class LegitAura extends Module {
@@ -48,11 +52,14 @@ public final class LegitAura extends Module {
     private final BooleanSetting requireVisible = bool("requireVisible", "Raycast hitbox check", true);
     private final BooleanSetting skipChance = bool("skipChance", "Random swing skip", true);
     private final BooleanSetting silentMode = bool("silent", "Silent rotations", false);
+    private final BooleanSetting reactionDelay = bool("reaction", "Reaction on new target", true);
 
     private final MsTimer attackTimer = new MsTimer();
     private double lastCps;
     private int swings;
     private int ticks;
+    private LivingEntity lastTarget;
+    private long reactionUntilMs;
 
     public LegitAura() {
         super("LegitAura", ModuleCategory.COMBAT, 0);
@@ -66,6 +73,7 @@ public final class LegitAura extends Module {
     @Override
     protected void onDisable() {
         RotationManager.clear(0);
+        lastTarget = null;
     }
 
     @Override
@@ -80,17 +88,38 @@ public final class LegitAura extends Module {
         LivingEntity target = TargetManager.acquire(client, criteria);
         TargetManager.cleanup();
         if (target == null) {
+            lastTarget = null;
+            return;
+        }
+
+        // Recognition time: every freshly locked target gets a human-scale reaction
+        // window before the first swing goes out.
+        if (target != lastTarget) {
+            lastTarget = target;
+            if (reactionDelay.get()) {
+                reactionUntilMs = System.currentTimeMillis()
+                        + RandomController.delayMs(60, 140);
+            } else {
+                reactionUntilMs = 0;
+            }
+        }
+        if (reactionDelay.get() && System.currentTimeMillis() < reactionUntilMs) {
             return;
         }
 
         // Visibility gate: full 3x3x3 hitbox probe from the eye.
         if (requireVisible.get()
-                && !RaycastValidator.hitboxVisible(self.getEyePos(), target.getBoundingBox(), self)) {
+                && !dev.zephyr.core.world.RaycastValidator.hitboxVisible(
+                        self.getEyePos(), target.getBoundingBox(), self)) {
             return;
         }
 
-        // Bounded rotation toward the aim point (visible or silent per config).
-        Vec3d aim = MathUtil.aimPoint(target);
+        // Aim at the visible hitbox sample closest to the current crosshair.
+        double refYaw = RotationManager.isSilentActive()
+                ? RotationManager.currentYaw() : self.getYaw();
+        double refPitch = RotationManager.isSilentActive()
+                ? RotationManager.currentPitch() : self.getPitch();
+        Vec3d aim = MathUtil.bestAimPoint(self, target, refYaw, refPitch);
         double yawReq = MathUtil.yawTo(self.getEyePos(), aim);
         double pitchReq = MathUtil.pitchTo(self.getEyePos(), aim);
         RotationManager.request(RotationRequest.to(yawReq, pitchReq)

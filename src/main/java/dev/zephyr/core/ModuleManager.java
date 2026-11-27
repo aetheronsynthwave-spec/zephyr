@@ -1,5 +1,6 @@
 package dev.zephyr.core;
 
+import dev.zephyr.ZephyrClient;
 import dev.zephyr.core.settings.Setting;
 import net.minecraft.client.MinecraftClient;
 import org.lwjgl.glfw.GLFW;
@@ -70,6 +71,7 @@ public final class ModuleManager {
     }
 
     public void tick(MinecraftClient client) {
+        Module.advanceLabelTick();
         if (client.player == null || client.world == null) {
             return;
         }

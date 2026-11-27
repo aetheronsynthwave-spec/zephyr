@@ -2,6 +2,7 @@ package dev.zephyr.core;
 
 import dev.zephyr.core.settings.BooleanSetting;
 import dev.zephyr.core.settings.KeySetting;
+import dev.zephyr.core.settings.NumberSetting;
 import dev.zephyr.core.settings.Setting;
 import net.minecraft.client.MinecraftClient;
 
@@ -107,6 +108,32 @@ public abstract class Module {
     /** One-line HUD description, e.g. "AutoCrystal · DoubleTap · 19.6cps". */
     public String hudLabel() {
         return name;
+    }
+
+    // ------------------------------------------------------------------
+    // Per-tick HUD label cache
+    // ------------------------------------------------------------------
+
+    private static int labelTick;
+    private String cachedLabel;
+    private int cachedLabelAt = -1;
+
+    /** Bumped once per client tick by the module dispatcher. */
+    public static void advanceLabelTick() {
+        labelTick++;
+    }
+
+    /**
+     * Per-tick cached {@link #hudLabel()}. The HUD renders at frame rate (250/s) while
+     * labels only change per tick (20/s) - rebuilding strings and Text objects per
+     * frame was measurable allocator churn, so HUD renderers read this instead.
+     */
+    public String hudLabelCached() {
+        if (cachedLabel == null || cachedLabelAt != labelTick) {
+            cachedLabel = hudLabel();
+            cachedLabelAt = labelTick;
+        }
+        return cachedLabel;
     }
 
     public String name() {

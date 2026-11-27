@@ -35,7 +35,7 @@ public final class ZephyrConfig {
             Map<String, Map<String, Object>> data = new LinkedHashMap<>();
             var parsed = GSON.<Map<String, Map<String, Object>>>fromJson(json, Map.class);
             if (parsed != null) {
-                for (Map.Entry<String, Object> e : parsed.entrySet()) {
+                for (Map.Entry<String, Map<String, Object>> e : parsed.entrySet()) {
                     if (e.getValue() instanceof Map<?, ?> inner) {
                         Map<String, Object> cast = new LinkedHashMap<>();
                         for (Map.Entry<?, ?> kv : inner.entrySet()) {

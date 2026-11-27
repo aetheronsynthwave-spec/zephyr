@@ -50,7 +50,11 @@ public final class TargetManager {
 
         LivingEntity best = null;
         double bestScore = Double.NEGATIVE_INFINITY;
-        for (Entity e : world.getEntities()) {
+        // Shared per-tick scan cache: multiple combat modules acquire a target in the
+        // same tick - one box query serves them all instead of one per module.
+        var candidates = dev.zephyr.core.world.EntityScan.livingAroundCached(
+                world, self.getLerpedPos(1.0F), criteria.range + 1.0);
+        for (Entity e : candidates) {
             if (!(e instanceof LivingEntity living)) {
                 continue;
             }

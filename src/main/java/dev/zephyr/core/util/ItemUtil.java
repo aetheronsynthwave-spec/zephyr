@@ -45,6 +45,10 @@ public final class ItemUtil {
         return stack.isOf(Items.ENDER_PEARL);
     }
 
+    public static boolean isWindCharge(ItemStack stack) {
+        return stack.isOf(Items.WIND_CHARGE);
+    }
+
     public static boolean isEndCrystal(ItemStack stack) {
         return stack.isOf(Items.END_CRYSTAL);
     }
@@ -92,6 +96,6 @@ public final class ItemUtil {
 
     /** @return true when the item is on cooldown. */
     public static boolean coolingDown(net.minecraft.entity.player.PlayerEntity player, ItemStack stack) {
-        return player.getItemCooldownManager().isCoolingDown(stack.getItem());
+        return player.getItemCooldownManager().isCoolingDown(stack);
     }
 }

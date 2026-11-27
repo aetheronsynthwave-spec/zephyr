@@ -8,6 +8,7 @@ import dev.zephyr.core.util.ItemUtil;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.entity.decoration.EndCrystalEntity;
+import net.minecraft.item.ItemStack;
 import net.minecraft.text.Text;
 
 /**
@@ -88,7 +89,8 @@ public final class AutoLog extends Module {
     }
 
     private boolean hostileNearby(MinecraftClient client, ClientPlayerEntity self) {
-        return client.world.getEntities().stream().anyMatch(e ->
+        return dev.zephyr.core.world.EntityScan.livingAround(
+                client.world, self.getLerpedPos(1.0F), 8.0).stream().anyMatch(e ->
                 e instanceof net.minecraft.entity.player.PlayerEntity p
                         && p != self
                         && p.isAlive()
@@ -120,10 +122,11 @@ public final class AutoLog extends Module {
         if (crystalRange.get() <= 0) {
             return false;
         }
-        for (var e : client.world.getEntities()) {
+        for (var e : dev.zephyr.core.world.EntityScan.around(
+                client.world, self.getLerpedPos(1.0F), crystalRange.get())) {
             if (e instanceof EndCrystalEntity crystal
                     && crystal.squaredDistanceTo(self) <= rangeSq
-                    && !!crystal.isAlive()) {
+                    && crystal.isAlive()) {
                 return true;
             }
         }

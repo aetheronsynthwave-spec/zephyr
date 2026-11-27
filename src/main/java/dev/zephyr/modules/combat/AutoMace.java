@@ -107,10 +107,14 @@ public final class AutoMace extends Module {
         double distToGround = DamageCalculator.distanceToGround(client.world, self);
 
         if (mode.is("DENSITY")) {
-            // Arm while a qualifying slam is incoming (speed + fall + closable ground gap).
+            // Arm while a qualifying slam is incoming: integrate gravity+drag forward
+            // and arm only when the landing tick is 1-2 ticks away - tighter than the
+            // crude "closable gap" heuristic, because the strike fires the tick the
+            // server registers the smash landing.
+            int ticksLeft = ticksToLanding(self, distToGround);
             armedZeroTick = self.getVelocity().y < -0.25
                     && fall >= minFall.get() * 0.75
-                    && distToGround <= Math.abs(self.getVelocity().y) * 1.5;
+                    && ticksLeft >= 0 && ticksLeft <= 2;
             aimAt(client, self, target);
             return; // the strike itself happens in onLand
         }
@@ -141,7 +145,8 @@ public final class AutoMace extends Module {
         if (ItemUtil.attackCooldownProgress(self) < minCooldown.get()) {
             return false;
         }
-        Vec3d aim = MathUtil.aimPoint(target);
+        Vec3d aim = MathUtil.bestAimPoint(self, target,
+                RotationManager.currentYaw(), self.getPitch());
         RotationManager.request(RotationRequest.to(
                         MathUtil.yawTo(self.getEyePos(), aim), MathUtil.pitchTo(self.getEyePos(), aim))
                 .speed(rotSpeedMin.get(), rotSpeedMax.get())
@@ -151,6 +156,27 @@ public final class AutoMace extends Module {
                 .expiresAfter(4)
                 .build());
         return RotationManager.isAimedAt(aim, 6.0);
+    }
+
+    /**
+     * Integrated landing forecast: steps the vertical velocity through vanilla
+     * gravity (0.08/tick) and drag (0.98/tick) and returns the tick index at which
+     * the player reaches the surface, or 99 when that is more than 10 ticks out.
+     */
+    private static int ticksToLanding(ClientPlayerEntity self, double distToGround) {
+        if (self.isOnGround()) {
+            return 0;
+        }
+        double vy = self.getVelocity().y;
+        double fallen = 0.0;
+        for (int t = 1; t <= 10; t++) {
+            vy = (vy - 0.08) * 0.98;
+            fallen += -vy;
+            if (fallen >= distToGround) {
+                return t;
+            }
+        }
+        return 99;
     }
 
     /** Requests the BreachSwap transition, then attacks through the vanilla path. */

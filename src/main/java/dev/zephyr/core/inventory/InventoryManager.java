@@ -51,11 +51,16 @@ public final class InventoryManager {
         if (player == null || slot < 0 || slot > 8) {
             return false;
         }
-        if (player.getInventory().selectedSlot != slot) {
-            player.getInventory().selectedSlot = slot;
+        if (player.getInventory().getSelectedSlot() != slot) {
+            player.getInventory().setSelectedSlot(slot);
             send(client, new UpdateSelectedSlotC2SPacket(slot));
         }
         return true;
+    }
+
+    /** Currently selected hotbar index (0-8). */
+    public static int selectedHotbar(ClientPlayerEntity player) {
+        return player.getInventory().getSelectedSlot();
     }
 
     /**

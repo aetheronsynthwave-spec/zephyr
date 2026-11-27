@@ -29,7 +29,7 @@ public final class FancyOutlines extends Module implements WorldRenderParticipan
         if (client.player == null || target == null || !target.isAlive() || ctx.consumers() == null) {
             return;
         }
-        MatrixStack matrices = ctx.matrixStack();
+        MatrixStack matrices = ctx.matrices();
         VertexConsumerProvider consumers = ctx.consumers();
 
         double inflate = this.inflate.get();

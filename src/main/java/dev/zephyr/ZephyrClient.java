@@ -7,11 +7,15 @@ import dev.zephyr.core.event.ZephyrEvents;
 import dev.zephyr.core.rotation.RotationManager;
 import dev.zephyr.modules.combat.AutoMace;
 import dev.zephyr.modules.combat.BreachSwap;
+import dev.zephyr.modules.combat.JumpReset;
 import dev.zephyr.modules.combat.LegitAura;
 import dev.zephyr.modules.combat.LungeMacro;
+import dev.zephyr.modules.combat.STap;
 import dev.zephyr.modules.crystal.AnchorMacro;
 import dev.zephyr.modules.crystal.AutoCrystal;
+import dev.zephyr.modules.crystal.AutoHitCrystal;
 import dev.zephyr.modules.crystal.SafeAnchor;
+import dev.zephyr.modules.gui.ClickGui;
 import dev.zephyr.modules.hud.ActiveHud;
 import dev.zephyr.modules.movement.Freelook;
 import dev.zephyr.modules.movement.NoDelay;
@@ -22,6 +26,7 @@ import dev.zephyr.modules.render.Esp;
 import dev.zephyr.modules.render.FancyOutlines;
 import dev.zephyr.modules.render.NameTags;
 import dev.zephyr.modules.render.TargetHud;
+import dev.zephyr.modules.render.Tracers;
 import dev.zephyr.modules.render.WorldRenderParticipant;
 import dev.zephyr.modules.survival.AutoLog;
 import dev.zephyr.modules.survival.AutoTotem;
@@ -70,6 +75,10 @@ public final class ZephyrClient implements ClientModInitializer {
         ClientTickEvents.END_CLIENT_TICK.register(this::onClientTick);
 
         WorldRenderEvents.AFTER_ENTITIES.register(ctx -> {
+            // One camera-position cache invalidation per frame: render modules used to
+            // walk gameRenderer->camera->entity->getEyePos() (a fresh Vec3d) on every
+            // call from every module.
+            dev.zephyr.modules.render.RenderUtil.beginFrame();
             for (Module m : modules.all()) {
                 if (m.isEnabled() && m instanceof WorldRenderParticipant participant) {
                     participant.onWorldRender(ctx);
@@ -89,13 +98,18 @@ public final class ZephyrClient implements ClientModInitializer {
     }
 
     private void registerAll() {
+        // GUI
+        modules.register(new ClickGui());
         // Combat
         modules.register(new AutoMace());
         modules.register(new BreachSwap());
         modules.register(new LungeMacro());
         modules.register(new LegitAura());
+        modules.register(new STap());
+        modules.register(new JumpReset());
         // Crystal & anchor
         modules.register(new AutoCrystal());
+        modules.register(new AutoHitCrystal());
         modules.register(new AnchorMacro());
         modules.register(new SafeAnchor());
         // Survival
@@ -109,6 +123,7 @@ public final class ZephyrClient implements ClientModInitializer {
         modules.register(new Freelook());
         // Render & HUD
         modules.register(new Esp());
+        modules.register(new Tracers());
         modules.register(new CrystalEsp());
         modules.register(new NameTags());
         modules.register(new DamageNumbers());
@@ -126,16 +141,23 @@ public final class ZephyrClient implements ClientModInitializer {
 
     private void pollKeybinds(MinecraftClient client) {
         long window = client.getWindow().getHandle();
+        boolean screenOpen = client.currentScreen != null;
         for (Module m : modules.all()) {
             int bind = m.bind().get();
             if (bind == GLFW.GLFW_KEY_UNKNOWN) {
                 continue;
             }
             boolean pressed = GLFW.glfwGetKey(window, bind) == GLFW.GLFW_PRESS;
-            boolean previous = keyEdge.getOrDefault(bind, false);
+            Boolean previous = keyEdge.get(bind);
             keyEdge.put(bind, pressed);
-            if (pressed && !previous) {
-                modules.handleKey(bind, GLFW.GLFW_PRESS);
+            if (pressed && !Boolean.TRUE.equals(previous)) {
+                if (m instanceof ClickGui gui) {
+                    // The GUI key must work in both directions regardless of screens.
+                    gui.openOrClose(client);
+                } else if (!screenOpen) {
+                    // Other binds never fire while a screen (chat/inventory) is open.
+                    modules.handleKey(bind, GLFW.GLFW_PRESS);
+                }
             }
         }
     }

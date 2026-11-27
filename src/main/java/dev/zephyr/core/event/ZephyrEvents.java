@@ -24,6 +24,9 @@ public final class ZephyrEvents {
     /** Fired when the local player lands on the ground after a fall (mace timing hook). */
     public static final EventBus<GroundLand> GROUND_LAND = new EventBus<>();
 
+    /** Fired after {@code MinecraftClient#doAttack} returns - {@code landed} is its return value. */
+    public static final EventBus<AttackLanded> ATTACK_LANDED = new EventBus<>();
+
     public static final class PacketSend implements Cancellable {
         public final Packet<?> packet;
         private boolean cancelled;
@@ -74,11 +77,20 @@ public final class ZephyrEvents {
 
     public static final class GroundLand {
         public final net.minecraft.client.network.ClientPlayerEntity player;
-        public final float fallDistance;
+        public final double fallDistance;
 
-        public GroundLand(net.minecraft.client.network.ClientPlayerEntity player, float fallDistance) {
+        public GroundLand(net.minecraft.client.network.ClientPlayerEntity player, double fallDistance) {
             this.player = player;
             this.fallDistance = fallDistance;
+        }
+    }
+
+    public static final class AttackLanded {
+        /** True when vanilla accepted the attack (cooldown gate passed, target hit). */
+        public final boolean landed;
+
+        public AttackLanded(boolean landed) {
+            this.landed = landed;
         }
     }
 }

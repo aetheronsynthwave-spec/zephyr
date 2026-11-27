@@ -8,7 +8,8 @@ public enum ModuleCategory {
     CRYSTAL("Crystal"),
     SURVIVAL("Survival"),
     MOVEMENT("Movement"),
-    RENDER("Render");
+    RENDER("Render"),
+    GUI("Gui");
 
     private final String label;
 

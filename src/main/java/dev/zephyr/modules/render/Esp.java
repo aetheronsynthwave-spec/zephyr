@@ -34,7 +34,7 @@ public final class Esp extends Module implements WorldRenderParticipant {
         if (self == null || ctx.consumers() == null) {
             return;
         }
-        MatrixStack matrices = ctx.matrixStack();
+        MatrixStack matrices = ctx.matrices();
         VertexConsumerProvider consumers = ctx.consumers();
         float tickDelta = RenderUtil.tickProgress();
         double rangeSq = range.get() * range.get();

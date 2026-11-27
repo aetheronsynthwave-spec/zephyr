@@ -1,6 +1,5 @@
 package dev.zephyr.modules.combat;
 
-import dev.zephyr.ZephyrClient;
 import dev.zephyr.core.Module;
 import dev.zephyr.core.ModuleCategory;
 import dev.zephyr.core.combat.CombatActions;
@@ -9,8 +8,8 @@ import dev.zephyr.core.rotation.RotationManager;
 import dev.zephyr.core.rotation.RotationRequest;
 import dev.zephyr.core.settings.BooleanSetting;
 import dev.zephyr.core.settings.NumberSetting;
-import dev.zephyr.core.target.TargetManager;
 import dev.zephyr.core.target.TargetCriteria;
+import dev.zephyr.core.target.TargetManager;
 import dev.zephyr.core.timing.MsTimer;
 import dev.zephyr.core.util.ItemUtil;
 import dev.zephyr.core.util.MathUtil;
@@ -20,169 +19,221 @@ import net.minecraft.entity.LivingEntity;
 import net.minecraft.util.math.Vec3d;
 
 /**
- * LungeMacro / SpearMace / SpearSwap - full spear-to-mace engagement chain:
+ * LungeMacro - one-key attribute-swap macro that erases the attack-charge cooldown.
  *
- * <pre>IDLE -> ENGAGE (spear strike while cooldown-ready)
- *          -> SWAP (to breach mace via BreachSwap)
- *          -> STRIKE (mace slam window, delegates strike to AutoMace logic)
- *          -> RESTORE (back to spear, randomized ms) -> IDLE</pre>
+ * <p>The trick: a player's attack-charge meter is tied to the ATTACK SPEED ATTRIBUTE of
+ * the held item. Vanilla resets the charge when the held-item attributes change - so
+ * swapping from a sword (slow attack speed, mid-charge) to a spear (fast attack speed)
+ * instantly refills the meter and lets the spear land a FULL-STRENGTH hit the moment
+ * the server registers the slot change.
  *
- * Stage transitions are ms-paced with gaussian jitter; every stage re-validates the
- * target (alive, in reach, hurt-time) before acting, so a dead or escaped target drops
- * the chain back to IDLE instead of firing at air.
+ * <pre>TRIGGER (module bind)
+ *    v
+ *  SWORD: if the current weapon's charge is already full -> hit with it right now
+ *    |    (the sword hit also respects target hurt-frames)
+ *    v
+ *  SWAP: swap to the lunge spear in the hotbar (attribute swap resets the charge)
+ *    v
+ *  SPEAR: rotate to the target (visible) and land the full-strength spear hit
+ *    v
+ *  RESTORE: swap back to whatever was held before the trigger</pre>
+ *
+ * <p>The bind is a TRIGGER, not a toggle. Enable the module in the GUI; the key fires
+ * one engagement.
  */
 public final class LungeMacro extends Module {
 
-    private final NumberSetting engageRange = num("engageRange", "Spear engage range", 1.5, 5.0, 0.1, 3.0);
-    private final NumberSetting strikeRange = num("strikeRange", "Mace strike range", 1.5, 4.0, 0.1, 3.2);
-    private final NumberSetting maxHurtTime = num("hurtTime", "Max target hurt time", 0, 10, 1, 5);
-    private final NumberSetting swapMin = num("swapMin", "Swap delay min ms", 10, 200, 5, 30);
-    private final NumberSetting swapMax = num("swapMax", "Swap delay max ms", 10, 300, 5, 90);
-    private final NumberSetting restoreMin = num("restMin", "Restore delay min ms", 50, 500, 10, 100);
-    private final NumberSetting restoreMax = num("restMax", "Restore delay max ms", 50, 800, 10, 280);
+    private final NumberSetting engageRange = num("engageRange", "Engage range", 1.5, 5.0, 0.1, 3.2);
+    private final NumberSetting cooldownGate = num("gate", "Sword-hit charge gate", 0.5, 1.0, 0.05, 0.95);
+    private final NumberSetting swapMin = num("swapMin", "Swap delay min ms", 5, 100, 1, 10);
+    private final NumberSetting swapMax = num("swapMax", "Swap delay max ms", 5, 200, 1, 30);
+    private final NumberSetting restoreMin = num("restMin", "Restore delay min ms", 30, 500, 10, 80);
+    private final NumberSetting restoreMax = num("restMax", "Restore delay max ms", 30, 800, 10, 240);
     private final BooleanSetting rotate = bool("rotate", "Rotate to target", true);
-    private final BooleanSetting useBreachSwap = bool("breach", "Use BreachSwap module", true);
 
-    private enum Stage { IDLE, ENGAGE, SWAP, STRIKE, RESTORE }
+    private enum Stage { IDLE, SWORD, SWAP, SPEAR, RESTORE }
 
     private Stage stage = Stage.IDLE;
     private final MsTimer stageTimer = new MsTimer();
-    private int spearSlot = -1;
-    private int stageTicks = 0;
+    private LivingEntity target;
+    private int returnSlot = -1;
+    private int stageTicks;
 
     public LungeMacro() {
         super("LungeMacro", ModuleCategory.COMBAT, 0);
     }
 
+    /** The bind fires one engagement instead of toggling the module. */
+    @Override
+    public void handleKeyPress(int keyCode) {
+        if (keyCode == bind().get()) {
+            trigger();
+        }
+    }
+
+    private void trigger() {
+        MinecraftClient client = MinecraftClient.getInstance();
+        ClientPlayerEntity self = client.player;
+        if (!isEnabled() || self == null || client.world == null) {
+            return;
+        }
+        if (stage != Stage.IDLE) {
+            return; // a chain is already running
+        }
+        target = TargetManager.acquire(client, new TargetCriteria().range(engageRange.get()));
+        TargetManager.cleanup();
+        if (target == null || !target.isAlive()) {
+            return;
+        }
+        returnSlot = InventoryManager.selectedHotbar(self);
+        stageTicks = 0;
+        if (ItemUtil.attackCooldownProgress(self) >= cooldownGate.get()) {
+            stage = Stage.SWORD;
+            stageTimer.restart(0.0, 6.0);
+        } else {
+            stage = Stage.SWAP;
+            stageTimer.restart(0.0, 6.0);
+        }
+    }
+
     @Override
     protected void onDisable() {
-        stage = Stage.IDLE;
-        stageTimer.invalidate();
-        spearSlot = -1;
+        abort(client());
+    }
+
+    private MinecraftClient client() {
+        return MinecraftClient.getInstance();
     }
 
     @Override
     public void onTick(MinecraftClient client) {
         ClientPlayerEntity self = client.player;
-        if (self == null) {
+        if (self == null || client.world == null) {
             stage = Stage.IDLE;
             return;
         }
-        TargetCriteria criteria = new TargetCriteria().range(Math.max(engageRange.get(), strikeRange.get()) + 1.0);
-        LivingEntity target = TargetManager.acquire(client, criteria);
-        stageTicks++;
-
-        if (target == null || !target.isAlive()) {
-            if (stage != Stage.IDLE && stage != Stage.RESTORE) {
-                stage = Stage.IDLE;
-                stageTimer.invalidate();
+        if (stage != Stage.IDLE) {
+            // Target validity is re-checked at every stage - a dead or vanished
+            // target drops the chain straight to RESTORE instead of firing at air.
+            if (target == null || !target.isAlive()
+                    || self.squaredDistanceTo(target) > (engageRange.get() + 1.5)
+                    * (engageRange.get() + 1.5)) {
+                beginRestore(client);
+                return;
             }
+        }
+        stageTicks++;
+        switch (stage) {
+            case IDLE -> { }
+            case SWORD -> swordStage(client, self);
+            case SWAP -> swapStage(client, self);
+            case SPEAR -> spearStage(client, self);
+            case RESTORE -> restoreStage(client, self);
+        }
+    }
+
+    private void swordStage(MinecraftClient client, ClientPlayerEntity self) {
+        if (aimAtTarget(client, self)
+                && target.hurtTime <= 8
+                && ItemUtil.attackCooldownProgress(self) >= cooldownGate.get()
+                && self.squaredDistanceTo(target) <= engageRange.get() * engageRange.get()
+                && stageTimer.isDue()) {
+            CombatActions.attackEntity(client, target);
+            stage = Stage.SWAP;
+            stageTimer.restart(0.0, 6.0);
+            stageTicks = 0;
             return;
         }
+        if (stageTicks > 12) {
+            // Charge never came back (or aim blocked) - skip straight to the spear.
+            stage = Stage.SWAP;
+            stageTimer.restart(0.0, 6.0);
+            stageTicks = 0;
+        }
+    }
 
+    private void swapStage(MinecraftClient client, ClientPlayerEntity self) {
+        if (ItemUtil.isSpear(self.getMainHandStack())) {
+            stage = Stage.SPEAR;
+            stageTicks = 0;
+            return;
+        }
+        if (!stageTimer.isDue()) {
+            return;
+        }
+        int spearSlot = InventoryManager.findHotbarSlot(self, ItemUtil::isSpear);
+        if (spearSlot == -1) {
+            // No spear available: the attribute swap is impossible, restore and stop.
+            beginRestore(client);
+            return;
+        }
+        InventoryManager.selectHotbar(client, spearSlot);
+        stage = Stage.SPEAR;
+        stageTicks = 0;
+    }
+
+    private void spearStage(MinecraftClient client, ClientPlayerEntity self) {
+        if (!ItemUtil.isSpear(self.getMainHandStack())) {
+            if (stageTicks > 6) {
+                beginRestore(client);
+            }
+            return; // give the slot packet a tick to land
+        }
+        // The attribute swap refilled the charge; the spear hit is full-strength.
+        if (aimAtTarget(client, self)
+                && target.hurtTime <= 8
+                && self.squaredDistanceTo(target) <= engageRange.get() * engageRange.get()
+                && stageTicks >= 1) {
+            CombatActions.attackEntity(client, target);
+            beginRestore(client);
+            return;
+        }
+        if (stageTicks > 14) {
+            beginRestore(client);
+        }
+    }
+
+    private void restoreStage(MinecraftClient client, ClientPlayerEntity self) {
+        if (!stageTimer.isDue()) {
+            return;
+        }
+        finishRestore(client);
+    }
+
+    private void beginRestore(MinecraftClient client) {
+        stageTimer.restart(restoreMin.get(), restoreMax.get());
+        stage = Stage.RESTORE;
+        stageTicks = 0;
+    }
+
+    private void finishRestore(MinecraftClient client) {
+        if (returnSlot != -1) {
+            InventoryManager.selectHotbar(client, returnSlot);
+        }
+        stage = Stage.IDLE;
+        stageTimer.invalidate();
+        target = null;
+    }
+
+    private void abort(MinecraftClient client) {
+        stage = Stage.IDLE;
+        stageTimer.invalidate();
+        target = null;
+    }
+
+    /** Requests a visible rotation toward the target; true when the server view is close enough to hit. */
+    private boolean aimAtTarget(MinecraftClient client, ClientPlayerEntity self) {
+        Vec3d aim = MathUtil.bestAimPoint(self, target,
+                self.getYaw(), self.getPitch());
         if (rotate.get()) {
-            Vec3d aim = MathUtil.aimPoint(target);
-            RotationManager.request(RotationRequest.to(
-                            MathUtil.yawTo(self.getEyePos(), aim), MathUtil.pitchTo(self.getEyePos(), aim))
-                    .speed(30, 70).jitter(0.4).silent(false)
-                    .validWhile(target::isAlive).expiresAfter(4).build());
+            RotationManager.request(RotationRequest
+                    .to(MathUtil.yawTo(self.getEyePos(), aim),
+                            MathUtil.pitchTo(self.getEyePos(), aim))
+                    .speed(35, 80).jitter(0.4).silent(false)
+                    .validWhile(() -> target != null && target.isAlive())
+                    .expiresAfter(4).build());
         }
-
-        switch (stage) {
-            case IDLE -> {
-                // Spear engagement: weapon present, not on cooldown, target hurt window open.
-                spearSlot = InventoryManager.findHotbarSlot(self, ItemUtil::isSpear);
-                boolean holdingSpear = spearSlot != -1 && self.getInventory().selectedSlot == spearSlot;
-                boolean holdingMace = ItemUtil.isMace(self.getMainHandStack());
-                if (holdingSpear && canEngage(self, target)) {
-                    stage = Stage.ENGAGE;
-                    stageTicks = 0;
-                } else if (holdingMace && canStrike(self, target)) {
-                    stage = Stage.STRIKE;
-                    stageTicks = 0;
-                }
-            }
-            case ENGAGE -> {
-                if (!canEngage(self, target) || stageTicks > 8) {
-                    stage = Stage.SWAP;
-                    stageTimer.restart(swapMin.get(), swapMax.get());
-                    stageTicks = 0;
-                    return;
-                }
-                if (CombatActions.attackEntity(client, target)) {
-                    stage = Stage.SWAP;
-                    stageTimer.restart(swapMin.get(), swapMax.get());
-                    stageTicks = 0;
-                }
-            }
-            case SWAP -> {
-                if (stageTimer.isDue()) {
-                    BreachSwap breach = ZephyrClient.modules().get(BreachSwap.class);
-                    if (useBreachSwap.get() && breach != null && breach.isEnabled()) {
-                        breach.requestStrike();
-                    } else {
-                        selectMaceOrBest(client, self);
-                    }
-                    stage = Stage.STRIKE;
-                    stageTicks = 0;
-                }
-            }
-            case STRIKE -> {
-                if (!holdingMace(self) && !InventoryManager.selectHotbar(client,
-                        InventoryManager.findHotbarSlot(self, ItemUtil::isMace))) {
-                    return;
-                }
-                if (canStrike(self, target)) {
-                    CombatActions.attackEntity(client, target);
-                    stageTimer.restart(restoreMin.get(), restoreMax.get());
-                    stage = Stage.RESTORE;
-                    stageTicks = 0;
-                } else if (stageTicks > 20) {
-                    stageTimer.restart(restoreMin.get(), restoreMax.get());
-                    stage = Stage.RESTORE;
-                    stageTicks = 0;
-                }
-            }
-            case RESTORE -> {
-                if (stageTimer.isDue()) {
-                    if (spearSlot != -1) {
-                        InventoryManager.selectHotbar(client, spearSlot);
-                    }
-                    stage = Stage.IDLE;
-                    stageTimer.invalidate();
-                    stageTicks = 0;
-                }
-            }
-        }
-    }
-
-    private boolean canEngage(ClientPlayerEntity self, LivingEntity target) {
-        if (target.hurtTime > maxHurtTime.get().intValue()) {
-            return false;
-        }
-        double distSq = self.squaredDistanceTo(target);
-        return distSq <= engageRange.get() * engageRange.get()
-                && ItemUtil.attackCooldownProgress(self) >= 0.85f;
-    }
-
-    private boolean canStrike(ClientPlayerEntity self, LivingEntity target) {
-        if (target.hurtTime > maxHurtTime.get().intValue()) {
-            return false;
-        }
-        double distSq = self.squaredDistanceTo(target);
-        return distSq <= strikeRange.get() * strikeRange.get()
-                && ItemUtil.attackCooldownProgress(self) >= 0.9f;
-    }
-
-    private boolean holdingMace(ClientPlayerEntity self) {
-        return ItemUtil.isMace(self.getMainHandStack());
-    }
-
-    private void selectMaceOrBest(MinecraftClient client, ClientPlayerEntity self) {
-        int mace = InventoryManager.findHotbarSlot(self, ItemUtil::isMace);
-        if (mace != -1) {
-            InventoryManager.selectHotbar(client, mace);
-        }
+        return RotationManager.isAimedAt(aim, 35.0);
     }
 
     @Override

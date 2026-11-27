@@ -54,8 +54,8 @@ public final class ActiveHud extends Module {
                 // Toggle feedback: brief gray flash instead of animations.
                 color = 0xFF909090;
             }
-            Text line = Text.literal(m.hudLabel());
-            ctx.drawText(client.textRenderer, line, x, y, color, true);
+            // Per-tick cached label: no per-frame string/Text rebuilding.
+            ctx.drawText(client.textRenderer, m.hudLabelCached(), x, y, color, true);
             y += lineGap.asInt() + client.textRenderer.fontHeight;
         }
     }

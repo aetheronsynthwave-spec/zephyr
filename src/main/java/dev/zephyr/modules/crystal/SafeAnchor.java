@@ -62,37 +62,38 @@ public final class SafeAnchor extends AnchorMacro {
     }
 
     /**
-     * Air cell adjacent to the anchor, on the segment toward the player, with solid
-     * support below - the classic shield block. Uses a vanilla raycast probe from the
-     * eye to the anchor to find the first obstructed-air neighbor on the line.
+     * Cover solver: walk the eye->anchor line and return the first cell that (a) is
+     * air, (b) is not our own body cell, (c) is not the anchor cell itself, and (d)
+     * is legally placeable right now (vanilla support face to click). The blast ray
+     * from the anchor to our eyes then has to bend around the obsidian, dropping the
+     * exposure term of the vanilla damage formula below the self-damage ceiling.
      */
     private BlockPos findCoverPosition(MinecraftClient client, ClientPlayerEntity self, BlockPos anchor) {
         Vec3d eye = self.getEyePos();
         Vec3d blast = Vec3d.ofCenter(anchor);
         Vec3d direction = blast.subtract(eye).normalize();
+        double dist = eye.distanceTo(blast);
 
-        // Sample the eye->anchor line; the first air block whose cell intersects the line
-        // and sits lower than the eye gets the cover placement.
-        for (double t = 1.2; t < eye.distanceTo(blast); t += 0.6) {
+        for (double t = 0.8; t < dist - 0.5; t += 0.45) {
             Vec3d probe = eye.add(direction.multiply(t));
             BlockPos cell = BlockPos.ofFloored(probe);
-            if (!cell.equals(anchor)
-                    && client.world.getBlockState(cell).isAir()
-                    && !client.world.getBlockState(cell.up()).isOf(Blocks.RESPAWN_ANCHOR)
-                    && self.getBoundingBox().intersects(new Box(cell))) {
-                continue; // never block our own body cell
-            }
-            if (!cell.equals(anchor)
-                    && client.world.getBlockState(cell).isAir()
-                    && !client.world.getBlockState(cell.up()).isAir()) {
+            if (cell.equals(anchor) || cell.equals(self.getBlockPos())) {
                 continue;
             }
-            if (!cell.equals(anchor) && client.world.getBlockState(cell).isAir()) {
-                return cell.toImmutable();
+            if (!client.world.getBlockState(cell).isAir()) {
+                continue; // already covered by something solid
             }
+            if (self.getBoundingBox().intersects(new Box(cell))) {
+                continue; // never block our own body cell
+            }
+            if (!dev.zephyr.core.crystal.CrystalSolver.blockCellPlaceable(
+                    client.world, cell, self)) {
+                continue;
+            }
+            return cell.toImmutable();
         }
 
-        // Fallback: any air neighbor of the anchor toward the player with support.
+        // Fallback: any air neighbor of the anchor toward the player with solid support.
         for (Direction dir : Direction.values()) {
             BlockPos candidate = anchor.offset(dir);
             if (candidate.equals(self.getBlockPos())) {

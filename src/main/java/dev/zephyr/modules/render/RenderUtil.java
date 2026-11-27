@@ -45,14 +45,33 @@ public final class RenderUtil {
     private static VertexConsumerProvider fallbackConsumers;
 
     /**
+     * Camera world position, cached per render pass. The camera cannot move mid-frame,
+     * and the old version walked gameRenderer->camera->entity->getEyePos() (which
+     * allocates a Vec3d) on EVERY call from EVERY render module - now it is one
+     * allocation per frame instead of dozens.
+     */
+    private static Vec3d cachedCameraPos;
+    private static boolean cameraValid;
+
+    /** Called once per frame by the world-render dispatcher before modules run. */
+    public static void beginFrame() {
+        cameraValid = false;
+    }
+
+    /**
      * Camera world position. 1.21.11 removed Camera#getPos(); the camera sits at the
      * focused entity's eyes in first person, which is the only mode this client renders.
      */
     public static Vec3d cameraPos() {
-        MinecraftClient client = MinecraftClient.getInstance();
-        var camera = client.gameRenderer.getCamera();
-        var focused = camera.getFocusedEntity();
-        return focused != null ? focused.getEyePos() : client.player.getEyePos();
+        if (!cameraValid || cachedCameraPos == null) {
+            MinecraftClient client = MinecraftClient.getInstance();
+            var camera = client.gameRenderer.getCamera();
+            var focused = camera.getFocusedEntity();
+            cachedCameraPos = focused != null ? focused.getEyePos()
+                    : (client.player != null ? client.player.getEyePos() : Vec3d.ZERO);
+            cameraValid = true;
+        }
+        return cachedCameraPos;
     }
 
     /** Current frame tick progress (interpolation factor). */
@@ -111,9 +130,9 @@ public final class RenderUtil {
             float[] c0 = corners[edge[0]];
             float[] c1 = corners[edge[1]];
             lines.vertex(matrix, c0[0], c0[1], c0[2]).color(r, g, b, a)
-                    .normal(matrix, 0, 1, 0).lineWidth(1.0f);
+                    .normal(0, 1, 0).lineWidth(1.0f);
             lines.vertex(matrix, c1[0], c1[1], c1[2]).color(r, g, b, a)
-                    .normal(matrix, 0, 1, 0).lineWidth(1.0f);
+                    .normal(0, 1, 0).lineWidth(1.0f);
         }
     }
 
@@ -127,6 +146,35 @@ public final class RenderUtil {
         double dy = y - player.getY();
         double dz = z - player.getZ();
         return local.offset(dx, dy, dz);
+    }
+
+    // ------------------------------------------------------------------
+    // Straight lines (tracers)
+    // ------------------------------------------------------------------
+
+    /**
+     * One camera-space line on the shared lines layer. Two vertices, one normalized
+     * normal - the cheapest possible world-space primitive.
+     */
+    public static void drawLine(MatrixStack matrices, VertexConsumerProvider consumers,
+                                Vec3d from, Vec3d to, float r, float g, float b, float a) {
+        VertexConsumer lines = consumers.getBuffer(net.minecraft.client.render.RenderLayers.lines());
+        Matrix4f matrix = matrices.peek().getPositionMatrix();
+        float dx = (float) (to.x - from.x);
+        float dy = (float) (to.y - from.y);
+        float dz = (float) (to.z - from.z);
+        float lenSq = dx * dx + dy * dy + dz * dz;
+        float nx = 0f, ny = 1f, nz = 0f;
+        if (lenSq > 1.0e-9f) {
+            float inv = (float) (1.0 / Math.sqrt(lenSq));
+            nx = dx * inv;
+            ny = dy * inv;
+            nz = dz * inv;
+        }
+        lines.vertex(matrix, (float) from.x, (float) from.y, (float) from.z)
+                .color(r, g, b, a).normal(nx, ny, nz).lineWidth(1.0f);
+        lines.vertex(matrix, (float) to.x, (float) to.y, (float) to.z)
+                .color(r, g, b, a).normal(nx, ny, nz).lineWidth(1.0f);
     }
 
     // ------------------------------------------------------------------

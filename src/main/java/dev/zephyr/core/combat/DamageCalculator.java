@@ -30,7 +30,19 @@ public final class DamageCalculator {
      * Expected damage to {@code target} from an explosion of {@code strength} at {@code origin}.
      */
     public static double explosionDamage(World world, Vec3d origin, float strength, Entity target) {
-        Vec3d center = target.getBoundingBox().getCenter();
+        return explosionDamage(world, origin, strength, null, target);
+    }
+
+    /**
+     * Same model, but the distance term is evaluated against a *predicted* center
+     * (motion-forecast position) while exposure still samples the live hitbox. This is
+     * the damage the server will register if the target keeps its velocity for the
+     * tick or two between our click and the detonation.
+     */
+    public static double explosionDamage(World world, Vec3d origin, float strength,
+                                         Vec3d predictedCenter, Entity target) {
+        Vec3d center = predictedCenter != null
+                ? predictedCenter : target.getBoundingBox().getCenter();
         double dist = Math.sqrt(center.squaredDistanceTo(origin));
         double normalized = dist / (2.0 * strength);
         if (normalized > 1.0) {
@@ -46,6 +58,11 @@ public final class DamageCalculator {
 
     public static double crystalDamage(World world, Vec3d origin, Entity target) {
         return explosionDamage(world, origin, CRYSTAL_STRENGTH, target);
+    }
+
+    /** Crystal damage against a motion-predicted target center. */
+    public static double crystalDamage(World world, Vec3d origin, Vec3d predictedCenter, Entity target) {
+        return explosionDamage(world, origin, CRYSTAL_STRENGTH, predictedCenter, target);
     }
 
     /** Respawning anchors detonate at strength 5 outside the Nether. */

@@ -39,6 +39,8 @@ public final class DamageNumbers extends Module implements WorldRenderParticipan
         float amount;
         int age;
         boolean active;
+        /** Cached display text - formatted ONCE at spawn, not per frame. */
+        Text display;
     }
 
     public DamageNumbers() {
@@ -66,8 +68,9 @@ public final class DamageNumbers extends Module implements WorldRenderParticipan
                 f.active = false;
             }
         }
-        // Detect health drops on tracked players.
-        for (var e : client.world.getEntities()) {
+        // Detect health drops on tracked players (shared per-tick scan cache).
+        for (var e : dev.zephyr.core.world.EntityScan.livingAroundCached(
+                client.world, client.player.getLerpedPos(1.0F), 64.0)) {
             if (!(e instanceof LivingEntity living) || living == client.player) {
                 continue;
             }
@@ -82,30 +85,23 @@ public final class DamageNumbers extends Module implements WorldRenderParticipan
     }
 
     private void spawn(double x, double y, double z, float amount) {
+        FloatingNumber slot = pool.get(0);
         for (FloatingNumber f : pool) {
             if (!f.active) {
-                f.x = x;
-                f.y = y;
-                f.z = z;
-                f.amount = amount;
-                f.age = 0;
-                f.active = true;
-                return;
+                slot = f;
+                break;
+            }
+            if (f.age > slot.age) {
+                slot = f; // pool exhausted: recycle the oldest
             }
         }
-        // Pool exhausted: recycle the oldest.
-        FloatingNumber oldest = pool.get(0);
-        for (FloatingNumber f : pool) {
-            if (f.age > oldest.age) {
-                oldest = f;
-            }
-        }
-        oldest.x = x;
-        oldest.y = y;
-        oldest.z = z;
-        oldest.amount = amount;
-        oldest.age = 0;
-        oldest.active = true;
+        slot.x = x;
+        slot.y = y;
+        slot.z = z;
+        slot.amount = amount;
+        slot.age = 0;
+        slot.active = true;
+        slot.display = Text.literal(String.format("%.1f", amount)).formatted(Formatting.BOLD);
     }
 
     @Override
@@ -114,7 +110,7 @@ public final class DamageNumbers extends Module implements WorldRenderParticipan
         if (client.player == null || ctx.consumers() == null) {
             return;
         }
-        MatrixStack matrices = ctx.matrixStack();
+        MatrixStack matrices = ctx.matrices();
         VertexConsumerProvider consumers = ctx.consumers();
         int lifetime = lifetimeTicks.get().intValue();
 
@@ -127,8 +123,7 @@ public final class DamageNumbers extends Module implements WorldRenderParticipan
             int color = (alpha << 24) | 0xFF5050;
             Vec3d pos = new Vec3d(f.x, f.y + f.age * riseSpeed.get(), f.z);
             RenderUtil.drawBillboardText(matrices, consumers, pos,
-                    Text.literal(String.format("%.1f", f.amount)).formatted(Formatting.BOLD),
-                    color, 0x00000000, true);
+                    f.display, color, 0x00000000, true);
         }
     }
 

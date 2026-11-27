@@ -2,7 +2,9 @@ package dev.zephyr.mixin;
 
 import dev.zephyr.ZephyrClient;
 import dev.zephyr.core.event.ZephyrEvents;
+import dev.zephyr.modules.combat.JumpReset;
 import dev.zephyr.modules.movement.NoDelay;
+import dev.zephyr.modules.movement.NoPush;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.entity.LivingEntity;
 import org.spongepowered.asm.mixin.Mixin;
@@ -20,7 +22,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 public abstract class MixinLivingEntity {
 
     @Unique
-    private float zephyr$lastFallDistance;
+    private double zephyr$lastFallDistance;
 
     @Unique
     private boolean zephyr$wasOnGround;
@@ -51,6 +53,14 @@ public abstract class MixinLivingEntity {
         if (noDelay != null && noDelay.isEnabled() && noDelay.jumpDelayEnabled()) {
             ((dev.zephyr.mixin.accessor.LivingEntityAccessor) this).setJumpingCooldown(0);
         }
+
+        // JumpReset fires its combo-breaker jump exactly here: the vanilla jump flag
+        // is set for this single tick before vanilla's movement code runs.
+        JumpReset jumpReset = ZephyrClient.modules().get(JumpReset.class);
+        if (jumpReset != null) {
+            jumpReset.zephyr$onMovementHook(
+                    (net.minecraft.client.network.ClientPlayerEntity) self);
+        }
     }
 
     @Inject(method = "tickMovement", at = @At("RETURN"))
@@ -59,7 +69,7 @@ public abstract class MixinLivingEntity {
             return;
         }
         LivingEntity self = (LivingEntity) (Object) this;
-        if (!zephyr$wasOnGround && self.isOnGround() && zephyr$lastFallDistance > 0.3f) {
+        if (!zephyr$wasOnGround && self.isOnGround() && zephyr$lastFallDistance > 0.3) {
             ZephyrEvents.GROUND_LAND.fire(new ZephyrEvents.GroundLand(
                     (net.minecraft.client.network.ClientPlayerEntity) self, zephyr$lastFallDistance));
         }

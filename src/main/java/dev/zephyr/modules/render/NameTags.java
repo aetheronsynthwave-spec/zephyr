@@ -12,6 +12,7 @@ import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.text.Text;
 import net.minecraft.util.Formatting;
+import net.minecraft.util.math.Vec3d;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -34,6 +35,8 @@ public final class NameTags extends Module implements WorldRenderParticipant {
     private static final class CachedTag {
         Text text;
         int hpBucket = -1;
+        /** Cached pixel width - recomputed only when the text rebuilds. */
+        float width;
     }
 
     public NameTags() {
@@ -52,7 +55,7 @@ public final class NameTags extends Module implements WorldRenderParticipant {
         if (self == null || ctx.consumers() == null) {
             return;
         }
-        MatrixStack matrices = ctx.matrixStack();
+        MatrixStack matrices = ctx.matrices();
         VertexConsumerProvider consumers = ctx.consumers();
         double rangeSq = range.get() * range.get();
 
@@ -71,6 +74,7 @@ public final class NameTags extends Module implements WorldRenderParticipant {
                         ? player.getDisplayName().copy()
                         .append(Text.literal(" " + hpBucket + "hp").formatted(Formatting.GRAY))
                         : player.getDisplayName().copy();
+                cached.width = client.textRenderer.getWidth(cached.text);
             }
 
             double height = player.getBoundingBox().getLengthY();
@@ -90,8 +94,7 @@ public final class NameTags extends Module implements WorldRenderParticipant {
                     RenderUtil.cameraPos().z - pos.z));
             matrices.multiply(net.minecraft.util.math.RotationAxis.POSITIVE_Y.rotationDegrees(-faceYaw));
             matrices.scale(0.02f * s, 0.02f * s, 0.02f * s);
-            float width = client.textRenderer.getWidth(cached.text);
-            client.textRenderer.draw(cached.text, -width / 2.0f, 0, 0xFFFFFFFF, false,
+            client.textRenderer.draw(cached.text, -cached.width / 2.0f, 0, 0xFFFFFFFF, false,
                     matrices.peek().getPositionMatrix(), consumers,
                     seeThrough.get()
                             ? net.minecraft.client.font.TextRenderer.TextLayerType.SEE_THROUGH

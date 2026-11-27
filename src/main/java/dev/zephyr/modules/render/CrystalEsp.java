@@ -13,17 +13,46 @@ import net.minecraft.entity.decoration.EndCrystalEntity;
 import net.minecraft.util.math.Box;
 import net.minecraft.util.math.Vec3d;
 
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
 /**
  * Crystal ESP - end crystal outlines tinted by their projected damage to the local
- * player (red = lethal band). Same zero-allocation discipline as ESP.
+ * player (red = lethal band).
+ *
+ * <p>Perf model: entity scan and damage math are cached per client tick and only
+ * refreshed every {@value #REFRESH_TICKS} ticks (or when a crystal moves), so the
+ * render path never re-runs the 27-ray explosion exposure math per frame per crystal
+ * - that was the module that dragged the baseline from 250 fps down to 80.
  */
 public final class CrystalEsp extends Module implements WorldRenderParticipant {
+
+    private static final int REFRESH_TICKS = 5;
 
     private final NumberSetting range = num("range", "Range", 8.0, 64.0, 1.0, 32.0);
     private final NumberSetting dangerHealth = num("danger", "Red below self-dmg", 0.0, 20.0, 0.5, 6.0);
 
+    /** Per-crystal cached self-damage (entity id -> damage + position it was measured at). */
+    private final Map<Integer, CachedDamage> damageCache = new HashMap<>();
+    private int scanTick = -1;
+    private List<EndCrystalEntity> scanned;
+
+    private static final class CachedDamage {
+        double dmg;
+        Vec3d pos;
+        int tick;
+    }
+
     public CrystalEsp() {
         super("CrystalESP", ModuleCategory.RENDER, 0);
+    }
+
+    @Override
+    protected void onDisable() {
+        damageCache.clear();
+        scanned = null;
+        scanTick = -1;
     }
 
     @Override
@@ -33,18 +62,16 @@ public final class CrystalEsp extends Module implements WorldRenderParticipant {
         if (self == null || ctx.consumers() == null) {
             return;
         }
-        MatrixStack matrices = ctx.matrixStack();
+        MatrixStack matrices = ctx.matrices();
         VertexConsumerProvider consumers = ctx.consumers();
         double rangeSq = range.get() * range.get();
+        int tick = dev.zephyr.modules.render.RenderUtil.currentTick();
 
-        for (var e : client.world.getEntities()) {
-            if (!(e instanceof EndCrystalEntity crystal) || !crystal.isAlive()) {
-                continue;
-            }
+        for (EndCrystalEntity crystal : scanCrystals(client, self, tick)) {
             if (self.squaredDistanceTo(crystal) > rangeSq) {
                 continue;
             }
-            double selfDmg = DamageCalculator.crystalDamage(client.world, crystal.getLerpedPos(1.0F), self);
+            double selfDmg = cachedSelfDamage(crystal, tick);
             float r = 1.0f;
             float g = 1.0f;
             float b = 1.0f;
@@ -64,6 +91,38 @@ public final class CrystalEsp extends Module implements WorldRenderParticipant {
             // Crystals are stationary entities; the raw box is already render-accurate.
             RenderUtil.drawBoxOutline(matrices, consumers, crystal.getBoundingBox(), r, g, b, 1.0f);
         }
+    }
+
+    /** Entity scan cached per client tick - one box query per tick, not per frame. */
+    private List<EndCrystalEntity> scanCrystals(MinecraftClient client, ClientPlayerEntity self, int tick) {
+        if (scanned == null || scanTick != tick) {
+            scanTick = tick;
+            scanned = new java.util.ArrayList<>();
+            for (var e : dev.zephyr.core.world.EntityScan.around(
+                    client.world, self.getLerpedPos(1.0F), range.get())) {
+                if (e instanceof EndCrystalEntity crystal && crystal.isAlive()) {
+                    scanned.add(crystal);
+                }
+            }
+        }
+        return scanned;
+    }
+
+    /** Self-damage per crystal, recomputed at most every {@value #REFRESH_TICKS} ticks. */
+    private double cachedSelfDamage(EndCrystalEntity crystal, int tick) {
+        CachedDamage c = damageCache.get(crystal.getId());
+        Vec3d pos = crystal.getLerpedPos(1.0F);
+        if (c == null || tick - c.tick >= REFRESH_TICKS || c.pos.squaredDistanceTo(pos) > 0.0625) {
+            if (c == null) {
+                c = new CachedDamage();
+                damageCache.put(crystal.getId(), c);
+            }
+            c.dmg = DamageCalculator.crystalDamage(MinecraftClient.getInstance().world, pos,
+                    MinecraftClient.getInstance().player);
+            c.pos = pos;
+            c.tick = tick;
+        }
+        return c.dmg;
     }
 
     @Override

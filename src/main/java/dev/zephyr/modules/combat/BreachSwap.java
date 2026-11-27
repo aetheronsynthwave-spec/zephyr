@@ -66,7 +66,7 @@ public final class BreachSwap extends Module {
                 if (strikeRequested) {
                     strikeRequested = false;
                     if (findBreachMace(self)) {
-                        selectedBeforeSwap = self.getInventory().selectedSlot;
+                        selectedBeforeSwap = InventoryManager.selectedHotbar(self);
                         stageTimer.restart(swapDelayMin.get(), swapDelayMax.get());
                         stage = Stage.SWAP;
                     }
@@ -111,7 +111,7 @@ public final class BreachSwap extends Module {
         if (breachHotbarSlot != -1) {
             InventoryManager.selectHotbar(client, breachHotbarSlot);
         } else if (breachHandlerSlot != -1) {
-            InventoryManager.swapWithHotbar(client, breachHandlerSlot, self.getInventory().selectedSlot);
+            InventoryManager.swapWithHotbar(client, breachHandlerSlot, InventoryManager.selectedHotbar(self));
         } else {
             reset();
             return;
@@ -146,7 +146,7 @@ public final class BreachSwap extends Module {
     }
 
     private boolean needsRestore(ClientPlayerEntity self) {
-        return self.getInventory().selectedSlot != selectedBeforeSwap || breachHandlerSlot != -1;
+        return InventoryManager.selectedHotbar(self) != selectedBeforeSwap || breachHandlerSlot != -1;
     }
 
     private void reset() {

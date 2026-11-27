@@ -4,6 +4,8 @@ import dev.zephyr.core.Module;
 import dev.zephyr.core.ModuleCategory;
 import dev.zephyr.core.combat.CombatActions;
 import dev.zephyr.core.combat.DamageCalculator;
+import dev.zephyr.core.crystal.CrystalSolver;
+import dev.zephyr.core.crystal.CrystalSolver.Spot;
 import dev.zephyr.core.inventory.InventoryManager;
 import dev.zephyr.core.rotation.RotationManager;
 import dev.zephyr.core.rotation.RotationRequest;
@@ -16,6 +18,7 @@ import dev.zephyr.core.timing.MsTimer;
 import dev.zephyr.core.timing.RandomController;
 import dev.zephyr.core.util.ItemUtil;
 import dev.zephyr.core.util.MathUtil;
+import dev.zephyr.core.world.EntityScan;
 import dev.zephyr.core.world.RaycastValidator;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
@@ -24,13 +27,11 @@ import net.minecraft.entity.LivingEntity;
 import net.minecraft.entity.decoration.EndCrystalEntity;
 import net.minecraft.entity.ItemEntity;
 import net.minecraft.util.hit.BlockHitResult;
-import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Vec3d;
 
 import java.util.List;
-
 /**
- * AutoCrystal - the full place/detonate pipeline.
+ * AutoCrystal - the full place/detonate pipeline, solver-driven.
  *
  * <p>Modes:
  * <ul>
@@ -38,14 +39,15 @@ import java.util.List;
  *       after every detonation the place timer re-arms with a near-zero randomized gap.</li>
  *   <li><b>INFINITE</b>: continuous loop, place whenever a legal spot exists and attack
  *       whenever a live crystal qualifies, paced purely by the randomized timers.</li>
- *   <li><b>HIT_ONLY</b> (AutoHitCrystal): detonation only - never places crystals.</li>
+ *   <li><b>HIT_ONLY</b>: detonation only - never places crystals.</li>
  * </ul>
  *
- * <p>Per-tick pipeline: target acquisition -> pause gates (kill / loot) -> parallel best
- * spot (place) and best crystal (attack) search with self-damage + target-damage scoring
- * -> rotation request (silent / smooth / off) -> ms-paced actions at 18-22 CPS gaussian
- * attack intervals. Every placement validates obsidian/bedrock support, air cells, entity
- * overlap, wall range and exposure before a packet is produced.
+ * <p>Per-tick pipeline: target acquisition -> pause gates (kill / loot) -> solver query
+ * ({@link CrystalSolver}: full-sphere damage scan with motion prediction, face-aware
+ * click construction, optional obsidian-support planning) -> best-crystal search ->
+ * rotation request (silent / smooth / off) -> ms-paced actions at 18-22 CPS gaussian
+ * attack intervals. Face-place: below the health threshold the min-damage gate
+ * collapses so every legal blast is taken to finish the fight.
  */
 public final class AutoCrystal extends Module {
 
@@ -58,6 +60,7 @@ public final class AutoCrystal extends Module {
     private final NumberSetting attackRange = num("attackRange", "Attack range", 2.0, 6.0, 0.1, 4.0);
     private final NumberSetting minTargetDamage = num("minDmg", "Min target dmg", 0.0, 20.0, 0.5, 4.0);
     private final NumberSetting maxSelfDamage = num("maxSelf", "Max self dmg", 0.0, 20.0, 0.5, 6.0);
+    private final NumberSetting facePlaceHealth = num("faceplace", "Faceplace below hp", 0.0, 12.0, 0.5, 3.0);
     private final NumberSetting cpsMin = num("cpsMin", "CPS min", 10, 30, 0.5, 18);
     private final NumberSetting cpsMax = num("cpsMax", "CPS max", 10, 30, 0.5, 22);
     private final NumberSetting placeDelayMin = num("placeMin", "Place delay min ms", 0, 200, 2, 0);
@@ -71,6 +74,8 @@ public final class AutoCrystal extends Module {
     private final BooleanSetting pauseOnKill = bool("pauseOnKill", "Pause on kill", true);
     private final BooleanSetting pauseOnLoot = bool("pauseOnLoot", "Pause near loot", true);
     private final BooleanSetting requireWallsRange = bool("walls", "Respect walls", false);
+    private final BooleanSetting obsidianSupport = bool("obsidian", "Place obsidian supports", true);
+    private final BooleanSetting predictTarget = bool("predict", "Predict target motion", true);
 
     private final MsTimer attackTimer = new MsTimer();
     private final MsTimer placeTimer = new MsTimer();
@@ -78,6 +83,14 @@ public final class AutoCrystal extends Module {
     private int placedCount;
     private int detonatedCount;
     private LivingEntity target;
+
+    /** Solver result cache - see {@link #solveCached}. */
+    private Spot cachedSpot;
+    private LivingEntity spotTarget;
+    private Vec3d spotAnchor;
+    private int spotAge;
+    /** Re-solve backoff when no legal spot exists (full scans are not free). */
+    private static final int SOLVE_INTERVAL = 3;
 
     public AutoCrystal() {
         super("AutoCrystal", ModuleCategory.CRYSTAL, 0);
@@ -93,6 +106,8 @@ public final class AutoCrystal extends Module {
     protected void onDisable() {
         RotationManager.clear(0);
         target = null;
+        cachedSpot = null;
+        spotTarget = null;
     }
 
     @Override
@@ -120,22 +135,27 @@ public final class AutoCrystal extends Module {
             return;
         }
 
-        // ---- best attack crystal ------------------------------------------
-        EndCrystalEntity bestCrystal = findBestCrystal(client, self, target);
+        int predictTicks = predictTarget.get() ? 2 : 0;
+        double minDmg = effectiveMinDamage(target);
 
-        // ---- best placement spot ------------------------------------------
-        BlockPos bestSpot = mode.is("HIT_ONLY") ? null : findBestSpot(client, self, target);
+        // ---- best attack crystal ------------------------------------------
+        EndCrystalEntity bestCrystal = findBestCrystal(client, self, world, target, minDmg, predictTicks);
+
+        // ---- best placement spot (solver, cached) ---------------------------
+        Spot spot = mode.is("HIT_ONLY") ? null
+                : solveCached(self, world, target, minDmg, predictTicks);
 
         // ---- rotation ------------------------------------------------------
         Vec3d aimPoint = null;
         if (bestCrystal != null) {
             aimPoint = bestCrystal.getBoundingBox().getCenter();
-        } else if (bestSpot != null) {
-            aimPoint = Vec3d.ofCenter(bestSpot.up());
+        } else if (spot != null) {
+            aimPoint = Vec3d.ofCenter(spot.support);
         }
         if (aimPoint != null && !rotationMode.is("OFF")) {
             RotationRequest req = RotationRequest
-                    .to(MathUtil.yawTo(self.getEyePos(), aimPoint), MathUtil.pitchTo(self.getEyePos(), aimPoint))
+                    .to(MathUtil.yawTo(self.getEyePos(), aimPoint),
+                            MathUtil.pitchTo(self.getEyePos(), aimPoint))
                     .speed(rotMin.get(), rotMax.get())
                     .jitter(jitter.get())
                     .silent(rotationMode.is("SILENT"))
@@ -148,9 +168,11 @@ public final class AutoCrystal extends Module {
         // ---- detonate ------------------------------------------------------
         if (bestCrystal != null && attackTimer.isDue()) {
             attackTimer.restartCps(lastCps = RandomController.uniform(cpsMin.get(), cpsMax.get()), 15);
-            double targetDmg = DamageCalculator.crystalDamage(world, bestCrystal.getLerpedPos(1.0F), target);
-            double selfDmg = DamageCalculator.crystalDamage(world, bestCrystal.getLerpedPos(1.0F), self);
-            if (targetDmg >= minTargetDamage.get()
+            Vec3d blast = bestCrystal.getLerpedPos(1.0F);
+            double targetDmg = DamageCalculator.explosionDamage(world, blast,
+                    DamageCalculator.CRYSTAL_STRENGTH, predictedPos(target, predictTicks), target);
+            double selfDmg = DamageCalculator.crystalDamage(world, blast, self);
+            if (targetDmg >= minDmg
                     && selfDmg <= maxSelfDamage.get()
                     && target.hurtTime <= maxTargetHurtTime.get().intValue()
                     && RotationManager.isAimedAt(bestCrystal.getBoundingBox().getCenter(), 8.0)) {
@@ -165,17 +187,23 @@ public final class AutoCrystal extends Module {
         }
 
         // ---- place ----------------------------------------------------------
-        if (bestSpot != null && placeTimer.isDue()) {
+        if (spot != null && placeTimer.isDue()) {
             placeTimer.restart(placeDelayMin.get(), placeDelayMax.get());
-            double targetDmg = DamageCalculator.crystalDamage(world, Vec3d.ofCenter(bestSpot.up()), target);
-            double selfDmg = DamageCalculator.crystalDamage(world, Vec3d.ofCenter(bestSpot.up()), self);
-            if (targetDmg >= minTargetDamage.get() && selfDmg <= maxSelfDamage.get()) {
+            Vec3d blast = Vec3d.ofCenter(spot.crystalCell);
+            double targetDmg = spot.targetDamage;
+            double selfDmg = spot.selfDamage;
+            if (targetDmg >= minDmg && selfDmg <= maxSelfDamage.get()) {
                 int crystalSlot = InventoryManager.findHotbarSlot(self, ItemUtil::isEndCrystal);
                 if (crystalSlot != -1 && InventoryManager.selectHotbar(client, crystalSlot)) {
-                    BlockHitResult hit = RaycastValidator.placementHit(bestSpot);
-                    if (CombatActions.interactBlock(client, hit).isAccepted()) {
+                    // Face-aware click: the support face point closest to the eye.
+                    BlockHitResult hit = CrystalSolver.crystalPlacementHit(
+                            world, spot.support, self.getEyePos());
+                    if (hit != null && CombatActions.interactBlock(client, hit).isAccepted()) {
                         placedCount++;
                     }
+                } else if (obsidianSupport.get() && spot.needsObsidian()
+                        && placeObsidianForSpot(client, self, world, spot)) {
+                    placedCount++; // obsidian staged; the crystal lands next cycle
                 }
             }
         }
@@ -185,12 +213,58 @@ public final class AutoCrystal extends Module {
     // Searches
     // ------------------------------------------------------------------
 
-    private EndCrystalEntity findBestCrystal(MinecraftClient client, ClientPlayerEntity self, LivingEntity target) {
-        ClientWorld world = client.world;
+    /**
+     * Cached solve: the full scan runs when it is genuinely stale (target switched,
+     * target moved over 0.75 blocks, every {@value #SOLVE_INTERVAL} ticks, or the
+     * cached plan became illegal). Between those events the cached plan is reused -
+     * a crystal cell does not move, so placement quality is identical while the
+     * per-tick raycast cost drops to near zero. This cache plus the two-phase
+     * solver are what fixed the periodic multi-hundred-ms freezes.
+     */
+    private Spot solveCached(ClientPlayerEntity self, ClientWorld world, LivingEntity target,
+                             double minDmg, int predictTicks) {
+        Vec3d anchor = predictTicks > 0
+                ? CrystalSolver.predictPos(target, predictTicks) : target.getLerpedPos(1.0F);
+        boolean moved = spotAnchor != null && spotAnchor.squaredDistanceTo(anchor) > 0.5625;
+        if (cachedSpot != null && spotTarget == target && !moved && spotAge < SOLVE_INTERVAL
+                && spotStillValid(world, self, cachedSpot)) {
+            spotAge++;
+            return cachedSpot;
+        }
+        Spot spot = CrystalSolver.findBestSpotWithSupport(world, self, target, placeRange.get(),
+                minDmg, maxSelfDamage.get(), requireWallsRange.get(), predictTicks, obsidianSupport.get());
+        cachedSpot = spot;
+        spotTarget = target;
+        spotAnchor = anchor;
+        spotAge = 0;
+        return spot;
+    }
+
+    /** True while a cached plan is still physically usable right now. */
+    private static boolean spotStillValid(ClientWorld world, ClientPlayerEntity self, Spot s) {
+        if (s.needsObsidian()) {
+            var st = world.getBlockState(s.obsidianCell);
+            if (st.isOf(net.minecraft.block.Blocks.OBSIDIAN)) {
+                return true; // staged obsidian landed -> the crystal phase takes over
+            }
+            if (!st.isAir()) {
+                return false; // cell filled by something else
+            }
+        } else if (!world.getBlockState(s.support).isOf(net.minecraft.block.Blocks.OBSIDIAN)
+                && !world.getBlockState(s.support).isOf(net.minecraft.block.Blocks.BEDROCK)) {
+            return false;
+        }
+        return CrystalSolver.crystalCellLegal(world, s.crystalCell, self);
+    }
+
+    private EndCrystalEntity findBestCrystal(MinecraftClient client, ClientPlayerEntity self,
+                                             ClientWorld world, LivingEntity target,
+                                             double minDmg, int predictTicks) {
         EndCrystalEntity best = null;
         double bestScore = Double.NEGATIVE_INFINITY;
         double rangeSq = attackRange.get() * attackRange.get();
-        for (var e : world.getEntities()) {
+        Vec3d predicted = predictedPos(target, predictTicks);
+        for (var e : EntityScan.around(world, self.getLerpedPos(1.0F), attackRange.get() + 1.0)) {
             if (!(e instanceof EndCrystalEntity crystal) || !crystal.isAlive()) {
                 continue;
             }
@@ -200,9 +274,11 @@ public final class AutoCrystal extends Module {
             if (!RaycastValidator.hitboxVisible(self.getEyePos(), crystal.getBoundingBox(), self)) {
                 continue;
             }
-            double targetDmg = DamageCalculator.crystalDamage(world, crystal.getLerpedPos(1.0F), target);
-            double selfDmg = DamageCalculator.crystalDamage(world, crystal.getLerpedPos(1.0F), self);
-            if (targetDmg < minTargetDamage.get() || selfDmg > maxSelfDamage.get()) {
+            Vec3d blast = crystal.getLerpedPos(1.0F);
+            double targetDmg = DamageCalculator.explosionDamage(world, blast,
+                    DamageCalculator.CRYSTAL_STRENGTH, predicted, target);
+            double selfDmg = DamageCalculator.crystalDamage(world, blast, self);
+            if (targetDmg < minDmg || selfDmg > maxSelfDamage.get()) {
                 continue;
             }
             double score = targetDmg * 2.0 - selfDmg - Math.sqrt(self.squaredDistanceTo(crystal));
@@ -214,37 +290,29 @@ public final class AutoCrystal extends Module {
         return best;
     }
 
-    private BlockPos findBestSpot(MinecraftClient client, ClientPlayerEntity self, LivingEntity target) {
-        ClientWorld world = client.world;
-        BlockPos center = target.getBlockPos();
-        int r = (int) Math.ceil(placeRange.get());
-        BlockPos best = null;
-        double bestScore = Double.NEGATIVE_INFINITY;
-        for (BlockPos pos : BlockPos.iterateOutwards(center, r, r, r)) {
-            if (self.getBlockPos().getManhattanDistance(pos) > placeRange.get().intValue()) {
-                continue;
-            }
-            if (!RaycastValidator.canPlaceCrystal(world, pos, self, true, !requireWallsRange.get())) {
-                continue;
-            }
-            Vec3d blastPos = Vec3d.ofCenter(pos.up());
-            double targetDmg = DamageCalculator.crystalDamage(world, blastPos, target);
-            double selfDmg = DamageCalculator.crystalDamage(world, blastPos, self);
-            if (targetDmg < minTargetDamage.get() || selfDmg > maxSelfDamage.get()) {
-                continue;
-            }
-            double score = targetDmg * 2.0 - selfDmg * 1.5 - self.getBlockPos().getManhattanDistance(pos);
-            if (score > bestScore) {
-                bestScore = score;
-                best = pos.toImmutable();
-            }
+    /**
+     * Obsidian staging for a solver spot that lacks support: swap to obsidian, place
+     * at the planned cell via its solved support face, then re-select the crystal slot
+     * next cycle. Vanilla clicks only, ms-paced by the existing place timer.
+     */
+    private boolean placeObsidianForSpot(MinecraftClient client, ClientPlayerEntity self,
+                                         ClientWorld world, Spot spot) {
+        if (!spot.needsObsidian() || spot.obsidianHit == null) {
+            return false;
         }
-        return best;
+        int obsidianSlot = InventoryManager.findHotbarSlot(self, ItemUtil::isObsidian);
+        if (obsidianSlot == -1) {
+            return false;
+        }
+        if (InventoryManager.selectHotbar(client, obsidianSlot)) {
+            return CombatActions.interactBlock(client, spot.obsidianHit).isAccepted();
+        }
+        return false;
     }
 
     private boolean lootNearby(ClientWorld world, LivingEntity target) {
         double radiusSq = lootRadius.get() * lootRadius.get();
-        for (var e : world.getEntities()) {
+        for (var e : EntityScan.around(world, target.getLerpedPos(1.0F), lootRadius.get())) {
             if (e instanceof ItemEntity item
                     && item.squaredDistanceTo(target) <= radiusSq
                     && item.getItemAge() < 200) {
@@ -252,6 +320,20 @@ public final class AutoCrystal extends Module {
             }
         }
         return false;
+    }
+
+    /** Face-place gate: below the health threshold any blast is worth firing. */
+    private double effectiveMinDamage(LivingEntity target) {
+        double effective = target.getHealth() + target.getAbsorptionAmount();
+        if (effective <= facePlaceHealth.get()) {
+            return 0.5;
+        }
+        return minTargetDamage.get();
+    }
+
+    private Vec3d predictedPos(LivingEntity target, int predictTicks) {
+        return predictTicks > 0 ? CrystalSolver.predictPos(target, predictTicks)
+                : target.getLerpedPos(1.0F);
     }
 
     @Override

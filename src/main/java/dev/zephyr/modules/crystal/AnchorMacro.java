@@ -201,7 +201,10 @@ public class AnchorMacro extends Module {
     /** Best support position near the target for an anchor: damage-scored, self-gated. */
     protected BlockPos findAnchorSpot(MinecraftClient client, ClientPlayerEntity self, LivingEntity target) {
         ClientWorld world = client.world;
-        BlockPos center = target.getBlockPos();
+        // Anchor detonation is a single instant - score against where the target will
+        // BE by the time the place/charge/detonate chain completes (2 ticks out).
+        Vec3d predicted = dev.zephyr.core.crystal.CrystalSolver.predictPos(target, 2);
+        BlockPos center = BlockPos.ofFloored(predicted);
         int r = (int) Math.ceil(range.get());
         BlockPos best = null;
         double bestScore = Double.NEGATIVE_INFINITY;
@@ -213,7 +216,8 @@ public class AnchorMacro extends Module {
                 continue;
             }
             Vec3d blast = Vec3d.ofCenter(pos);
-            double targetDmg = DamageCalculator.anchorDamage(world, blast, target);
+            double targetDmg = dev.zephyr.core.combat.DamageCalculator.explosionDamage(world, blast,
+                    dev.zephyr.core.combat.DamageCalculator.ANCHOR_STRENGTH, predicted, target);
             double selfDmg = DamageCalculator.anchorDamage(world, blast, self);
             if (targetDmg < minTargetDamage.get() || selfDmg > maxSelfDamage.get()) {
                 continue;
