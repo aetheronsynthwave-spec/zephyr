@@ -79,9 +79,18 @@ public final class CombatActions {
         return r;
     }
 
-    /** Item use (pearl throw, XP bottle); swings like vanilla on success. */
+    /**
+     * Item use (pearl throw, XP bottle); swings like vanilla on success.
+     *
+     * <p>Contract: returns exactly {@link ActionResult#FAIL} when the action-state gate
+     * refused and <b>nothing was sent</b>; any other value means the use went out through
+     * the vanilla interaction manager. Callers must treat any non-FAIL result as "the
+     * use-item packet was emitted" - 1.21.11 sends {@code PlayerInteractItemC2SPacket}
+     * before the client prediction runs (and even when the prediction passes on a
+     * cooling-down item), so a non-accepted result does NOT mean "nothing happened".
+     */
     public static ActionResult interactItem(MinecraftClient client) {
-        if (!ActionState.prepareUse(client)) {
+        if (!ActionState.prepareItemUse(client)) {
             return ActionResult.FAIL;
         }
         ActionResult r = RotationManager.withServerRotation(() ->
@@ -95,9 +104,13 @@ public final class CombatActions {
      * carries yaw/pitch and the server applies them ({@code setAngles}) right before
      * {@code interactItem}, so the projectile leaves along this rotation. The player's real
      * yaw/pitch are restored before the call returns - the camera never moves.
+     *
+     * <p>Same contract as {@link #interactItem}: {@link ActionResult#FAIL} means the gate
+     * refused and nothing was sent; anything else means the packet went out, even if the
+     * client prediction itself returned PASS (e.g. the item went on cooldown mid-use).
      */
     public static ActionResult interactItemAt(MinecraftClient client, float yaw, float pitch) {
-        if (!ActionState.prepareUse(client)) {
+        if (!ActionState.prepareItemUse(client)) {
             return ActionResult.FAIL;
         }
         var p = client.player;

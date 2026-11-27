@@ -2,6 +2,7 @@ package dev.zephyr.modules.survival;
 
 import dev.zephyr.core.Module;
 import dev.zephyr.core.ModuleCategory;
+import dev.zephyr.core.combat.ActionState;
 import dev.zephyr.core.combat.CombatActions;
 import dev.zephyr.core.combat.CombatCoordinator;
 import dev.zephyr.core.inventory.InventoryManager;
@@ -12,6 +13,7 @@ import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.entity.projectile.thrown.EnderPearlEntity;
 import net.minecraft.item.ItemStack;
+import net.minecraft.util.ActionResult;
 import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.Vec3d;
 import org.lwjgl.glfw.GLFW;
@@ -35,9 +37,40 @@ import org.lwjgl.glfw.GLFW;
  *       wind charge one one-way trip after we throw, so wind tick k meets the pearl state
  *       {@code k + RTT/50} ticks ahead of what the client shows now.</li>
  * </ul>
- * Old bugs fixed: shooter movement was added to the distance instead of being solved out, no
- * latency offset, whole-tick aim snapping (no interpolation), and a visible rotation that had
- * to "arrive" before throwing, which burned the intercept window.
+ *
+ * <p><b>Packet hygiene</b> (why this rewrite exists - 1.21.11 mechanics, verified against the
+ * mapped client jar): vanilla's {@code ClientPlayerInteractionManager#interactItem} sends
+ * {@code PlayerInteractItemC2SPacket} <em>before</em> it runs the client-side prediction,
+ * and it keeps sending it even when the prediction returns {@code PASS} (item on cooldown).
+ * Both ender pearls ({@code useCooldown(1.0)}) and wind charges ({@code useCooldown(0.5)})
+ * carry a use-cooldown component, applied client-side by {@code ItemStack#use ->
+ * applyRemainderAndCooldown} the moment a throw is predicted. So a state machine that only
+ * advances on {@code ActionResult.isAccepted()} re-fires the use every tick while a cooldown
+ * runs - a burst of duplicate use-item packets. The rules below keep every throw to exactly
+ * one packet:
+ * <ul>
+ *   <li><b>One shot per stage.</b> The stage advances as soon as the use went out through the
+ *       vanilla manager ({@code result != ActionResult.FAIL}); the prediction outcome never
+ *       triggers a retry of the same throw.</li>
+ *   <li><b>Cooldown before use.</b> {@code player.getItemCooldownManager().isCoolingDown(stack)}
+ *       is checked immediately before each throw (the server's {@code CooldownUpdateS2CPacket}
+ *       and our own predicted cooldown are both covered), and the stage timeouts are longer
+ *       than the cooldowns, so a re-trigger inside the cooldown window waits it out instead of
+ *       giving up or re-sending.</li>
+ *   <li><b>Slots only through SwapManager.</b> Every selection is 0..8, at most one
+ *       server-visible slot change per tick, flushed by vanilla's own
+ *       {@code syncSelectedSlot()} (no redundant packet when the server already knows the
+ *       slot), and only in the pre-movement window - so the per-tick packet order is exactly
+ *       what a human pressing 1-9 then right-clicking produces:
+ *       {@code UpdateSelectedSlot -> PlayerInteractItem -> HandSwing -> movement}.</li>
+ *   <li><b>Settling states respected.</b> A screen-handler swap (pearl only in the inventory)
+ *       defers the use at least one tick ({@code ActionState} refuses use on a click tick),
+ *       no inventory click is ever made into a foreign screen handler, and the throw waits
+ *       for a tick with no attack, no dig, no use-release, no open screen and no other item
+ *       use ({@code ActionState.prepareItemUse}).</li>
+ *   <li><b>Never wedged.</b> The restore stage is bounded; a slot budget permanently taken by
+ *       another module ends the sequence cleanly instead of blocking the bind forever.</li>
+ * </ul>
  */
 public final class PearlCatch extends Module {
 
@@ -45,6 +78,12 @@ public final class PearlCatch extends Module {
     private static final double PEARL_GRAVITY = 0.03;
     private static final double WIND_SPEED = 1.5;
     private static final int HORIZON = 80;
+    /** Longer than the pearl's 20-tick useCooldown(1.0): a re-press inside the window waits. */
+    private static final int PEARL_TIMEOUT = 24;
+    /** Longer than the wind charge's 10-tick cooldown plus the pearl's flight time. */
+    private static final int WIND_TIMEOUT = 48;
+    /** A restore that never gets the slot budget must not block the bind forever. */
+    private static final int RESTORE_TIMEOUT = 40;
 
     private final NumberSetting lookPitch = num("lookPitch", "Pearl pitch (90 = straight up)", 45, 90, 1, 90);
     private final NumberSetting minGap = num("minGap", "Min ticks pearl->wind", 1, 10, 1, 2);
@@ -58,6 +97,7 @@ public final class PearlCatch extends Module {
     private final MsTimer stageTimer = new MsTimer();
     private int returnSlot = -1;
     private int stageTicks;
+    private int restoreTicks;
     private final double[] px = new double[HORIZON + 2];
     private final double[] py = new double[HORIZON + 2];
     private final double[] pz = new double[HORIZON + 2];
@@ -76,25 +116,39 @@ public final class PearlCatch extends Module {
         if (!isEnabled()) {
             setEnabled(true);
         }
-        ClientPlayerEntity self = MinecraftClient.getInstance().player;
-        if (self != null && stage == Stage.IDLE) {
-            returnSlot = InventoryManager.selectedHotbar(self);
-            stageTicks = 0;
-            stage = Stage.PEARL;
+        MinecraftClient client = MinecraftClient.getInstance();
+        ClientPlayerEntity self = client.player;
+        if (self == null || client.world == null || stage != Stage.IDLE) {
+            return;
         }
+        int slot = InventoryManager.selectedHotbar(self);
+        returnSlot = slot >= 0 && slot <= 8 ? slot : -1;
+        stageTicks = 0;
+        stage = Stage.PEARL;
     }
 
     @Override
     protected void onDisable() {
-        stage = Stage.IDLE;
-        stageTimer.invalidate();
+        // State only, no packets: this can run from a GUI click on the render thread,
+        // outside the action window (SwapManager would refuse the slot change anyway).
+        resetFsm();
+    }
+
+    @Override
+    public void onWorldJoin(MinecraftClient client) {
+        resetFsm(); // the old world's returnSlot must not be restored in the new one
+    }
+
+    @Override
+    public void onWorldLeave(MinecraftClient client) {
+        resetFsm();
     }
 
     @Override
     public void onTick(MinecraftClient client) {
         ClientPlayerEntity self = client.player;
         if (self == null || client.world == null) {
-            stage = Stage.IDLE;
+            resetFsm();
             return;
         }
         stageTicks++;
@@ -107,36 +161,51 @@ public final class PearlCatch extends Module {
     }
 
     private void pearlStage(MinecraftClient client, ClientPlayerEntity self) {
-        if (stageTicks > 20) {
-            beginRestore();
+        if (stageTicks > PEARL_TIMEOUT) {
+            beginRestore(); // no pearl / cooldown outlasted the window
             return;
         }
-        if (!holdItem(client, self, ItemUtil::isPearl) || ItemUtil.coolingDown(self, self.getMainHandStack())) {
-            return;
+        if (!holdItem(client, self, ItemUtil::isPearl)) {
+            return; // selecting this tick, inventory swap settling, or nothing to hold
         }
-        if (CombatActions.interactItemAt(client, self.getYaw(), (float) -lookPitch.get()).isAccepted()) {
+        ItemStack pearl = self.getMainHandStack();
+        if (ItemUtil.coolingDown(self, pearl) || ActionState.attackedThisTick()) {
+            return; // 1.21.11 pearls: useCooldown(1.0) - wait it out, never use into it
+        }
+        ActionResult r = CombatActions.interactItemAt(client, self.getYaw(), (float) -lookPitch.get());
+        if (r != ActionResult.FAIL) {
+            // The use-item packet went out through the vanilla manager - one throw, one
+            // packet. The prediction result (Success or cooldown-PASS) never re-fires.
             stageTicks = 0;
             stage = Stage.WIND;
         }
+        // FAIL = the action-state gate refused (screen open, mid-use, use already sent,
+        // digging, release/click this tick): nothing was sent; retry next tick.
     }
 
     private void windStage(MinecraftClient client, ClientPlayerEntity self) {
-        if (stageTicks > 40) {
+        if (stageTicks > WIND_TIMEOUT) {
             beginRestore(); // pearl never seen / no intercept left
             return;
         }
-        boolean ready = holdItem(client, self, ItemUtil::isWindCharge)
-                && !ItemUtil.coolingDown(self, self.getMainHandStack());
-        EnderPearlEntity pearl = findOwnPearl(client, self);
-        if (!ready || pearl == null || stageTicks < minGap.get()) {
+        if (!holdItem(client, self, ItemUtil::isWindCharge)) {
             return;
+        }
+        ItemStack wind = self.getMainHandStack();
+        if (ItemUtil.coolingDown(self, wind) || ActionState.attackedThisTick()) {
+            return; // wind charges: useCooldown(0.5)
+        }
+        EnderPearlEntity pearl = findOwnPearl(client, self);
+        if (pearl == null || stageTicks < minGap.get()) {
+            return; // server round trip before the pearl shows up; min pearl->wind gap
         }
         int lead = Math.max(0, CombatCoordinator.pingTicks(client) + tickOffset.get().intValue());
         if (!solve(self, pearl, lead)) {
             return;
         }
-        if (CombatActions.interactItemAt(client, aimYaw, aimPitch).isAccepted()) {
-            beginRestore();
+        ActionResult r = CombatActions.interactItemAt(client, aimYaw, aimPitch);
+        if (r != ActionResult.FAIL) {
+            beginRestore(); // one wind charge, one packet - never re-fire the intercept
         }
     }
 
@@ -182,19 +251,31 @@ public final class PearlCatch extends Module {
     }
 
     private void restoreStage(MinecraftClient client) {
+        if (restoreTicks++ > RESTORE_TIMEOUT) {
+            resetFsm(); // another module owns the hotbar for good: give up cleanly
+            return;
+        }
         if (!stageTimer.isDue()) {
             return;
         }
         if (returnSlot != -1 && !InventoryManager.selectHotbar(client, returnSlot)) {
-            return;
+            return; // this tick's slot budget is used: retry next tick
         }
-        stage = Stage.IDLE;
-        stageTimer.invalidate();
+        resetFsm();
     }
 
     private void beginRestore() {
         stageTimer.restart(restoreMin.get(), restoreMax.get());
+        restoreTicks = 0;
         stage = Stage.RESTORE;
+    }
+
+    private void resetFsm() {
+        stage = Stage.IDLE;
+        stageTicks = 0;
+        restoreTicks = 0;
+        returnSlot = -1;
+        stageTimer.invalidate();
     }
 
     private EnderPearlEntity findOwnPearl(MinecraftClient client, ClientPlayerEntity self) {
@@ -208,6 +289,13 @@ public final class PearlCatch extends Module {
         return best;
     }
 
+    /**
+     * True when {@code pred} holds for the main hand this tick. Slot changes go through
+     * {@code InventoryManager#selectHotbar} (SwapManager: valid 0..8 only, one
+     * server-visible change per tick, vanilla sync, no redundant packet) and are legal in
+     * the same tick as the use - that is exactly the packet order a human gets by pressing
+     * a hotbar key and right-clicking in the same tick.
+     */
     private boolean holdItem(MinecraftClient client, ClientPlayerEntity self,
                              java.util.function.Predicate<ItemStack> pred) {
         if (pred.test(self.getMainHandStack())) {
@@ -217,10 +305,17 @@ public final class PearlCatch extends Module {
         if (slot != -1) {
             return InventoryManager.selectHotbar(client, slot) && pred.test(self.getMainHandStack());
         }
+        if (client.currentScreen != null) {
+            // currentScreenHandler belongs to the open screen (chest, anvil, ...): a
+            // clickSlot here lands in the wrong container. Wait for the screen to close.
+            return false;
+        }
         int handler = InventoryManager.findHandlerSlot(self, pred);
         int swapSlot = pickSacrificialSlot(self);
         if (handler != -1 && swapSlot != -1) {
             InventoryManager.swapWithHotbar(client, handler, swapSlot);
+            // The use defers at least one tick (ActionState blocks use on an
+            // inventory-click tick), so the swap settles before anything is thrown.
         }
         return false;
     }

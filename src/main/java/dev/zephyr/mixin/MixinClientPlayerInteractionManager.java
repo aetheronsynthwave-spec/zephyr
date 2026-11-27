@@ -21,6 +21,16 @@ public abstract class MixinClientPlayerInteractionManager {
         dev.zephyr.core.combat.ActionState.noteAttack();
     }
 
+    /**
+     * ActionState: every item use (vanilla right-click or module). 1.21.11 sends
+     * {@code PlayerInteractItemC2SPacket} inside this call before the client prediction
+     * runs, so noting at HEAD is exactly "a use-item packet is going out this tick".
+     */
+    @Inject(method = "interactItem", at = @At("HEAD"))
+    private void zephyr$noteItemUse(PlayerEntity player, net.minecraft.util.Hand hand, CallbackInfo ci) {
+        dev.zephyr.core.combat.ActionState.noteItemUse();
+    }
+
     @Inject(method = "attackWithPiercingWeapon", at = @At("HEAD"))
     private void zephyr$noteJab(CallbackInfo ci) {
         dev.zephyr.core.combat.ActionState.noteAttack();

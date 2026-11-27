@@ -1,3 +1,56 @@
+Zephyr Client v1.13.3 - Minecraft 1.21.11 (Fabric)
+===================================================
+
+WHAT'S NEW IN v1.13.3 (PearlCatch packet hygiene)
+-------------------------------------------------
+PearlCatch could emit malformed, out-of-order or repeated use-item packets while
+throwing pearls. Root causes verified against the mapped 1.21.11 client jar:
+
+* Vanilla 1.21.11 ClientPlayerInteractionManager.interactItem sends
+  PlayerInteractItemC2SPacket BEFORE the client prediction runs - and still sends
+  it when the prediction returns PASS (item on cooldown). Both ender pearls
+  (useCooldown(1.0) = 20 ticks) and wind charges (useCooldown(0.5) = 10 ticks)
+  carry a use-cooldown component, applied client-side by ItemStack.use ->
+  applyRemainderAndCooldown the moment a throw is predicted. PearlCatch advanced
+  its stages only on ActionResult.isAccepted(), so a non-accepted prediction left
+  the stage armed with the packet already out - a re-fire loop that duplicates
+  use-item packets every tick (e.g. a server-plugin pearl cooldown synced via
+  CooldownUpdateS2CPacket). Stages now advance as soon as the use went out
+  through the vanilla manager (result != ActionResult.FAIL): one throw, one
+  packet, prediction outcome never retried.
+* No item-use dedup existed: PearlCatch's wind charge and another module's throw
+  (FastXP bottle, macebot firework) could both emit PlayerInteractItemC2SPacket
+  in the same tick - impossible from vanilla's single doItemUse pass and a
+  textbook macro signature. ActionState now tracks per-tick item uses
+  (noted by a mixin at interactItem HEAD, so vanilla right-clicks count too);
+  CombatActions.interactItem / interactItemAt are gated by the new
+  prepareItemUse (one use per tick; interactBlock keeps the looser vanilla
+  block-then-item order). PearlCatch additionally waits for a swing-free tick:
+  no pearl interleaved with an attack, dig, use-release, open screen or settling
+  inventory click.
+* holdItem could clickSlot into a foreign screen handler: with a chest or
+  inventory screen open mid-sequence, findHandlerSlot searched the OPEN
+  handler's slots and the SWAP click landed in the wrong container. The
+  inventory-swap fallback now requires currentScreen == null (slot selection
+  itself stays legal - hotbar keys work in screens, exactly like vanilla).
+* The RESTORE stage could wedge forever: if another module took the one
+  slot-change-per-tick budget every tick (SwapManager), the restore retried
+  endlessly and the bind never re-armed (keypress only works from IDLE).
+  Restore is now bounded (40 ticks) and always returns to IDLE; world
+  join/leave reset the FSM so a stale returnSlot from the old world is never
+  restored in the new one (the onWorldJoin/onWorldLeave hooks existed but were
+  never dispatched - ZephyrClient now calls them for every module on
+  ClientPlayConnectionEvents JOIN/DISCONNECT).
+* Cooldown handling: isCoolingDown(stack) is checked immediately before every
+  throw; stage timeouts now exceed the component cooldowns (PEARL 24 > 20,
+  WIND 48 > 10), so a re-press inside the cooldown window waits it out and
+  still throws instead of giving up (the old 20-tick pearl timeout expired
+  exactly when a 1s cooldown ended). Slot changes remain strictly 0..8, one
+  server-visible change per tick through SwapManager's vanilla
+  syncSelectedSlot() (no redundant packets), keeping the per-tick packet order
+  identical to a human pressing 1-9 then right-clicking:
+  UpdateSelectedSlot -> PlayerInteractItem -> HandSwing -> movement.
+
 Zephyr Client v1.13.2 - Minecraft 1.21.11 (Fabric)
 ===================================================
 

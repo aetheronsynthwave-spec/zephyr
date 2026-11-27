@@ -17,8 +17,11 @@ import net.minecraft.client.network.ClientPlayerEntity;
  *   <li>A digging action is ended with {@code cancelBlockBreaking()}, which sends
  *       {@code PlayerActionC2SPacket(ABORT_DESTROY_BLOCK)} and clears the break state.</li>
  * </ul>
- * On top of that, automated actions are limited to one attack per tick and nothing is
- * attacked or used in the same tick as a use-release or a module inventory click.
+ * On top of that, automated actions are limited to one attack per tick, one item use
+ * per tick (a second {@code PlayerInteractItemC2SPacket} in the same tick is a textbook
+ * macro signature - vanilla's {@code doItemUse} pass can only ever emit one accepted
+ * use), and nothing is attacked or used in the same tick as a use-release or a module
+ * inventory click.
  */
 public final class ActionState {
 
@@ -28,6 +31,7 @@ public final class ActionState {
     private static long lastAttackTick = Long.MIN_VALUE;
     private static long lastReleaseTick = Long.MIN_VALUE;
     private static long lastInventoryClickTick = Long.MIN_VALUE;
+    private static long lastItemUseTick = Long.MIN_VALUE;
 
     /** Any entity attack (vanilla click, module, BreachSwap re-entry, spear jab). */
     public static void noteAttack() {
@@ -44,8 +48,22 @@ public final class ActionState {
         lastInventoryClickTick = TickPhase.tickId();
     }
 
+    /**
+     * {@code ClientPlayerInteractionManager#interactItem} was entered this tick - i.e. a
+     * {@code PlayerInteractItemC2SPacket} was (or is about to be) sent. Noted by the mixin
+     * at HEAD, so vanilla's own right-click and every module use count alike.
+     */
+    public static void noteItemUse() {
+        lastItemUseTick = TickPhase.tickId();
+    }
+
     public static boolean attackedThisTick() {
         return lastAttackTick == TickPhase.tickId();
+    }
+
+    /** A use-item packet already went out this tick (vanilla click or module). */
+    public static boolean itemUsedThisTick() {
+        return lastItemUseTick == TickPhase.tickId();
     }
 
     /** Shared preconditions for any automated attack or use action. */
@@ -92,5 +110,16 @@ public final class ActionState {
      */
     public static boolean prepareUse(MinecraftClient client) {
         return baseReady(client) && !client.interactionManager.isBreakingBlock();
+    }
+
+    /**
+     * Stricter gate for item use in air ({@code interactItem} - pearls, wind charges,
+     * XP bottles, fireworks): vanilla's single {@code doItemUse} pass emits at most one
+     * accepted use-item packet per tick, so a module use is refused when one already
+     * went out this tick. Block interactions keep the looser {@link #prepareUse} gate
+     * (vanilla right-clicks a block and then uses the item in the same pass).
+     */
+    public static boolean prepareItemUse(MinecraftClient client) {
+        return prepareUse(client) && !itemUsedThisTick();
     }
 }

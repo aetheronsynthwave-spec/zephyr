@@ -117,10 +117,19 @@ public final class ZephyrClient implements ClientModInitializer {
         ClientPlayConnectionEvents.JOIN.register((handler, sender, client) -> {
             RotationManager.invalidate();
             dev.zephyr.core.combat.SwapManager.reset();
+            // The world-scoped hooks were dead: modules overriding them (PearlCatch,
+            // ElytraMaceBot, SmartMaceBot) kept stale state - e.g. a returnSlot from the
+            // previous world being restored in the new one.
+            for (Module m : modules.all()) {
+                m.onWorldJoin(client);
+            }
         });
         ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> {
             RotationManager.invalidate();
             dev.zephyr.core.combat.SwapManager.reset();
+            for (Module m : modules.all()) {
+                m.onWorldLeave(client);
+            }
             config.save();
         });
     }
