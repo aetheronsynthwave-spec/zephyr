@@ -1,31 +1,37 @@
 package dev.zephyr.mixin;
 
-import dev.zephyr.ZephyrClient;
-import dev.zephyr.core.event.ZephyrEvents;
-import dev.zephyr.modules.movement.Freelook;
 import net.minecraft.client.Mouse;
-import net.minecraft.entity.Entity;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
-import org.spongepowered.asm.mixin.injection.Redirect;
+import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 /**
- * Freelook input interception: while active, cursor deltas are fed into the detached
- * free-rotation instead of the player's look direction, so the local view never moves
- * and the player's real rotation (and thus movement basis) is untouched.
+ * Mouse-level look hook (1.21.11).
+ *
+ * <p>IMPORTANT 1.21.11 FACT (verified against the shipped bytecode): {@code Mouse
+ * #onCursorPos} does NOT call {@code Entity#changeLookDirection} anymore - it only
+ * accumulates cursorDeltaX/Y. The actual call moved to {@code Mouse#tick()} (with the
+ * receiver typed ClientPlayerEntity). The v1.2 @Redirect on onCursorPos therefore
+ * never applied and failed silently under defaultRequire=0.
+ *
+ * <p>Freelook input is intercepted one level deeper, at {@code Entity
+ * #changeLookDirection} HEAD (see MixinEntity) - that hook applies to every call site
+ * (Mouse.tick now, and any future caller) and needs no per-call-site knowledge. This
+ * mixin remains as a lightweight debug/extension point for cursor-level features
+ * (e.g. raw delta sampling for future modules) and documents the flow.
  */
 @Mixin(Mouse.class)
 public abstract class MixinMouse {
 
-    @Redirect(method = "onCursorPos",
-            at = @At(value = "INVOKE", target = "Lnet/minecraft/entity/Entity;changeLookDirection(DD)V"))
-    private void zephyr$interceptLook(Entity instance, double cursorDeltaX, double cursorDeltaY) {
-        Freelook freelook = ZephyrClient.modules().get(Freelook.class);
-        if (freelook != null && freelook.isEnabled()) {
-            freelook.feed(cursorDeltaX, cursorDeltaY);
-            ZephyrEvents.LOOK_DELTA.fire(new ZephyrEvents.LookDelta(cursorDeltaX, cursorDeltaY));
-            return;
-        }
-        instance.changeLookDirection(cursorDeltaX, cursorDeltaY);
+    /**
+     * Post-tick probe: after vanilla applied the smoothed+inverted deltas to the
+     * player's look direction. Kept cheap (two field reads) so it costs nothing when
+     * nothing subscribes.
+     */
+    @Inject(method = "tick", at = @At("RETURN"), require = 0)
+    private void zephyr$afterMouseTick(CallbackInfo ci) {
+        // Intentionally empty by default - the look-delta interception lives in
+        // MixinEntity.changeLookDirection, which is call-site independent.
     }
 }

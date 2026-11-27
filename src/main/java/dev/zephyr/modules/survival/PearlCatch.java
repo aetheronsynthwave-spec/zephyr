@@ -16,6 +16,7 @@ import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.item.ItemStack;
 import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.Vec3d;
+import org.lwjgl.glfw.GLFW;
 
 /**
  * PearlCatch - one-key emergency catch sequence, run as a visible, human-paced FSM:
@@ -55,7 +56,8 @@ public final class PearlCatch extends Module {
     private int cooldownTicks;
 
     public PearlCatch() {
-        super("PearlCatch", ModuleCategory.SURVIVAL, 0);
+        // G fires one catch sequence; enable in the GUI first.
+        super("PearlCatch", ModuleCategory.SURVIVAL, GLFW.GLFW_KEY_G);
     }
 
     /**

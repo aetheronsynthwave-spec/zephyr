@@ -35,7 +35,7 @@ import net.minecraft.client.network.ClientPlayerEntity;
 public final class JumpReset extends Module {
 
     private final NumberSetting armWindow = num("armWindow", "Arm window ticks", 0, 12, 1, 6);
-    private final NumberSetting successChance = num("chance", "Reset success", 0.30, 1.0, 0.05, 0.9);
+    private final NumberSetting successChance = num("chance", "Reset success", 0.30, 1.0, 0.05, 1.0);
     private final BooleanSetting resetInAir = bool("inAir", "Arm when hit airborne", true);
 
     private double lastHealth = -1.0;

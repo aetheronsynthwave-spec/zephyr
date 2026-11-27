@@ -17,6 +17,7 @@ import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.entity.LivingEntity;
 import net.minecraft.util.math.Vec3d;
+import org.lwjgl.glfw.GLFW;
 
 /**
  * LungeMacro - one-key attribute-swap macro that erases the attack-charge cooldown.
@@ -60,7 +61,8 @@ public final class LungeMacro extends Module {
     private int stageTicks;
 
     public LungeMacro() {
-        super("LungeMacro", ModuleCategory.COMBAT, 0);
+        // H fires one engagement; enable in the GUI first.
+        super("LungeMacro", ModuleCategory.COMBAT, GLFW.GLFW_KEY_H);
     }
 
     /** The bind fires one engagement instead of toggling the module. */

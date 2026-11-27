@@ -111,27 +111,21 @@ public final class RenderUtil {
         VertexConsumer lines = consumers.getBuffer(net.minecraft.client.render.RenderLayers.lines());
         Matrix4f matrix = matrices.peek().getPositionMatrix();
 
-        float[] xs = {(float) box.minX, (float) box.maxX};
-        float[] ys = {(float) box.minY, (float) box.maxY};
-        float[] zs = {(float) box.minZ, (float) box.maxZ};
-        float[][] corners = new float[8][3];
-        int i = 0;
-        for (float x : xs) {
-            for (float y : ys) {
-                for (float z : zs) {
-                    corners[i][0] = x;
-                    corners[i][1] = y;
-                    corners[i][2] = z;
-                    i++;
-                }
-            }
-        }
+        // Static scratch (no per-box allocation - this runs per player per frame).
+        // Corner index convention (matches BOX_EDGES): bit2=x, bit1=y, bit0=z.
+        final float minX = (float) box.minX, maxX = (float) box.maxX;
+        final float minY = (float) box.minY, maxY = (float) box.maxY;
+        final float minZ = (float) box.minZ, maxZ = (float) box.maxZ;
         for (int[] edge : BOX_EDGES) {
-            float[] c0 = corners[edge[0]];
-            float[] c1 = corners[edge[1]];
-            lines.vertex(matrix, c0[0], c0[1], c0[2]).color(r, g, b, a)
+            float x0 = (edge[0] & 4) == 0 ? minX : maxX;
+            float y0 = (edge[0] & 2) == 0 ? minY : maxY;
+            float z0 = (edge[0] & 1) == 0 ? minZ : maxZ;
+            float x1 = (edge[1] & 4) == 0 ? minX : maxX;
+            float y1 = (edge[1] & 2) == 0 ? minY : maxY;
+            float z1 = (edge[1] & 1) == 0 ? minZ : maxZ;
+            lines.vertex(matrix, x0, y0, z0).color(r, g, b, a)
                     .normal(0, 1, 0).lineWidth(1.0f);
-            lines.vertex(matrix, c1[0], c1[1], c1[2]).color(r, g, b, a)
+            lines.vertex(matrix, x1, y1, z1).color(r, g, b, a)
                     .normal(0, 1, 0).lineWidth(1.0f);
         }
     }

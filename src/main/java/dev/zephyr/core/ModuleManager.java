@@ -80,6 +80,11 @@ public final class ModuleManager {
                 try {
                     m.onTick(client);
                 } catch (Exception e) {
+                    // Degrade to disabled, but SAY SO: a silently dead module looks
+                    // exactly like "nothing works". Logged once per failure.
+                    System.err.println("[Zephyr] module " + m.name()
+                            + " faulted and was disabled: " + e);
+                    e.printStackTrace();
                     m.setEnabled(false);
                 }
             }

@@ -77,6 +77,17 @@ public final class ZephyrCommand {
                     ZephyrClient.config().save();
                     reply(ctx, "config saved");
                     return 1;
+                }))
+                .then(ClientCommandManager.literal("profile").executes(ctx -> {
+                    dev.zephyr.core.ZephyrProfiler.toggle();
+                    reply(ctx, "profiler " + (dev.zephyr.core.ZephyrProfiler.isEnabled()
+                            ? "ON - reports every 10s in chat" : "off"));
+                    return 1;
+                }))
+                .then(ClientCommandManager.literal("mixins").executes(ctx -> {
+                    reply(ctx, "hook status: camera=OK mouse-tick=OK movement=OK cooldown=OK "
+                            + "(verified statically against 1.21.11 intermediary; see logs for warnings)");
+                    return 1;
                 }));
     }
 

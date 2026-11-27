@@ -73,22 +73,28 @@ public final class ZephyrClient implements ClientModInitializer {
         ZephyrCommand.register();
 
         ClientTickEvents.END_CLIENT_TICK.register(this::onClientTick);
+        dev.zephyr.ZephyrSelfTest.init();
 
         WorldRenderEvents.AFTER_ENTITIES.register(ctx -> {
             // One camera-position cache invalidation per frame: render modules used to
             // walk gameRenderer->camera->entity->getEyePos() (a fresh Vec3d) on every
             // call from every module.
+            long t0 = System.nanoTime();
             dev.zephyr.modules.render.RenderUtil.beginFrame();
             for (Module m : modules.all()) {
                 if (m.isEnabled() && m instanceof WorldRenderParticipant participant) {
                     participant.onWorldRender(ctx);
                 }
             }
+            dev.zephyr.core.ZephyrProfiler.addWorldRender(System.nanoTime() - t0);
         });
 
         // 1.21.11 fabric api: HUD callback passes a RenderTickCounter, not a float delta.
-        HudRenderCallback.EVENT.register((ctx, tickCounter) ->
-                modules.hudRender(MinecraftClient.getInstance(), ctx, tickCounter.getTickProgress(false)));
+        HudRenderCallback.EVENT.register((ctx, tickCounter) -> {
+            long t0 = System.nanoTime();
+            modules.hudRender(MinecraftClient.getInstance(), ctx, tickCounter.getTickProgress(false));
+            dev.zephyr.core.ZephyrProfiler.addHudRender(System.nanoTime() - t0);
+        });
 
         ClientPlayConnectionEvents.JOIN.register((handler, sender, client) -> RotationManager.invalidate());
         ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> {
@@ -134,9 +140,15 @@ public final class ZephyrClient implements ClientModInitializer {
 
     private void onClientTick(MinecraftClient client) {
         RenderTick.advance();
+        dev.zephyr.ZephyrSelfTest.tick(client);
+        // Per-tick caches: exposure memo table + render caches all key off this tick.
+        dev.zephyr.core.combat.DamageCalculator.advanceTick();
         pollKeybinds(client);
+        long t0 = System.nanoTime();
         modules.tick(client);
         RotationManager.tick(client);
+        dev.zephyr.core.ZephyrProfiler.addTick(System.nanoTime() - t0);
+        dev.zephyr.core.ZephyrProfiler.chatReport(client);
     }
 
     private void pollKeybinds(MinecraftClient client) {
@@ -144,8 +156,8 @@ public final class ZephyrClient implements ClientModInitializer {
         boolean screenOpen = client.currentScreen != null;
         for (Module m : modules.all()) {
             int bind = m.bind().get();
-            if (bind == GLFW.GLFW_KEY_UNKNOWN) {
-                continue;
+            if (bind <= 0) {
+                continue; // unbound (0 and GLFW_KEY_UNKNOWN both mean "no key")
             }
             boolean pressed = GLFW.glfwGetKey(window, bind) == GLFW.GLFW_PRESS;
             Boolean previous = keyEdge.get(bind);

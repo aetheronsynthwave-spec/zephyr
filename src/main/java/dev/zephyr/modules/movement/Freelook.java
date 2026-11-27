@@ -7,6 +7,7 @@ import dev.zephyr.core.settings.NumberSetting;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.util.math.MathHelper;
+import org.lwjgl.glfw.GLFW;
 
 /**
  * Freelook - detached camera view with full movement/rotation separation.
@@ -26,7 +27,8 @@ public final class Freelook extends Module {
     private double freePitch;
 
     public Freelook() {
-        super("Freelook", ModuleCategory.MOVEMENT, 0);
+        // Left Alt by default: press once to detach the camera, again to snap back.
+        super("Freelook", ModuleCategory.MOVEMENT, GLFW.GLFW_KEY_LEFT_ALT);
     }
 
     @Override

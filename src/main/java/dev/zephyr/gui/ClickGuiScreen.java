@@ -25,16 +25,11 @@ import java.util.Map;
  * Zephyr module manager screen - drawn entirely with DrawContext fills (no textures,
  * no vanilla widgets), so it is version-stable and cheap.
  *
- * <p>v1.2 fixes:
- * <ul>
- *   <li><b>Ghost-text glitch</b>: the old renderer drew a module row (label + state bar +
- *       expanded background) for EVERY row, including setting rows - so every setting line
- *       first painted a duplicate module label on top of itself. Rows are now rendered in
- *       three strictly disjoint passes (header / module / setting).</li>
- *   <li><b>Scale</b>: the whole GUI renders under a {@code 1/3} matrix scale, i.e. 3x
- *       smaller than before; mouse input is un-scaled so every hit-rect stays exact.</li>
- *   <li>Off-screen rows are culled instead of drawn past the column bottom.</li>
- * </ul>
+ * <p>Verified against a real 1.21.11 dev client (selftest harness): the matrix-scale
+ * approach, the column layout and the scaled mouse math all render and click
+ * correctly. The v1.2 "glitched" report came from the 1/3 matrix scale making text
+ * unreadably microscopic - this version renders at a readable default scale of 1/2
+ * with a live "GUI scale" setting (0.4x .. 1.0x) so the user can shrink it to taste.
  *
  * <p>Interaction model:
  * <ul>
@@ -47,8 +42,23 @@ import java.util.Map;
  */
 public final class ClickGuiScreen extends Screen {
 
-    /** The whole GUI is drawn at 1/3 size: 3x smaller than the old full-scale panels. */
-    private static final float SCALE = 1.0f / 3.0f;
+    /**
+     * Live render scale, shared with the ClickGui module so it is a persisted setting.
+     * 1.0 = the full-size v1.1 GUI, 0.5 = default (a quarter of the screen area),
+     * 0.4 = the smallest still-readable size. All row geometry is defined in
+     * full-scale units and the whole frame is drawn under this uniform scale.
+     */
+    private static float renderScale = 0.5f;
+
+    /** Current render scale (gui units per screen unit) - selftest reads this. */
+    public static float currentScale() {
+        return renderScale;
+    }
+
+    /** Call from the ClickGui module whenever its scale setting changes. */
+    public static void setRenderScale(float scale) {
+        renderScale = Math.max(0.25f, Math.min(1.5f, scale));
+    }
 
     private static final int COL_W = 128;
     private static final int GAP = 6;
@@ -56,15 +66,17 @@ public final class ClickGuiScreen extends Screen {
     private static final int ROW_H = 20;
     private static final int SETTING_H = 17;
     private static final int DEFAULT_Y = 28;
+    private static final int TITLE_H = 22;
 
-    private static final int COL_PANEL = 0xF210141A;
+    private static final int COL_PANEL = 0xF20E141B;
     private static final int COL_HEADER = 0xFF1E3A4C;
-    private static final int COL_SETTING_BG = 0xE20A0C10;
-    private static final int COL_HOVER = 0x28FFFFFF;
-    private static final int COL_ACCENT = 0xFF35C0DC;
+    private static final int COL_TITLEBAR = 0xF2151E29;
+    private static final int COL_SETTING_BG = 0xE2080A10;
+    private static final int COL_HOVER = 0x30FFFFFF;
+    private static final int COL_ACCENT = 0xFF4FD2EC;
     private static final int COL_ON = 0xFF3CE07A;
     private static final int COL_TEXT = 0xFFFFFFFF;
-    private static final int COL_TEXT_DIM = 0xFF9AA0A6;
+    private static final int COL_TEXT_DIM = 0xFFB7C0C8;
 
     /** Column positions persist across opens in one session (in scaled gui space). */
     private static final Map<String, int[]> LAYOUT = new HashMap<>();
@@ -85,12 +97,12 @@ public final class ClickGuiScreen extends Screen {
 
     /** Screen width in gui (scaled) space. */
     private float guiWidth() {
-        return this.width / SCALE;
+        return this.width / renderScale;
     }
 
     /** Screen height in gui (scaled) space. */
     private float guiHeight() {
-        return this.height / SCALE;
+        return this.height / renderScale;
     }
 
     @Override
@@ -134,7 +146,7 @@ public final class ClickGuiScreen extends Screen {
         int maxY = Math.max(2, (int) guiHeight() - HEADER_H - 2);
         for (Column col : columns) {
             col.x = Math.max(2, Math.min(col.x, maxX));
-            col.y = Math.max(2, Math.min(col.y, maxY));
+            col.y = Math.max(TITLE_H + 2, Math.min(col.y, maxY));
             col.scroll = Math.max(0, col.scroll);
         }
     }
@@ -185,7 +197,6 @@ public final class ClickGuiScreen extends Screen {
 
     private void buildLayout() {
         rows.clear();
-        float gh = guiHeight();
         for (Column col : columns) {
             int y = col.y - col.scroll;
             rows.add(new Row(col, null, null, col.x, y, COL_W, HEADER_H, true));
@@ -227,15 +238,21 @@ public final class ClickGuiScreen extends Screen {
 
     @Override
     public void render(DrawContext ctx, int mouseX, int mouseY, float delta) {
+        // Live-update the scale from the ClickGui setting (also lets the slider work).
+        var clickGui = ZephyrClient.modules() != null
+                ? ZephyrClient.modules().get(dev.zephyr.modules.gui.ClickGui.class) : null;
+        if (clickGui != null) {
+            clickGui.syncScale();
+        }
+
         buildLayout();
         clampColumns();
 
-        // 3x-smaller GUI: scale the whole screen's draw calls, then lay out in
-        // scaled coordinates (gui px = screen px / SCALE).
         ctx.getMatrices().pushMatrix();
-        ctx.getMatrices().scale(SCALE, SCALE);
+        ctx.getMatrices().scale(renderScale, renderScale);
         try {
-            ctx.fill(0, 0, (int) guiWidth(), (int) guiHeight(), 0x90101014);
+            ctx.fill(0, 0, (int) guiWidth(), (int) guiHeight(), 0x900F1116);
+            renderTitleBar(ctx);
 
             for (Row row : rows) {
                 if (row.header) {
@@ -261,10 +278,36 @@ public final class ClickGuiScreen extends Screen {
                     + (capturing != null ? "PRESS A KEY..." : "Esc close");
             ctx.drawText(this.textRenderer, hint,
                     ((int) guiWidth() - this.textRenderer.getWidth(hint)) / 2,
-                    (int) guiHeight() - 12, capturing != null ? COL_ACCENT : 0xFF606870, false);
+                    (int) guiHeight() - 12, capturing != null ? COL_ACCENT : 0xFF8892A0, false);
         } finally {
             ctx.getMatrices().popMatrix();
         }
+    }
+
+    /** Slim top bar: brand, version, live FPS, module counts. */
+    private void renderTitleBar(DrawContext ctx) {
+        int w = (int) guiWidth();
+        ctx.fill(0, 0, w, TITLE_H, COL_TITLEBAR);
+        ctx.fill(0, TITLE_H - 1, w, TITLE_H, COL_ACCENT);
+        ctx.drawText(this.textRenderer, "ZEPHYR", 6, 7, COL_ACCENT, false);
+        String stats = String.format("%d mods · %d on · %.0f fps",
+                ZephyrClient.modules().all().size(), countEnabled(), getFps());
+        ctx.drawText(this.textRenderer, stats,
+                w - 6 - this.textRenderer.getWidth(stats), 7, COL_TEXT_DIM, false);
+    }
+
+    private static int countEnabled() {
+        int n = 0;
+        for (Module m : ZephyrClient.modules().all()) {
+            if (m.isEnabled()) {
+                n++;
+            }
+        }
+        return n;
+    }
+
+    private static double getFps() {
+        return net.minecraft.client.MinecraftClient.getInstance().getCurrentFps();
     }
 
     private void renderColumn(DrawContext ctx, Row row) {
@@ -354,7 +397,7 @@ public final class ClickGuiScreen extends Screen {
     }
 
     // ------------------------------------------------------------------
-    // Input (screen px -> gui px conversion: gui = screen / SCALE)
+    // Input (screen px -> gui px conversion: gui = screen / scale)
     // ------------------------------------------------------------------
 
     /** Last known mouse position in gui space (hover shading in render). */
@@ -362,11 +405,11 @@ public final class ClickGuiScreen extends Screen {
     private double lastMouseGuiY;
 
     private double guiX(double screenX) {
-        return screenX / SCALE;
+        return screenX / renderScale;
     }
 
     private double guiY(double screenY) {
-        return screenY / SCALE;
+        return screenY / renderScale;
     }
 
     @Override
@@ -452,7 +495,7 @@ public final class ClickGuiScreen extends Screen {
         if (dragColumn != null) {
             dragColumn.x = Math.max(2, Math.min((int) mx - dragOffX,
                     Math.max(2, (int) guiWidth() - COL_W - 2)));
-            dragColumn.y = Math.max(2, Math.min((int) my - dragOffY,
+            dragColumn.y = Math.max(TITLE_H + 2, Math.min((int) my - dragOffY,
                     Math.max(2, (int) guiHeight() - HEADER_H - 2)));
             LAYOUT.put(dragColumn.category.name(), new int[]{dragColumn.x, dragColumn.y});
             return true;

@@ -46,11 +46,12 @@ public final class CrystalSolver {
 
     /**
      * Phase-B evaluation budget: how many geometrically-best candidates receive the
-     * expensive treatment (exposure raycasts + legality queries). 12 covers every
-     * realistically-contending cell around the target; the winner of a full-cube
-     * scan and the winner of this budget are the same cell in practice.
+     * expensive treatment (exposure raycasts + legality queries). 8 covers every
+     * realistically-contending cell around the target (the exposure memo makes the
+     * per-candidate cost mostly a cache hit anyway); the winner of a full-cube scan
+     * and the winner of this budget are the same cell in practice.
      */
-    private static final int EVAL_BUDGET = 12;
+    private static final int EVAL_BUDGET = 8;
 
     /** Reusable phase-A scratch list (never escapes the solver). */
     private static final java.util.ArrayList<Candidate> CANDIDATES = new java.util.ArrayList<>();
