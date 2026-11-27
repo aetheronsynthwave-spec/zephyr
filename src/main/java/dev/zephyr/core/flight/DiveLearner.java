@@ -20,23 +20,38 @@ public final class DiveLearner {
             {1.0, 1.5, 0.6, 0.2},  // rocket down once the rise speed is under this
             {2, 3, 1},             // elytra off this many ticks before impact
             {1.0, 1.4, 0.6, 1.8},  // how far ahead of a moving target to aim
+            {2.5, 1.5, 4.0, 6.0},  // start the vertical drop from this height over the head
     };
-    public static final int DIVE_AT = 0, COMMIT = 1, LEAD = 2;
+    public static final int DIVE_AT = 0, COMMIT = 1, LEAD = 2, DIRECT = 3;
+    /** Scores learned in training runs, shipped in the jar: the starting point before any own play. */
+    private static final String TRAINED = "/assets/zephyr/elytra-trained.properties";
 
     private static final Path FILE = Path.of("config", "zephyr", "elytra-memory.properties");
 
+    private static final int EXPLORE = Math.max(2, Integer.getInteger("zephyr.explore", 8));
+
+    /** Own play, the only thing saved. */
     private final Properties memory = new Properties();
+    /** Shipped training scores, read-only: used where own play has no score yet. */
+    private final Properties trained = new Properties();
     private final Random random = new Random();
     private final int[] picked = new int[CHOICES.length];
     private String context = "still";
     private int sinceSave;
 
     public DiveLearner() {
+        try (var in = DiveLearner.class.getResourceAsStream(TRAINED)) {
+            if (in != null) {
+                trained.load(in);
+            }
+        } catch (IOException | IllegalArgumentException e) {
+            trained.clear();
+        }
         if (Files.exists(FILE)) {
             try (Reader in = Files.newBufferedReader(FILE)) {
                 memory.load(in);
             } catch (IOException | IllegalArgumentException e) {
-                memory.clear(); // unreadable memory: start learning again
+                memory.clear(); // unreadable memory: start again from the shipped training
             }
         }
     }
@@ -51,8 +66,8 @@ public final class DiveLearner {
                     best = i;
                 }
             }
-            // Explore one time in eight; otherwise use what has worked.
-            picked[knob] = random.nextInt(8) == 0 ? random.nextInt(CHOICES[knob].length) : best;
+            // Explore one time in eight (training runs raise this); otherwise use what has worked.
+            picked[knob] = random.nextInt(EXPLORE) == 0 ? random.nextInt(CHOICES[knob].length) : best;
         }
     }
 
@@ -60,9 +75,15 @@ public final class DiveLearner {
         return CHOICES[knob][picked[knob]];
     }
 
-    /** @param reward 0 for a miss, up to 1 for a quick confirmed hit */
-    public void learn(double reward) {
+    /**
+     * @param reward     0 for a miss, up to 1 for a quick confirmed hit
+     * @param usedDirect the attempt was a rocket dive, so the {@link #DIRECT} choice mattered
+     */
+    public void learn(double reward, boolean usedDirect) {
         for (int knob = 0; knob < CHOICES.length; knob++) {
+            if (knob == DIRECT && !usedDirect) {
+                continue;
+            }
             double old = score(knob, picked[knob]);
             memory.setProperty(key(knob, picked[knob]), Double.toString(old + (reward - old) * 0.15));
         }
@@ -85,7 +106,7 @@ public final class DiveLearner {
 
     private double score(int knob, int i) {
         // Untried choices start promising so each gets a turn; the default starts slightly ahead.
-        String stored = memory.getProperty(key(knob, i));
+        String stored = memory.getProperty(key(knob, i), trained.getProperty(key(knob, i)));
         if (stored != null) {
             try {
                 return Double.parseDouble(stored);

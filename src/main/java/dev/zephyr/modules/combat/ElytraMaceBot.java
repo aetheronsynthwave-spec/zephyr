@@ -44,14 +44,20 @@ import java.util.function.Predicate;
  * </pre>
  *
  * <ul>
- *   <li><b>CLIMB</b> gains height while closing in on the target.</li>
- *   <li><b>DIVE</b> flies the heading that {@link FlightModel#bestDive} forecasts passes closest
- *       to the target, re-solved every tick.</li>
+ *   <li><b>Vertical drops only.</b> The bot attacks from directly above: it gets over the target
+ *       (within 25 degrees of vertical, see {@link #VERTICAL_MIN_PITCH}, allowing for its own drift and the
+ *       target's movement), looks down at the head and rockets straight down. It never dives in
+ *       at an angle and never swings at the target's side.</li>
+ *   <li><b>CLIMB</b> gains height and flies to the point over the target. Right after a hit the
+ *       Wind Burst bounce already leaves the bot over the target, so the next drop starts at the
+ *       top of the bounce with no climb at all (the look-down, rocket, smash chain).</li>
+ *   <li><b>DIVE</b> holds the nose on the head and rockets once the bounce has stopped rising.
+ *       If the target slides out of the cone, the drop is abandoned and the bot repositions.</li>
  *   <li><b>STRIKE</b> starts when {@link FlightModel#ticksToSmash} says a free fall from here
  *       reaches the target: the elytra comes off (vanilla gives no smash bonus while gliding)
- *       and the mace hit goes out as soon as the target is in reach.</li>
- *   <li><b>RECOVER</b> puts the elytra back and restarts the glide, using the Wind Burst launch
- *       as the start of the next climb. A fall that stops looking like a hit recovers at once.</li>
+ *       and the mace hit goes out once the head is in reach, below the eyes and under the crosshair.</li>
+ *   <li><b>RECOVER</b> puts the elytra back on during the bounce. A fall that stops looking like a
+ *       hit recovers at once.</li>
  * </ul>
  */
 public final class ElytraMaceBot extends Module {
@@ -59,6 +65,10 @@ public final class ElytraMaceBot extends Module {
     private static final int PRIORITY = 5;
     /** Slack around the hitbox for the crosshair test, in blocks. Not tuned in game. */
     private static final double AIM_MARGIN = 0.1;
+    /** Share of the remaining turn RotationManager applies per tick (its ease-out), below its speed cap. */
+    private static final double EASE = 0.55;
+    /** Per-tick strike trace for the in-game scenario test only. */
+    private static final boolean DEBUG = Boolean.getBoolean("zephyr.ebtdebug");
 
     private final NumberSetting range = num("range", "Target range", 16, 128, 2, 64);
     private final NumberSetting height = num("diveHeight", "Dive height above target", 8, 60, 1, 12);
@@ -70,6 +80,8 @@ public final class ElytraMaceBot extends Module {
     private final BooleanSetting respectShield = bool("respectShield", "Hold strike into raised shield", true);
     /** Longest free fall committed to: shorter keeps the rocket pushing longer. */
     private final NumberSetting commit = num("dropAhead", "Elytra off this many ticks before impact", 1, 8, 1, 2);
+    /** Start the vertical drop from this much height over the target's head (0 = use the dive height). */
+    private final NumberSetting rocketDiveFrom = num("rocketDiveFrom", "Drop from this height over the head (0 = dive height)", 0, 12, 0.5, 2.5);
     private final BooleanSetting aiMode = bool("aiMode", "AI mode (learns timing from misses)", false);
     private final BooleanSetting axeBreak = bool("axeBreak", "Break shields with a hotbar axe first", true);
     private final BooleanSetting targetMobs = bool("targetMobs", "Practise on hostile mobs too", true);
@@ -87,6 +99,12 @@ public final class ElytraMaceBot extends Module {
     private int misses;
     private int clutches;
     private int shieldBreaks;
+    private int rocketDives;
+    /** No rocket dive is tried again this soon after one had to be abandoned. */
+    private long rocketDiveBlockedUntil;
+    /** The current attempt started as a rocket dive (the learner credits that knob only then). */
+    private boolean attemptRocketDive;
+    private boolean enteringRocketDive;
     private DiveLearner learner;
     /** An attempt is being judged: when it started, and whether its hit was sent. */
     private boolean attempting;
@@ -128,6 +146,7 @@ public final class ElytraMaceBot extends Module {
         misses = 0;
         clutches = 0;
         shieldBreaks = 0;
+        rocketDives = 0;
     }
 
     @Override
@@ -205,6 +224,11 @@ public final class ElytraMaceBot extends Module {
 
         LivingEntity target = lock.update(client, range.get(), false);
         trackTarget(target);
+        if (aiMode.get() && learner == null) {
+            // Chosen before the attempt starts: the climb-or-rocket-dive choice is part of it.
+            learner = new DiveLearner();
+            learner.choose(targetKind());
+        }
         judgeAttempt(self);
 
         // The fall save goes first: an inventory click in the same tick would block the item use.
@@ -353,24 +377,32 @@ public final class ElytraMaceBot extends Module {
             return;
         }
         double above = self.getY() - target.getY();
-        double dx = target.getX() - self.getX(), dz = target.getZ() - self.getZ();
-        double horiz = Math.hypot(dx, dz);
-        double bearing = Math.toDegrees(Math.atan2(dz, dx)) - 90.0;
+        double horiz;
+        double bearing;
         double want = height.get();
 
-        // Enough height and a steep enough line: dive.
-        if (above >= want * 0.85 && horiz <= above * 0.9 && !target.isGliding()) {
+        // Only ever dive from above: once the bot is over the target (inside the vertical cone)
+        // with enough height, it looks down and rockets. That is the whole attack.
+        if (verticalReady(self, target, minDropHeight())) {
             failures = 0;
+            rocketDives++;
+            enteringRocketDive = true;
             enter(State.DIVE);
             dive(client, self, target);
             return;
         }
         double pitch;
+        // Head for the point over the target, allowing for the drift our own momentum adds.
+        Vec3d drift = horizontalDrift(self);
+        double ox = target.getX() + targetVel.x * 4.0 - (self.getX() + drift.x);
+        double oz = target.getZ() + targetVel.z * 4.0 - (self.getZ() + drift.z);
+        bearing = Math.toDegrees(Math.atan2(oz, ox)) - 90.0;
+        horiz = Math.hypot(ox, oz);
         if (above < want) {
             // Climb towards a point over the target; nearly vertical when already underneath it.
             pitch = -MathHelper.clamp(Math.toDegrees(Math.atan2(want - above, Math.max(horiz, 1.0))), 35.0, 82.0);
         } else {
-            pitch = -2.0; // high enough: run in level
+            pitch = -2.0; // high enough: run in level until over the target
         }
         if (blockedAhead(self)) {
             pitch = -80.0;
@@ -399,14 +431,9 @@ public final class ElytraMaceBot extends Module {
         slamPending = true;
         if (!attempting) {
             attempting = true;
+            attemptRocketDive = enteringRocketDive;
             hitSentTick = -1;
             attemptTick = TickPhase.tickId();
-            if (aiMode.get()) {
-                if (learner == null) {
-                    learner = new DiveLearner();
-                }
-                learner.choose(targetKind());
-            }
         }
         Vec3d pos = self.getEntityPos();
         Box box = aimBox(self, target);
@@ -417,33 +444,37 @@ public final class ElytraMaceBot extends Module {
         boolean overhead = self.fallDistance >= minFall.get() && target.hurtTime <= 2
                 && pos.y > real.maxY - 0.2 && pos.y < real.maxY + 1.5
                 && real.squaredMagnitude(self.getEyePos()) <= reach.get() * reach.get();
-        if (swapAllowed(self, target) && (overhead || impact > 0 && target.hurtTime <= impact)) {
+        // The elytra only comes off over the target: a pass at head height from the side never strikes.
+        if (swapAllowed(self, target) && verticalAim(self, target) != null
+                && (overhead || impact > 0 && target.hurtTime <= impact)) {
+            enteringRocketDive = false;
             enter(State.STRIKE);
             strike(client, self, target); // send the chest swap this tick
             return;
         }
-        FlightModel.Line line = FlightModel.bestDive(pos, self.getVelocity(), bearing, box, leadVel(), true);
-        // A line that will not connect is abandoned while there is still height to level out:
-        // finding that out at the bottom means flying (or falling) into the ground.
-        double pullOut = Math.max(0.0, -self.getVelocity().y) * 3.0 + 1.0;
-        boolean low = pos.y - box.maxY < pullOut;
-        if ((low && line.miss() > 2.0) || pos.y < box.maxY + 0.5 || blockedBefore(self, box)) {
-            misses++;
+        enteringRocketDive = false;
+        double[] look = verticalAim(self, target);
+        double headroom = pos.y - box.maxY;
+        // Not over the target any more (it moved, or we drifted): no angled dive, reposition.
+        if (look == null || pos.y < box.maxY + 0.5 || blockedBefore(self, box)) {
+            if (self.fallDistance > 2.0 || boosting(client, self)) {
+                misses++;
+            }
+            rocketDiveBlockedUntil = TickPhase.tickId() + 6;
             enter(State.CLIMB);
-            steer(bearing, -60.0);
             return;
         }
-        // While the target cannot be hurt again yet, keep the height instead of gliding down.
-        if (target.hurtTime > 4) {
-            steer(bearing, -25.0);
+        // While the target cannot be hurt again yet, keep the height: hold level over it.
+        if (target.hurtTime > 4 && headroom < 3.0 + target.hurtTime * 1.2) {
+            steer(bearing, -5.0);
             return;
         }
-        steer(line.yaw(), line.pitch());
-        if (self.getVelocity().y > (learning() ? learner.value(DiveLearner.DIVE_AT) : diveAt.get())) {
-            return; // still rising fast off the bounce
+        steer(look[0], look[1]);
+        if (self.getVelocity().y > diveAtValue()) {
+            return; // still rising off the bounce: the rocket goes at the top
         }
-        // Rocket down: boost once the nose is on the line (an earlier rocket may still be burning).
-        if (Math.abs(self.getPitch() - line.pitch()) < 35.0 && line.pitch() > 10.0 && self.distanceTo(target) > 3.5f) {
+        // Rocket straight down once the nose is on the vertical line.
+        if (Math.abs(self.getPitch() - look[1]) < 12.0 && self.distanceTo(target) > 3.0f) {
             tryRocket(client, self);
         }
     }
@@ -466,6 +497,76 @@ public final class ElytraMaceBot extends Module {
         return lock.inRange() && maceSlot(self) != -1 && GearSlots.counterpartHotbarSlot(self) != -1;
     }
 
+    /** Sideways travel left per block/tick of horizontal speed once the rocket points down (in-game tuned). */
+    private static final double DRIFT = Double.parseDouble(System.getProperty("zephyr.drift", "1.0"));
+
+    /** Flattest drop allowed (degrees below the horizon): anything flatter repositions instead. */
+    private static final double VERTICAL_MIN_PITCH = 65.0;
+
+    /** Height over the head from which the look-down rocket drop is started. */
+    private double minDropHeight() {
+        double from = learning() ? learner.value(DiveLearner.DIRECT) : rocketDiveFrom.get();
+        return from > 0.0 ? from : height.get();
+    }
+
+    /**
+     * Horizontal distance our current momentum still carries us once a rocket points straight
+     * down: the boost halves the old velocity every tick (v' = 0.5 v + 0.85 look), so the
+     * remaining sideways travel is about twice the current horizontal velocity.
+     */
+    private static Vec3d horizontalDrift(ClientPlayerEntity self) {
+        Vec3d v = self.getVelocity();
+        return new Vec3d(v.x * DRIFT, 0.0, v.z * DRIFT);
+    }
+
+    /**
+     * The view for a vertical drop: at the top of the target's head where it will be when we
+     * arrive, corrected for our own sideways drift. Null when that is flatter than
+     * {@link #VERTICAL_MIN_PITCH} - the bot is not over the target and must not dive from the side.
+     *
+     * @return {yaw, pitch} or null
+     */
+    private double[] verticalAim(ClientPlayerEntity self, LivingEntity target) {
+        Box box = aimBox(self, target);
+        Vec3d eye = self.getEyePos();
+        double headroom = eye.y - box.maxY;
+        if (headroom <= 0.5) {
+            return null;
+        }
+        double ticks = Math.min(8.0, headroom / 1.6);
+        Vec3d drift = horizontalDrift(self);
+        Vec3d aim = new Vec3d(box.getCenter().x + leadVel().x * ticks - drift.x, box.maxY,
+                box.getCenter().z + leadVel().z * ticks - drift.z);
+        double pitch = MathUtil.pitchTo(eye, aim);
+        if (pitch < VERTICAL_MIN_PITCH) {
+            return null;
+        }
+        // Straight down has no meaningful yaw: keep ours instead of spinning the camera.
+        double yaw = pitch > 86.0 ? self.getYaw() : MathUtil.yawTo(eye, aim);
+        return new double[]{yaw, pitch};
+    }
+
+    /** Over the target, high enough, rockets in the hotbar and nothing in the way: drop now. */
+    private boolean verticalReady(ClientPlayerEntity self, LivingEntity target, double minHeadroom) {
+        if (target == null || target.isGliding() || rocketSlot(self) == -1
+                || TickPhase.tickId() < rocketDiveBlockedUntil) {
+            return false;
+        }
+        // The drop starts at the top of the bounce (see dive()), not while still shooting up.
+        if (self.getVelocity().y > diveAtValue() + 0.6) {
+            return false;
+        }
+        Box box = aimBox(self, target);
+        if (self.getY() - box.maxY < minHeadroom || blockedBefore(self, box)) {
+            return false;
+        }
+        return verticalAim(self, target) != null;
+    }
+
+    private double diveAtValue() {
+        return learning() ? learner.value(DiveLearner.DIVE_AT) : diveAt.get();
+    }
+
     private void strike(MinecraftClient client, ClientPlayerEntity self, LivingEntity target) {
         if (target == null || !target.isAlive()) {
             enter(State.RECOVER);
@@ -474,11 +575,15 @@ public final class ElytraMaceBot extends Module {
         slamPending = true;
         Vec3d eye = self.getEyePos();
         Box box = target.getBoundingBox();
-        Vec3d aim = MathUtil.bestAimPoint(self, target, self.getYaw(), self.getPitch());
         // The turn lands next tick, so aim from where the eyes will be at where the target will be.
         Vec3d nextEye = eye.add(self.getVelocity());
-        Vec3d nextAim = aim.add(targetStep);
-        steer(MathUtil.yawTo(nextEye, nextAim), MathUtil.pitchTo(nextEye, nextAim));
+        double[] turn = smallestTurnOnto(nextEye, box.offset(targetStep), self.getYaw(), self.getPitch());
+        if (turn != null) {
+            steer(turn[0], turn[1]);
+        } else {
+            Vec3d nextAim = MathUtil.bestAimPoint(self, target, self.getYaw(), self.getPitch()).add(targetStep);
+            steer(MathUtil.yawTo(nextEye, nextAim), MathUtil.pitchTo(nextEye, nextAim));
+        }
 
         if (GearSlots.wearingElytra(self)) {
             if (stateTicks > 8) {
@@ -493,7 +598,18 @@ public final class ElytraMaceBot extends Module {
             return;
         }
         boolean inReach = box.squaredMagnitude(eye) <= reach.get() * reach.get();
-        boolean hittable = inReach && hittable(self, target);
+        // Only from above: eyes over the head and (nearly) inside its footprint. No side hits.
+        double sideGap = Math.max(Math.max(box.minX - eye.x, eye.x - box.maxX), Math.max(box.minZ - eye.z, eye.z - box.maxZ));
+        // Same 25-degree cone as the drop itself (tan 25 = 0.466), with a little slack right at the head.
+        boolean fromAbove = eye.y >= box.maxY + 0.3 && sideGap <= Math.max(0.15, (eye.y - box.maxY) * 0.466);
+        boolean hittable = inReach && fromAbove && hittable(self, target);
+        if (DEBUG) {
+            System.out.printf("[EBT-D] strike st=%d eye=(%.2f,%.2f,%.2f) v=(%.2f,%.2f,%.2f) tgt=(%.2f,%.2f,%.2f) d=%.2f reach=%b hit=%b look=%b glide=%b worn=%b fall=%.2f hurt=%d yaw=%.0f pitch=%.0f%n",
+                    stateTicks, eye.x, eye.y, eye.z, self.getVelocity().x, self.getVelocity().y, self.getVelocity().z,
+                    target.getX(), target.getY(), target.getZ(), Math.sqrt(box.squaredMagnitude(eye)), inReach, hittable,
+                    HitGeometry.lookCrosses(eye, self.getYaw(), self.getPitch(), box, reach.get(), AIM_MARGIN),
+                    self.isGliding(), GearSlots.wearingElytra(self), self.fallDistance, target.hurtTime, self.getYaw(), self.getPitch());
+        }
         if (!inReach && Math.hypot(box.getCenter().x - eye.x, box.getCenter().z - eye.z) > 0.8) {
             InputOverride.requestForward(targetVel.horizontalLength() > 0.2); // air control: drift towards a target that moved
         }
@@ -544,6 +660,44 @@ public final class ElytraMaceBot extends Module {
     }
 
     /**
+     * The view closest to the current one (by true angle, not yaw+pitch) whose crosshair ray
+     * from {@code eye} passes through the middle part of {@code box} within reach. Falling onto a
+     * target from straight above, this changes pitch and leaves yaw alone - the bearing to a
+     * target underneath swings wildly, and chasing it is what made the crosshair miss.
+     *
+     * @return {yaw, pitch}, or null when no view within reach crosses the box
+     */
+    private double[] smallestTurnOnto(Vec3d eye, Box box, double yaw, double pitch) {
+        Box core = box.contract(Math.min(0.15, box.getLengthX() * 0.25), Math.min(0.25, box.getLengthY() * 0.2),
+                Math.min(0.15, box.getLengthZ() * 0.25));
+        Vec3d look = Vec3d.fromPolar((float) pitch, (float) yaw);
+        double max = reach.get() + 0.8; // the next eye position can be a little short of reach
+        double[] best = null;
+        double bestAngle = Double.MAX_VALUE;
+        for (int dyaw = -180; dyaw < 180; dyaw += 3) {
+            for (int p = -90; p <= 90; p += 2) {
+                double dp = p - pitch;
+                // RotationManager covers EASE of the requested turn per tick (below its speed cap),
+                // so test where the view actually lands, not where it was asked to go.
+                if (Math.hypot(dyaw, dp) * EASE > 55.0) {
+                    continue;
+                }
+                double ly = yaw + dyaw * EASE;
+                double lp = MathHelper.clamp(pitch + dp * EASE, -90.0, 90.0);
+                if (!HitGeometry.lookCrosses(eye, ly, lp, core, max, 0.0)) {
+                    continue;
+                }
+                double angle = Math.acos(MathHelper.clamp(look.dotProduct(Vec3d.fromPolar((float) lp, (float) ly)), -1.0, 1.0));
+                if (angle < bestAngle) {
+                    bestAngle = angle;
+                    best = new double[]{yaw + dyaw, p};
+                }
+            }
+        }
+        return best;
+    }
+
+    /**
      * Everything a hit sent this tick needs: the locked target inside the target range, in
      * reach both now and one movement step ahead, under the crosshair, and a visible point of
      * its hitbox within reach.
@@ -590,9 +744,11 @@ public final class ElytraMaceBot extends Module {
                 SwapManager.select(client, rockets); // in hand before the dive, so no tick is lost
             }
             // The bounce is all the height needed; only climb when it left us too low or too far out.
-            boolean canDive = target != null && !target.isGliding() && self.getY() - target.getY() > target.getHeight() + 1.5
-                    && Math.hypot(target.getX() - self.getX(), target.getZ() - self.getZ())
-                    < 3.0 + (self.getY() - target.getY()) * 1.2;
+            boolean rocketDive = verticalReady(self, target, minDropHeight());
+            if (rocketDive) {
+                enteringRocketDive = true;
+            }
+            boolean canDive = rocketDive;
             if (canDive) {
                 enter(State.DIVE);
                 dive(client, self, target);
@@ -640,7 +796,8 @@ public final class ElytraMaceBot extends Module {
         attempting = false;
         if (learning()) {
             // Quick hits score highest, so the learner prefers speed as well as accuracy.
-            learner.learn(hit ? MathHelper.clamp(20.0 / (now - attemptTick), 0.2, 1.0) : 0.0);
+            learner.learn(hit ? MathHelper.clamp(20.0 / (now - attemptTick), 0.2, 1.0) : 0.0, attemptRocketDive);
+            learner.choose(targetKind()); // settings for the next attempt
         }
     }
 
@@ -716,10 +873,13 @@ public final class ElytraMaceBot extends Module {
         // No valid hit this tick: save as soon as the fall stops lining up, and in any case once the
         // ground is about to arrive (a target that moved can look reachable for a few ticks).
         Vec3d feet = self.getEntityPos();
-        double nextTicks = -self.getVelocity().y * 2.0;
-        // In reach but refused (aim, sight or movement): only the ground distance decides.
-        return !inReach && !stillReaching(self, box)
-                || !RaycastValidator.canSee(feet, feet.add(0, -nextTicks, 0), self);
+        // Ground two ticks away: save now. Three ticks away (a rocket drop falls 1.7 blocks a tick):
+        // save only when the forecast already says this fall will not reach the target.
+        double speed = -self.getVelocity().y;
+        boolean groundIn2 = !RaycastValidator.canSee(feet, feet.add(0, -speed * 2.0, 0), self);
+        boolean groundIn3 = !RaycastValidator.canSee(feet, feet.add(0, -speed * 3.0, 0), self);
+        boolean reaching = stillReaching(self, box);
+        return !inReach && !reaching || groundIn2 || groundIn3 && !reaching;
     }
 
     // ------------------------------------------------------------------
@@ -840,6 +1000,6 @@ public final class ElytraMaceBot extends Module {
 
     @Override
     public String hudLabel() {
-        return name + " · " + state.name().toLowerCase() + " · " + strikes + " hits " + misses + " missed " + clutches + " saves " + shieldBreaks + " shields" + (aiMode.get() ? " AI" : "");
+        return name + " · " + state.name().toLowerCase() + " · " + strikes + " hits " + misses + " missed " + clutches + " saves " + shieldBreaks + " shields " + rocketDives + " rocket dives" + (aiMode.get() ? " AI" : "");
     }
 }

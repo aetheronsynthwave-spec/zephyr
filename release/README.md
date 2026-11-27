@@ -4,6 +4,7 @@ Minecraft 1.21.11, Fabric. A dash means that file was not available.
 
 | Version | Jar | Source |
 |---|---|---|
+| 1.17.0 | [zephyr-client-1.21.11-v1.17.0.jar](zephyr-client-1.21.11-v1.17.0.jar) | [v1.17.0](../../../tree/v1.17.0) |
 | 1.16.0 | [zephyr-client-1.21.11-v1.16.0.jar](zephyr-client-1.21.11-v1.16.0.jar) | [v1.16.0](../../../tree/v1.16.0) |
 | 1.15.0 | [zephyr-client-1.21.11-v1.15.0.jar](zephyr-client-1.21.11-v1.15.0.jar) | [v1.15.0](../../../tree/v1.15.0) |
 | 1.14.0 | [zephyr-client-1.21.11-v1.14.0.jar](zephyr-client-1.21.11-v1.14.0.jar) | - |

@@ -1,3 +1,16 @@
+v1.17.0 - ElytraMaceBot: vertical drops only
+  - Attacks only from directly above: gets over the target, looks down, rockets straight
+    down, takes the elytra off and smashes. No angled dives and no hits from the side
+    (everything must be within 25 degrees of vertical).
+  - Chains off the Wind Burst bounce without climbing: the next drop starts at the top of
+    the bounce. New setting rocketDiveFrom (default 2.5 blocks over the head).
+  - Strike aim picks the smallest turn that puts the crosshair on the head.
+  - In-game test (30 s, still target): about 31-36 hits, ~0.8 s per hit. The older angled
+    dives managed 12-18. Moving targets: 10-24 hits; strafing targets remain the weakest.
+  - AI mode now starts from trained scores shipped in the jar. In testing it did NOT beat
+    the default settings, so leave aiMode off unless you want it to adapt to your own play.
+  - Wind charge fall save fires earlier when a drop can no longer hit.
+
 v1.16.0
   - ElytraMaceBot and Fly are no longer limited to singleplayer / hosted LAN worlds.
     This replaces the restriction described in older entries. Servers may kick or ban for it.

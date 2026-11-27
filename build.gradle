@@ -63,6 +63,19 @@ loom {
             if (System.getProperty("zephyr.elytratest")) {
                 property "zephyr.elytratest", "1"
                 property "zephyr.scen", System.getProperty("zephyr.scen") ?: "still,walk,strafe,dodge"
+                property "zephyr.reps", System.getProperty("zephyr.reps") ?: "1"
+                if (System.getProperty("zephyr.ebtdebug")) {
+                    property "zephyr.ebtdebug", "true"
+                }
+                if (System.getProperty("zephyr.drift")) {
+                    property "zephyr.drift", System.getProperty("zephyr.drift")
+                }
+                if (System.getProperty("zephyr.explore")) {
+                    property "zephyr.explore", System.getProperty("zephyr.explore")
+                }
+                if (System.getProperty("zephyr.secs")) {
+                    property "zephyr.secs", System.getProperty("zephyr.secs")
+                }
                 programArgs "--quickPlaySingleplayer", "ZephyrTest"
             }
         }

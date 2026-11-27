@@ -9,9 +9,24 @@ import net.minecraft.entity.mob.HuskEntity;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.world.ServerWorld;
 import net.minecraft.entity.Entity;
+import net.minecraft.client.gui.screen.TitleScreen;
+import net.minecraft.registry.RegistryKeys;
+import net.minecraft.resource.DataConfiguration;
+import net.minecraft.world.Difficulty;
+import net.minecraft.world.GameMode;
+import net.minecraft.world.gen.GeneratorOptions;
+import net.minecraft.world.gen.WorldPresets;
+import net.minecraft.world.level.LevelInfo;
+import net.minecraft.world.rule.GameRules;
 
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * In-game scenario test for ElytraMaceBot (dev only, -Dzephyr.elytratest=1).
@@ -22,12 +37,29 @@ public final class ElytraBotTest {
 
     private static final String[] SCENARIOS = System.getProperty("zephyr.scen", "still,walk,strafe,dodge").split(",");
     private static final int SCENARIO_TICKS = 20 * Integer.getInteger("zephyr.secs", 40) + 60;
+    private static final int REPS = Math.max(1, Integer.getInteger("zephyr.reps", 1));
     private static final int FLOOR = 150;
+    private static final String WORLD = "ZephyrTest";
 
     private static boolean enabled;
     private static int t = -1;
     private static int scenario;
+    private static int rep;
     private static int st;
+    private static int idleTicks;
+    private static boolean bootstrapped;
+
+    /** Per-scenario-name totals across all repetitions, for the aggregate report lines. */
+    private static final class Agg {
+        int runs;
+        int hits;
+        int deaths;
+        double selfDmg;
+        double secSum;
+        int secRuns;
+    }
+
+    private static final Map<String, Agg> AGGS = new LinkedHashMap<>();
     private static String lastState = "";
     private static final List<String> report = new ArrayList<>();
 
@@ -58,6 +90,61 @@ public final class ElytraBotTest {
         }
     }
 
+    /**
+     * Creates the ZephyrTest superflat survival world (cheats on) when quickPlay could not
+     * find it, so a fresh machine can run unattended. Waits ~100 ticks first so a world that
+     * quickPlay is still loading is never raced.
+     */
+    private static void bootstrap(MinecraftClient client) {
+        if (bootstrapped || client.world != null || client.getServer() != null) {
+            return;
+        }
+        if (++idleTicks < 100) {
+            return;
+        }
+        bootstrapped = true;
+        try {
+            if (client.getLevelStorage().levelExists(WORLD)) {
+                // quickPlay did not get us in (screen: ...): open the existing world directly.
+                System.out.println("[EBT] world " + WORLD + " exists, opening it (screen was "
+                        + (client.currentScreen == null ? "none" : client.currentScreen.getClass().getName()) + ")");
+                client.createIntegratedServerLoader().start(WORLD, () -> client.setScreen(new TitleScreen()));
+                return;
+            }
+            LevelInfo info = new LevelInfo(WORLD, GameMode.SURVIVAL, false, Difficulty.EASY, true,
+                    new GameRules(DataConfiguration.SAFE_MODE.enabledFeatures()), DataConfiguration.SAFE_MODE);
+            GeneratorOptions opts = new GeneratorOptions(GeneratorOptions.getRandomSeed(), true, false);
+            client.createIntegratedServerLoader().createAndStart(WORLD, info, opts,
+                    lookup -> lookup.getOrThrow(RegistryKeys.WORLD_PRESET).getOrThrow(WorldPresets.FLAT).value()
+                            .createDimensionsRegistryHolder(),
+                    new TitleScreen());
+            System.out.println("[EBT] created world " + WORLD + " (superflat, cheats on)");
+        } catch (Exception e) {
+            System.out.println("[EBT] world creation failed: " + e);
+        }
+    }
+
+    private static void aggregate(String name, double secPerHit) {
+        Agg a = AGGS.computeIfAbsent(name, k -> new Agg());
+        a.runs++;
+        a.hits += serverHits;
+        a.deaths += deaths;
+        a.selfDmg += selfDamage;
+        if (secPerHit >= 0) {
+            a.secSum += secPerHit;
+            a.secRuns++;
+        }
+    }
+
+    private static void writeReport() {
+        try {
+            Files.write(Path.of("ebt-report.txt"), report, StandardCharsets.UTF_8);
+            System.out.println("[EBT] wrote ebt-report.txt");
+        } catch (IOException e) {
+            System.out.println("[EBT] could not write ebt-report.txt: " + e);
+        }
+    }
+
     private static void cmd(MinecraftClient client, String command) {
         MinecraftServer server = client.getServer();
         if (server == null) {
@@ -73,6 +160,10 @@ public final class ElytraBotTest {
 
     public static void tick(MinecraftClient client) {
         if (!enabled) {
+            return;
+        }
+        if (client.world == null && client.getServer() == null) {
+            bootstrap(client);
             return;
         }
         ClientPlayerEntity p = client.player;
@@ -133,9 +224,18 @@ public final class ElytraBotTest {
 
     private static void scenarioTick(MinecraftClient client, ClientPlayerEntity p) {
         if (scenario >= SCENARIOS.length) {
+            if (rep + 1 < REPS) {
+                rep++;
+                scenario = 0;
+                return;
+            }
             if (st++ == 0) {
                 System.out.println("[EBT] ===== REPORT =====");
+                AGGS.forEach((n, a) -> report.add(String.format(
+                        "AGG %s: runs=%d totalHits=%d meanSecPerHit=%.2f totalSelfDmg=%.1f deaths=%d",
+                        n, a.runs, a.hits, a.secRuns == 0 ? -1.0 : a.secSum / a.secRuns, a.selfDmg, a.deaths)));
                 report.forEach(s -> System.out.println("[EBT] " + s));
+                writeReport();
                 System.out.println("[EBT] done - exiting");
                 client.scheduleStop();
             }
@@ -165,6 +265,19 @@ public final class ElytraBotTest {
             p.requestRespawn();
         }
         wasDead = p.isDead();
+        // One respawn request can get lost (the death screen was not up yet): keep asking, or every
+        // later scenario runs with a dead player and the bot sits idle.
+        if (p.isDead() && st % 10 == 0) {
+            p.requestRespawn();
+        }
+        // Start-position variants. Teleported just before the bot is enabled (not at setup), so
+        // the player is still in the air when the bot starts and does not land first.
+        if (st == 59 && name.startsWith("chain")) { // 6 above and 1 beside the target
+            cmd(client, "tp @s 0.5 " + (FLOOR + 7) + " 23.5 0 0");
+        }
+        if (st == 59 && name.startsWith("offset")) { // 8 blocks horizontally away at FLOOR+9
+            cmd(client, "tp @s 0.5 " + (FLOOR + 9) + " 16.5 0 0");
+        }
         if (st == 60) {
             ModuleManager.FAULTS.remove("ElytraMaceBot");
             p.getInventory().setSelectedSlot(0);
@@ -176,7 +289,10 @@ public final class ElytraBotTest {
                     ((dev.zephyr.core.settings.NumberSetting) bot.setting("dropAhead")).set(Double.parseDouble(v[2]));
                 }
             }
-            ((dev.zephyr.core.settings.BooleanSetting) bot.setting("aiMode")).set(name.contains("ai"));
+            // "chain" itself contains "ai", so it is stripped before the aiMode check.
+            ((dev.zephyr.core.settings.BooleanSetting) bot.setting("aiMode")).set(name.replace("chain", "").contains("ai"));
+            // "climb" in the name: the old behaviour (always climb before diving) as a baseline.
+            ((dev.zephyr.core.settings.NumberSetting) bot.setting("rocketDiveFrom")).set(name.contains("climb") ? 0.0 : 2.5);
             bot.setEnabled(true);
             System.out.println("[EBT] >> " + name + " enabled=" + bot.isEnabled());
         }
@@ -227,7 +343,8 @@ public final class ElytraBotTest {
                             side = !side;
                             h.requestTeleport(side ? 6.5 : 0.5, FLOOR + 1, 24.5);
                         }
-                    } else if (now > 60 && !name.startsWith("still") && !name.startsWith("shield")) {
+                    } else if (now > 60 && !name.startsWith("still") && !name.startsWith("shield")
+                            && !name.startsWith("chain") && !name.startsWith("offset")) {
                         double k = (now - 60);
                         double x, z;
                         if (name.startsWith("walk") || name.startsWith("fast")) { // circle r=10 at walking speed (0.21 b/t)
@@ -283,11 +400,13 @@ public final class ElytraBotTest {
                     rockets += p.getInventory().getStack(i).getCount();
                 }
             }
-            report.add(String.format("%s: seconds per hit=%.2f", name,
-                    serverHits < 2 ? -1.0 : (serverLast - serverFirst) / 20.0 / (serverHits - 1)));
+            String tag = "rep " + (rep + 1) + "/" + REPS + " " + name;
+            double secPerHit = serverHits < 2 ? -1.0 : (serverLast - serverFirst) / 20.0 / (serverHits - 1);
+            aggregate(name, secPerHit);
+            report.add(String.format("%s: seconds per hit=%.2f", tag, secPerHit));
             System.out.println("[EBT] " + report.get(report.size() - 1));
             report.add(String.format("%s: hits=%d totalDmg=%.0f best=%.1f firstHit=%.1fs selfDmg=%.1f deaths=%d rocketsUsed=%d disabledAt=%.1fs",
-                    name + " [" + bot.hudLabel() + "]", serverHits, serverDamage, serverBest, serverFirst / 20.0, selfDamage, deaths, 128 - rockets,
+                    tag + " [" + bot.hudLabel() + "]", serverHits, serverDamage, serverBest, serverFirst / 20.0, selfDamage, deaths, 128 - rockets,
                     disabledAt / 20.0));
             System.out.println("[EBT] " + report.get(report.size() - 1));
             bot.setEnabled(false);
