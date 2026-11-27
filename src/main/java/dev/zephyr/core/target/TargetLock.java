@@ -17,6 +17,9 @@ import net.minecraft.entity.player.PlayerEntity;
  */
 public final class TargetLock {
 
+    /** Non-player entities this owner may also pick (null = players only). */
+    public java.util.function.Predicate<LivingEntity> extra;
+
     private LivingEntity locked;
 
     public LivingEntity get() {
@@ -52,6 +55,16 @@ public final class TargetLock {
                 if (d < best) {
                     best = d;
                     locked = p;
+                }
+            }
+        }
+        if (locked == null && extra != null) {
+            double near = Double.MAX_VALUE;
+            for (net.minecraft.entity.Entity e : client.world.getEntities()) {
+                if (e instanceof LivingEntity l && extra.test(l) && valid(self, l, range)
+                        && self.squaredDistanceTo(l) < near) {
+                    near = self.squaredDistanceTo(l);
+                    locked = l;
                 }
             }
         }

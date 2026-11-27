@@ -66,11 +66,6 @@ public final class Profiles {
         smart("AutoMace", "aim", true, "showSwap", true, "backTicks", 2.0, "minFall", 1.5,
                 "rotMin", 20.0, "rotMax", 45.0, "weaponOnly", false);
 
-        legit("ElytraMaceBot", "rotMin", 15.0, "rotMax", 35.0, "jitter", 0.6, "swapLead", 3.0, "backTicks", 3.0,
-                "strikeWindow", 10.0, "hurtTime", 3.0);
-        smart("ElytraMaceBot", "rotMin", 30.0, "rotMax", 70.0, "jitter", 0.3, "swapLead", 2.0, "backTicks", 2.0,
-                "strikeWindow", 8.0, "hurtTime", 5.0);
-
         legit("SmartMaceBot", "rotMin", 10.0, "rotMax", 28.0, "jitter", 0.6, "aimTol", 6.0, "backTicks", 3.0,
                 "meleeCooldown", 0.95, "windGap", 45.0);
         smart("SmartMaceBot", "rotMin", 25.0, "rotMax", 60.0, "jitter", 0.3, "aimTol", 12.0, "backTicks", 2.0,

@@ -88,6 +88,7 @@ public final class ZephyrClient implements ClientModInitializer {
         ClientTickEvents.END_CLIENT_TICK.register(ZephyrClient::onClientTickEnd);
         dev.zephyr.ZephyrSelfTest.init();
         dev.zephyr.ZephyrGameTest.init();
+        dev.zephyr.ElytraBotTest.init();
 
         WorldRenderEvents.AFTER_ENTITIES.register(ctx -> {
             // One camera-position cache invalidation per frame: render modules used to
@@ -234,6 +235,7 @@ public final class ZephyrClient implements ClientModInitializer {
         RenderTick.advance();
         dev.zephyr.ZephyrSelfTest.tick(client);
         dev.zephyr.ZephyrGameTest.tick(client);
+        dev.zephyr.ElytraBotTest.tick(client);
         dev.zephyr.core.ZephyrProfiler.chatReport(client);
     }
 

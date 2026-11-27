@@ -1,3 +1,23 @@
+v1.15.0 - ElytraMaceBot: rocket-down chain (practice only)
+  - Chains hits off a Wind Burst I bounce: elytra on, rocket DOWN, elytra off, strike.
+  - Waits out the target's invulnerability window, so swings are not wasted.
+  - Shields: breaks them with a hotbar axe first, or comes down behind without one.
+  - Aims ahead of fast targets. AI mode (off by default) adjusts timing from hits/misses.
+  - Hotbar: Wind Burst I mace, firework rockets, chestplate, wind charges, axe. Wear the
+    elytra and keep a totem in the offhand.
+  - Still singleplayer / hosted LAN worlds only.
+
+v1.14.0 - ElytraMaceBot rebuilt (practice only)
+  - Runs only in singleplayer or a LAN world you host; it switches itself off elsewhere.
+  - Picks its dive by simulating elytra flight each tick, and takes the elytra off only
+    when the simulated free fall reaches the target.
+  - Wind charge fall save for missed drops: keep wind charges in the hotbar. Without them
+    a missed drop can kill you. Even with them a save can fail if the target moves
+    very suddenly in the last few ticks, so keep a totem in your offhand.
+  - Hotbar: Wind Burst mace, firework rockets, chestplate, wind charges. Wear the elytra.
+  - Settings are now: range, height, minFall, reach, minHealth, windBurst, respectShield,
+    targetMobs. The old rotation/jitter/profile settings were removed.
+
 Zephyr Client v1.13.3 - Minecraft 1.21.11 (Fabric)
 ===================================================
 

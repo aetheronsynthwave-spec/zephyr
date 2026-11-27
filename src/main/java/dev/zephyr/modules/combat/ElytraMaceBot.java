@@ -4,8 +4,9 @@ import dev.zephyr.core.Module;
 import dev.zephyr.core.ModuleCategory;
 import dev.zephyr.core.combat.CombatActions;
 import dev.zephyr.core.combat.CombatCoordinator;
-import dev.zephyr.core.combat.DamageCalculator;
 import dev.zephyr.core.combat.SwapManager;
+import dev.zephyr.core.flight.DiveLearner;
+import dev.zephyr.core.flight.FlightModel;
 import dev.zephyr.core.input.InputOverride;
 import dev.zephyr.core.inventory.GearSlots;
 import dev.zephyr.core.inventory.InventoryManager;
@@ -20,10 +21,11 @@ import dev.zephyr.core.util.MathUtil;
 import dev.zephyr.core.world.RaycastValidator;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
-import net.minecraft.client.world.ClientWorld;
 import net.minecraft.entity.LivingEntity;
+import net.minecraft.entity.mob.HostileEntity;
 import net.minecraft.entity.projectile.FireworkRocketEntity;
 import net.minecraft.item.ItemStack;
+import net.minecraft.item.Items;
 import net.minecraft.text.Text;
 import net.minecraft.util.math.Box;
 import net.minecraft.util.math.MathHelper;
@@ -32,94 +34,62 @@ import net.minecraft.util.math.Vec3d;
 import java.util.function.Predicate;
 
 /**
- * ElytraMaceBot - fully automatic elytra + mace dive loop (rewritten).
+ * Elytra + mace practice bot. Runs only in a world hosted by this client (singleplayer, or a
+ * LAN world you opened); it switches itself off anywhere else.
  *
  * <pre>
- *  IDLE -> EQUIP -> TAKEOFF -> CLIMB -> APPROACH -> DIVE -> DROP (elytra off, strike) -> RECOVER
- *                                ^                                                        |
- *                                +--------------------------------------------------------+
+ *  PREPARE -> TAKEOFF -> CLIMB -> DIVE -> STRIKE -> RECOVER -> CLIMB ...
  * </pre>
  *
- * <p><b>Why the old loop kept climbing back up.</b> It flew until it was directly over the
- * target and then pointed the nose down. An elytra keeps its horizontal speed (1.5-2 b/t at
- * cruise), so the player sailed past the target during the dive, the overshoot check fired and
- * the bot climbed again - forever. This version flies the dive as a straight LINE from a runway:
  * <ul>
- *   <li><b>CLIMB</b> gains altitude while moving out to a runway distance (about the cruise
- *       height away horizontally), so the dive can start from the side, not from overhead.</li>
- *   <li><b>APPROACH</b> holds cruise altitude flying at the target and starts the dive only when
- *       the line to the target is steep enough ({@code diveAngle}) AND the momentum already
- *       points at the target.</li>
- *   <li><b>DIVE</b> steers the VELOCITY onto the line, not just the nose: the look vector is
- *       {@code d*(1+k) - v*k} (d = unit vector to the lead point, v = unit velocity), the
- *       classic velocity-pursuit correction. Too fast? the nose is raised a little, which bleeds
- *       speed into lift.</li>
- *   <li><b>DROP</b>: vanilla only grants the mace smash bonus to a NON-gliding attacker with
- *       {@code fallDistance > 1.5}, so the elytra is swapped for the chestplate a couple of ticks
- *       before reach (the impact is predicted with vanilla free-fall physics), then the hit goes
- *       out through {@link CombatActions#attributeSwapAttack}.</li>
- *   <li><b>RECOVER</b>: elytra back on, glide restarted with a real jump key edge, back to
- *       CLIMB. A miss recovers immediately instead of falling with the chestplate on.</li>
+ *   <li><b>CLIMB</b> gains height while closing in on the target.</li>
+ *   <li><b>DIVE</b> flies the heading that {@link FlightModel#bestDive} forecasts passes closest
+ *       to the target, re-solved every tick.</li>
+ *   <li><b>STRIKE</b> starts when {@link FlightModel#ticksToSmash} says a free fall from here
+ *       reaches the target: the elytra comes off (vanilla gives no smash bonus while gliding)
+ *       and the mace hit goes out as soon as the target is in reach.</li>
+ *   <li><b>RECOVER</b> puts the elytra back and restarts the glide, using the Wind Burst launch
+ *       as the start of the next climb. A fall that stops looking like a hit recovers at once.</li>
  * </ul>
- * All actions run in the pre-movement stage; one module action per tick (rocket, chest click or
- * attack never share a tick); rotations are visible (elytra physics follow the real view).
  */
 public final class ElytraMaceBot extends Module {
 
     private static final int PRIORITY = 5;
-    private static final double EYE = 1.62;
 
-    // --- targeting
     private final NumberSetting range = num("range", "Target range", 16, 128, 2, 64);
-    private final BooleanSetting groundedOnly = bool("groundedOnly", "Only target players not flying", true);
-    // --- flight
-    private final NumberSetting cruiseHeight = num("cruiseHeight", "Cruise height above target", 12, 60, 1, 26);
-    private final NumberSetting climbPitch = num("climbPitch", "Climb pitch (deg up)", 25, 75, 1, 45);
-    private final NumberSetting diveAngle = num("diveAngle", "Start dive at line angle (deg)", 35, 85, 1, 55);
-    private final NumberSetting minDivePitch = num("minDivePitch", "Min dive pitch (deg down)", 15, 80, 1, 30);
-    private final NumberSetting navGain = num("navGain", "Dive steering gain", 0.0, 3.0, 0.1, 1.2);
-    private final NumberSetting maxDiveSpeed = num("maxDiveSpeed", "Max dive speed (b/t)", 1.0, 4.0, 0.1, 2.6);
-    private final NumberSetting cruiseSpeed = num("cruiseSpeed", "Rocket below speed (b/t)", 0.5, 2.5, 0.05, 1.2);
-    private final NumberSetting rocketGap = num("rocketGap", "Min ticks between rockets", 5, 40, 1, 12);
-    private final NumberSetting groundClear = num("groundClear", "Min ground clearance", 2, 20, 1, 4);
-    // --- strike
-    private final NumberSetting minFall = num("minFall", "Min fall distance to smash", 2, 20, 0.5, 4);
+    private final NumberSetting height = num("diveHeight", "Dive height above target", 8, 60, 1, 12);
+    private final NumberSetting minFall = num("smashFall", "Min fall distance to smash", 1.6, 20, 0.1, 1.6);
+    private final NumberSetting diveAt = num("rocketAt", "Rocket down once rise speed is under", -0.5, 3.0, 0.1, 1.0);
     private final NumberSetting reach = num("reach", "Strike reach", 2.5, 3.0, 0.05, 2.95);
-    private final NumberSetting swapLead = num("swapLead", "Chest swap -> strike (ticks)", 1, 5, 1, 2);
-    private final NumberSetting strikeWindow = num("strikeWindow", "Strike window (ticks)", 3, 15, 1, 8);
-    private final NumberSetting maxHurt = num("hurtTime", "Max target hurt time", 0, 10, 1, 6);
-    private final NumberSetting backTicks = num("backTicks", "Swap-back ticks", 1, 10, 1, 2);
+    private final NumberSetting minHealth = num("minHealth", "Stop below health", 2, 20, 1, 8);
     private final BooleanSetting requireWindBurst = bool("windBurst", "Require Wind Burst mace", true);
     private final BooleanSetting respectShield = bool("respectShield", "Hold strike into raised shield", true);
-    // --- safety / feel
-    private final NumberSetting minHealth = num("minHealth", "Abort below health", 2, 20, 1, 8);
-    private final NumberSetting rotSpeedMin = num("rotMin", "Rotation min deg/t", 10, 180, 5, 45);
-    private final NumberSetting rotSpeedMax = num("rotMax", "Rotation max deg/t", 10, 180, 5, 110);
-    private final NumberSetting jitter = num("jitter", "Rotation jitter", 0.0, 2.0, 0.05, 0.15);
+    /** Longest free fall committed to: shorter keeps the rocket pushing longer. */
+    private final NumberSetting commit = num("dropAhead", "Elytra off this many ticks before impact", 1, 8, 1, 2);
+    private final BooleanSetting aiMode = bool("aiMode", "AI mode (learns timing from misses)", false);
+    private final BooleanSetting axeBreak = bool("axeBreak", "Break shields with a hotbar axe first", true);
+    private final BooleanSetting targetMobs = bool("targetMobs", "Practise on hostile mobs too", true);
 
-    private enum State { IDLE, EQUIP, TAKEOFF, CLIMB, APPROACH, DIVE, DROP, RECOVER, ABORT }
+    private enum State { IDLE, PREPARE, TAKEOFF, CLIMB, DIVE, STRIKE, RECOVER }
 
     private final TargetLock lock = new TargetLock();
     private State state = State.IDLE;
     private int stateTicks;
     private int sinceRocket = 99;
-    private int misses;
     private int failures;
-    private int losLost;
     private long actTick = Long.MIN_VALUE;
-    /** Tick the chest swap click was sent (diagnostics; the strike no longer times off it). */
-    private long swapTick = Long.MIN_VALUE;
-    /** Tick the worn elytra actually came off client-side (free fall starts here). */
-    private long elytraOffTick = Long.MIN_VALUE;
-    private long strikeTick = Long.MIN_VALUE;
-    private boolean chestplateOn;
-    private boolean swapSent;
-    /** Chest swaps attempted on the current dive (a rejected click must not loop forever). */
-    private int swapAttempts;
     private boolean slamPending;
-    private String abortReason = "";
     private int strikes;
-    private int rockets;
+    private int misses;
+    private int clutches;
+    private int shieldBreaks;
+    private DiveLearner learner;
+    /** An attempt is being judged: when it started, and whether its hit was sent. */
+    private boolean attempting;
+    private long attemptTick;
+    private long hitSentTick = -1;
+    private long strikeTick;
+    private long clutchTick;
 
     private int trackedId = -1;
     private Vec3d lastTargetPos;
@@ -127,6 +97,7 @@ public final class ElytraMaceBot extends Module {
 
     public ElytraMaceBot() {
         super("ElytraMaceBot", ModuleCategory.COMBAT, 0);
+        lock.extra = e -> targetMobs.get() && e instanceof HostileEntity;
     }
 
     @Override
@@ -134,9 +105,14 @@ public final class ElytraMaceBot extends Module {
         return "mace";
     }
 
-    /** CombatCoordinator: other hitters hold off while a dive on our target is under way. */
+    /** CombatCoordinator: other hitters hold off while a dive is under way. */
     public boolean slamPending() {
         return slamPending;
+    }
+
+    /** The only worlds this bot runs in: ones hosted by this client. */
+    private static boolean hostedHere(MinecraftClient client) {
+        return client.isIntegratedServerRunning() && client.getServer() != null;
     }
 
     // ------------------------------------------------------------------
@@ -147,18 +123,24 @@ public final class ElytraMaceBot extends Module {
     protected void onEnable() {
         reset();
         strikes = 0;
-        rockets = 0;
+        misses = 0;
+        clutches = 0;
+        shieldBreaks = 0;
     }
 
     @Override
     protected void onDisable() {
+        if (learner != null) {
+            learner.save();
+        }
+        attempting = false;
         RotationManager.clear(PRIORITY);
         MinecraftClient client = MinecraftClient.getInstance();
         ClientPlayerEntity self = client.player;
-        if (self != null && chestplateOn && !GearSlots.wearingElytra(self) && !self.isOnGround()) {
+        if (self != null && !self.isOnGround() && !GearSlots.wearingElytra(self) && state.ordinal() >= State.STRIKE.ordinal()) {
             int h = GearSlots.counterpartHotbarSlot(self);
             if (h == -1 || !GearSlots.swapWorn(client, h)) {
-                self.sendMessage(Text.literal("[Zephyr] ElytraMaceBot stopped mid-air with the chestplate on - swap the elytra back!"), true);
+                say(self, "stopped mid-air with the chestplate on - put the elytra back on!");
             }
         }
         reset();
@@ -171,16 +153,11 @@ public final class ElytraMaceBot extends Module {
 
     private void reset() {
         enter(State.IDLE);
-        misses = 0;
         failures = 0;
-        losLost = 0;
-        chestplateOn = false;
-        swapSent = false;
         slamPending = false;
         trackedId = -1;
         lastTargetPos = null;
         targetVel = Vec3d.ZERO;
-        elytraOffTick = Long.MIN_VALUE;
         lock.clear();
     }
 
@@ -189,17 +166,13 @@ public final class ElytraMaceBot extends Module {
         stateTicks = 0;
     }
 
-    private void abort(String reason) {
-        abortReason = reason;
-        enter(State.ABORT);
+    private void stop(ClientPlayerEntity self, String reason) {
+        say(self, reason);
+        setEnabled(false);
     }
 
-    private void fail(String reason) {
-        if (++failures >= 4) {
-            abort(reason);
-        } else {
-            enter(State.EQUIP);
-        }
+    private static void say(ClientPlayerEntity self, String message) {
+        self.sendMessage(Text.literal("[Zephyr] ElytraMaceBot: " + message), false);
     }
 
     // ------------------------------------------------------------------
@@ -209,62 +182,61 @@ public final class ElytraMaceBot extends Module {
     @Override
     public void onTick(MinecraftClient client) {
         ClientPlayerEntity self = client.player;
-        ClientWorld world = client.world;
-        if (self == null || world == null || client.interactionManager == null || !self.isAlive()) {
+        if (self == null || client.world == null || client.interactionManager == null) {
             reset();
+            return;
+        }
+        if (!hostedHere(client)) {
+            stop(self, "practice only - it runs in singleplayer or a world you host.");
+            return;
+        }
+        if (!self.isAlive()) {
+            reset();
+            return;
+        }
+        if (self.getHealth() + self.getAbsorptionAmount() < minHealth.get() && state != State.RECOVER
+                && GearSlots.wearingElytra(self)) {
+            stop(self, "health below limit, stopped.");
             return;
         }
         stateTicks++;
         sinceRocket++;
         slamPending = false;
 
-        LivingEntity target = lock.update(client, range.get(), groundedOnly.get());
+        LivingEntity target = lock.update(client, range.get(), false);
         trackTarget(target);
+        judgeAttempt(self);
 
-        boolean recovering = state == State.RECOVER || state == State.ABORT;
-        if (!recovering && self.getHealth() + self.getAbsorptionAmount() < minHealth.get()) {
-            abort("health below limit");
+        // The fall save goes first: an inventory click in the same tick would block the item use.
+        if (fallingFromMiss(self, target) && windClutch(client, self)) {
+            return;
         }
 
         switch (state) {
-            case IDLE -> idle(self, target);
-            case EQUIP -> equip(client, self, target);
-            case TAKEOFF -> takeoff(self, target);
-            case CLIMB -> climb(client, self, world, target);
-            case APPROACH -> approach(client, self, world, target);
-            case DIVE -> dive(client, self, world, target);
-            case DROP -> drop(client, self, target);
+            case IDLE -> {
+                if (target != null) {
+                    enter(State.PREPARE);
+                } else if (self.isGliding()) {
+                    steer(self.getYaw(), -5.0); // nothing to hit: stay level
+                }
+            }
+            case PREPARE -> prepare(client, self, target);
+            case TAKEOFF -> takeoff(client, self, target);
+            case CLIMB -> climb(client, self, target);
+            case DIVE -> dive(client, self, target);
+            case STRIKE -> strike(client, self, target);
             case RECOVER -> recover(client, self, target);
-            case ABORT -> aborting(client, self);
         }
     }
 
-    // ------------------------------------------------------------------
-    // IDLE / EQUIP / TAKEOFF
-    // ------------------------------------------------------------------
 
-    private void idle(ClientPlayerEntity self, LivingEntity target) {
-        if (chestplateOn && !self.isOnGround() && !GearSlots.wearingElytra(self)) {
-            enter(State.RECOVER); // never idle in the air with the chestplate on
-            return;
-        }
-        if (target != null) {
-            enter(State.EQUIP);
-            return;
-        }
-        if (self.isGliding()) {
-            // No target while airborne: keep flying level instead of nosediving into the ground.
-            steer(self.getYaw(), -5.0);
-        }
-    }
-
-    private void equip(MinecraftClient client, ClientPlayerEntity self, LivingEntity target) {
+    private void prepare(MinecraftClient client, ClientPlayerEntity self, LivingEntity target) {
         if (target == null) {
             enter(State.IDLE);
             return;
         }
         if (stateTicks > 200) {
-            abort("could not prepare gear (inventory busy?)");
+            stop(self, "could not get the gear ready (is the inventory busy?).");
             return;
         }
         if (!ready(client, self, this::isStrikeMace, requireWindBurst.get() ? "Wind Burst mace" : "mace")
@@ -273,15 +245,12 @@ public final class ElytraMaceBot extends Module {
         }
         ItemStack worn = GearSlots.worn(self);
         if (GearSlots.isElytra(worn) && !GearSlots.isUsableElytra(worn)) {
-            abort("elytra is about to break");
+            stop(self, "the elytra is about to break.");
             return;
         }
         if (!GearSlots.isElytra(worn)) {
-            if (!ready(client, self, GearSlots::isUsableElytra, "usable elytra")) {
-                return;
-            }
-            int h = InventoryManager.findHotbarSlot(self, GearSlots::isUsableElytra);
-            if (!acted() && GearSlots.swapWorn(client, h)) {
+            if (ready(client, self, GearSlots::isUsableElytra, "usable elytra") && !acted()
+                    && GearSlots.swapWorn(client, InventoryManager.findHotbarSlot(self, GearSlots::isUsableElytra))) {
                 noteAct();
             }
             return;
@@ -292,13 +261,13 @@ public final class ElytraMaceBot extends Module {
         enter(self.isGliding() ? State.CLIMB : State.TAKEOFF);
     }
 
-    /** True when the item is in the hotbar; otherwise stages it from the inventory (or aborts). */
+    /** True when the item is in the hotbar; otherwise stages it from the inventory (or stops). */
     private boolean ready(MinecraftClient client, ClientPlayerEntity self, Predicate<ItemStack> pred, String what) {
         if (InventoryManager.findHotbarSlot(self, pred) != -1) {
             return true;
         }
         if (!GearSlots.has(self, pred)) {
-            abort("no " + what);
+            stop(self, "no " + what + ".");
             return false;
         }
         if (!acted() && GearSlots.stageToHotbar(client, pred, maceSlot(self), rocketSlot(self),
@@ -308,137 +277,93 @@ public final class ElytraMaceBot extends Module {
         return false;
     }
 
-    private void takeoff(ClientPlayerEntity self, LivingEntity target) {
+    private void takeoff(MinecraftClient client, ClientPlayerEntity self, LivingEntity target) {
         if (self.isGliding()) {
-            enter(State.CLIMB);
+            enter(State.RECOVER); // same choice as after a bounce: dive now if high enough, else climb
             return;
         }
         if (!GearSlots.wearingUsableElytra(self)) {
-            enter(State.EQUIP);
+            enter(State.PREPARE);
             return;
         }
         if (stateTicks > 60) {
-            fail("glide never started (no headroom?)");
+            retry(self, "the glide never started (no headroom?).");
             return;
+        }
+        // Close to the target, a wind charge at the feet is a much faster launch than climbing.
+        int wind = InventoryManager.findHotbarSlot(self, s -> s.isOf(Items.WIND_CHARGE));
+        if (self.isOnGround() && target != null && wind != -1 && self.distanceTo(target) < 9.0f) {
+            if (self.getInventory().getSelectedSlot() != wind && !SwapManager.select(client, wind)) {
+                return;
+            }
+            RotationManager.clear(PRIORITY);
+            self.setPitch(90.0f);
+            if (!acted() && CombatActions.interactItem(client).isAccepted()) {
+                noteAct();
+                InputOverride.requestJump();
+                return;
+            }
         }
         if (target != null) {
-            steer(MathUtil.yawTo(self.getEyePos(), target.getEntityPos()), -20.0);
+            steer(MathUtil.yawTo(self.getEyePos(), target.getEntityPos()), -45.0);
         }
-        if (self.isOnGround()) {
-            if (!InputOverride.jumpedLastTick()) {
-                InputOverride.requestJump();
-            }
-            return;
-        }
-        // Starting a glide needs a fresh jump key edge in the air: press on every other tick.
-        if (!InputOverride.jumpedLastTick() && (self.getVelocity().y < 0.15 || stateTicks >= 4)) {
+        // A glide starts from a fresh jump press in the air: press on every other tick.
+        if (!InputOverride.jumpedLastTick() && (self.isOnGround() || self.getVelocity().y < 0.15 || stateTicks >= 4)) {
             InputOverride.requestJump();
         }
     }
 
-    // ------------------------------------------------------------------
-    // CLIMB: altitude + runway
-    // ------------------------------------------------------------------
-
-    private void climb(MinecraftClient client, ClientPlayerEntity self, ClientWorld world, LivingEntity target) {
-        if (!self.isGliding()) {
-            enter(self.isOnGround() ? State.EQUIP : State.RECOVER);
-            return;
-        }
-        if (target == null) {
-            enter(State.IDLE);
-            return;
-        }
-        double alt = self.getY() - target.getY();
-        double horiz = horizontal(self, target);
-        double speed = self.getVelocity().length();
-        double runway = cruiseHeight.get() * 0.9;
-
-        if (alt >= cruiseHeight.get()) {
-            enter(State.APPROACH);
-            return;
-        }
-        if (stateTicks > 400) {
-            miss(); // never reached altitude (ceiling / no rockets working)
-            return;
-        }
-        Vec3d eye = self.getEyePos();
-        double towards = MathUtil.yawTo(eye, target.getEntityPos());
-        // Too close to start a clean line later: climb AWAY from the target to build a runway.
-        double yaw = horiz < runway * 0.6 ? towards + 180.0 : towards;
-        double pitch = -climbPitch.get();
-        if (blockedAhead(self, speed)) {
-            pitch = -75.0;
-        }
-        steer(yaw, pitch);
-        if (speed < 1.6 || self.getVelocity().y < 0.3) {
-            tryRocket(client, self, world);
+    private void retry(ClientPlayerEntity self, String reason) {
+        if (++failures >= 4) {
+            stop(self, reason);
+        } else {
+            enter(State.PREPARE);
         }
     }
 
-    // ------------------------------------------------------------------
-    // APPROACH: hold altitude, wait for a steep, aligned dive line
-    // ------------------------------------------------------------------
-
-    private void approach(MinecraftClient client, ClientPlayerEntity self, ClientWorld world, LivingEntity target) {
+    private void climb(MinecraftClient client, ClientPlayerEntity self, LivingEntity target) {
         if (!self.isGliding()) {
-            enter(self.isOnGround() ? State.EQUIP : State.RECOVER);
+            enter(self.isOnGround() ? State.PREPARE : State.RECOVER);
             return;
         }
         if (target == null) {
             enter(State.IDLE);
             return;
         }
-        Vec3d eye = self.getEyePos();
-        Vec3d aim = leadPoint(self, target);
-        double alt = eye.y - aim.y;
-        double dx = aim.x - eye.x, dz = aim.z - eye.z;
-        double horiz = Math.sqrt(dx * dx + dz * dz);
-        Vec3d v = self.getVelocity();
-        double hSpeed = Math.sqrt(v.x * v.x + v.z * v.z);
-        double heading = hSpeed < 1.0e-3 || horiz < 1.0e-3 ? 1.0 : (v.x * dx + v.z * dz) / (hSpeed * horiz);
-        double lineAngle = Math.toDegrees(Math.atan2(alt, Math.max(horiz, 1.0e-3)));
-        slamPending = !target.isGliding() && lineAngle > diveAngle.get() - 15.0;
-        if (stateTicks > 400) {
-            miss(); // circling without ever getting a clean line (or the target keeps flying)
-            return;
-        }
+        double above = self.getY() - target.getY();
+        double dx = target.getX() - self.getX(), dz = target.getZ() - self.getZ();
+        double horiz = Math.hypot(dx, dz);
+        double bearing = Math.toDegrees(Math.atan2(dz, dx)) - 90.0;
+        double want = height.get();
 
-        if (alt < cruiseHeight.get() * 0.5) {
-            enter(State.CLIMB); // lost too much height on the way in
-            return;
-        }
-        if (!target.isGliding()
-                && ((lineAngle >= diveAngle.get() && (heading > 0.6 || hSpeed < 0.4)) || lineAngle >= 82.0)) {
-            losLost = 0;
-            swapAttempts = 0;
+        // Enough height and a steep enough line: dive.
+        if (above >= want * 0.85 && horiz <= above * 0.9 && !target.isGliding()) {
+            failures = 0;
             enter(State.DIVE);
+            dive(client, self, target);
             return;
         }
-        // Passed over without an aligned line: go back out for another runway.
-        if (lineAngle >= diveAngle.get() && heading < -0.2 && horiz < cruiseHeight.get() * 0.5) {
-            enter(State.CLIMB);
-            return;
+        double pitch;
+        if (above < want) {
+            // Climb towards a point over the target; nearly vertical when already underneath it.
+            pitch = -MathHelper.clamp(Math.toDegrees(Math.atan2(want - above, Math.max(horiz, 1.0))), 35.0, 82.0);
+        } else {
+            pitch = -2.0; // high enough: run in level
         }
-        // Altitude hold: nose up when low, level/slightly down when high.
-        double altErr = cruiseHeight.get() - alt;
-        double pitch = MathHelper.clamp(-altErr * 2.0 - 2.0, -30.0, 12.0);
-        if (blockedAhead(self, v.length())) {
-            pitch = -60.0;
+        if (blockedAhead(self)) {
+            pitch = -80.0;
         }
-        steer(MathUtil.yawTo(eye, aim), pitch);
-        if (v.length() < cruiseSpeed.get() || altErr > 6.0) {
-            tryRocket(client, self, world);
+        steer(bearing, pitch);
+        // Rocket only while the current momentum will not already carry us high enough.
+        double carried = above + Math.max(0.0, self.getVelocity().y) * 8.0;
+        if ((above < want && carried < want) || self.getVelocity().length() < 0.7) {
+            tryRocket(client, self);
         }
     }
 
-    // ------------------------------------------------------------------
-    // DIVE: velocity-pursuit onto the target line
-    // ------------------------------------------------------------------
-
-    private void dive(MinecraftClient client, ClientPlayerEntity self, ClientWorld world, LivingEntity target) {
+    private void dive(MinecraftClient client, ClientPlayerEntity self, LivingEntity target) {
         if (!self.isGliding()) {
-            enter(self.isOnGround() ? State.EQUIP : State.RECOVER);
+            enter(self.isOnGround() ? State.PREPARE : State.RECOVER);
             return;
         }
         if (target == null) {
@@ -446,297 +371,328 @@ public final class ElytraMaceBot extends Module {
             return;
         }
         if (target.isGliding()) {
-            enter(State.APPROACH); // the target took off: hold altitude and wait
+            enter(State.CLIMB);
             return;
         }
         slamPending = true;
-        Vec3d eye = self.getEyePos();
-        Vec3d aim = leadPoint(self, target);
-        Vec3d to = aim.subtract(eye);
-        double dist = to.length();
-        Vec3d d = to.multiply(1.0 / Math.max(dist, 1.0e-6));
-        Vec3d v = self.getVelocity();
-        double speed = v.length();
-        Vec3d vh = speed > 0.3 ? v.multiply(1.0 / speed) : self.getRotationVector();
-
-        // Velocity pursuit: aim past the target on the side the velocity is drifting from, so the
-        // flight path (not just the nose) converges onto the line to the target.
-        double k = navGain.get();
-        Vec3d cmd = d.multiply(1.0 + k).subtract(vh.multiply(k));
-        double ch = Math.sqrt(cmd.x * cmd.x + cmd.z * cmd.z);
-        double yaw = Math.toDegrees(Math.atan2(cmd.z, cmd.x)) - 90.0;
-        double pitch = -Math.toDegrees(Math.atan2(cmd.y, ch));
-        if (speed > maxDiveSpeed.get()) {
-            pitch -= 12.0; // raise the nose a little: lift bleeds off speed
-        }
-        pitch = MathHelper.clamp(pitch, minDivePitch.get(), 89.0);
-        steer(yaw, pitch);
-
-        // Missed / overshot: below the target's head, or the target fell behind the flight path.
-        double alongPath = vh.dotProduct(d);
-        Box tb = target.getBoundingBox();
-        if (eye.y < tb.maxY - 0.2 || (alongPath < 0.2 && dist > 4.0)) {
-            miss();
-            return;
-        }
-        // Terrain: ground under us that sits clearly ABOVE the target's feet (a roof/ledge),
-        // close enough to hit within a couple of ticks at this speed.
-        double clearance = DamageCalculator.distanceToGround(world, self);
-        if (clearance != Double.MAX_VALUE) {
-            double groundTop = self.getY() - clearance;
-            if (groundTop > target.getY() + 2.0 && clearance < groundClear.get() + speed * 2.0) {
-                miss();
-                return;
-            }
-        }
-        losLost = RaycastValidator.hitboxVisible(eye, tb, self) ? 0 : losLost + 1;
-        if (losLost >= 8) {
-            miss();
-            return;
-        }
-        if (dist > 18.0 && speed < 1.2) {
-            tryRocket(client, self, world);
-        }
-        if (swapReady(self, target) && impactSoon(self, target)) {
-            if (swapAttempts >= 3) {
-                miss(); // the chest click keeps being rejected: climb and retry the whole dive
-                return;
-            }
-            swapSent = false;
-            elytraOffTick = Long.MIN_VALUE;
-            enter(State.DROP);
-            drop(client, self, target); // send the chest swap this tick
-        }
-    }
-
-    /** @return true when this miss aborted the module (caller must not change state). */
-    private boolean miss() {
-        losLost = 0;
-        if (++misses >= 8) {
-            abort("dive keeps missing (obstacles / target dodging)");
-            return true;
-        }
-        enter(State.CLIMB);
-        return false;
-    }
-
-    /**
-     * Strike reach with a server-side margin. The server sees us a round trip behind our
-     * client position, and a hit sent at exactly the 3.0 interaction limit was regularly
-     * dropped as out of range - which looked like the smash whiffing at the last moment.
-     */
-    private double strikeReach(MinecraftClient client) {
-        double margin = Math.min(0.3, 0.1 + 0.05 * CombatCoordinator.pingTicks(client));
-        return Math.max(2.4, reach.get() - margin);
-    }
-
-    /** Gear present, shield not raised at us, enough fall banked for a smash after the swap. */
-    private boolean swapReady(ClientPlayerEntity self, LivingEntity target) {
-        if (maceSlot(self) == -1 || GearSlots.counterpartHotbarSlot(self) == -1) {
-            return false;
-        }
-        if (respectShield.get() && CombatCoordinator.shieldBlocks(target, self)
-                && !CombatCoordinator.shieldBreakerWants(MinecraftClient.getInstance(), target)) {
-            return false;
-        }
-        // Gliding clamps fallDistance to 1 while vy > -0.5; the steep dive banks it normally.
-        double vy = self.getVelocity().y;
-        double projected = self.fallDistance + Math.max(0.0, -vy) * (swapLead.get() + 1);
-        return projected >= minFall.get();
-    }
-
-    /**
-     * Free-fall forecast after the swap (vanilla: pos += v; vy = (vy - 0.08) * 0.98; vxz *= 0.91)
-     * against the target's tracked motion: true when the target hitbox comes inside reach within
-     * lead+2 ticks. Each tick's path is sub-sampled so a fast pass through the reach sphere counts.
-     *
-     * <p>The swap click needs a full server round trip before free fall actually starts (the
-     * client keeps gliding until the equipment update comes back), so the horizon includes that
-     * lag - without it the swap fired too late, the elytra stayed on past the predicted impact
-     * and the strike window starved, which showed up as the dive pulling up right before the hit.
-     */
-    private boolean impactSoon(ClientPlayerEntity self, LivingEntity target) {
-        double px = self.getX(), py = self.getY(), pz = self.getZ();
-        Vec3d v = self.getVelocity();
-        double vx = v.x, vy = v.y, vz = v.z;
-        Box base = target.getBoundingBox();
-        double r2 = reach.get() * reach.get();
-        int lagTicks = Math.min(6, 1 + CombatCoordinator.pingTicks(MinecraftClient.getInstance()));
-        int horizon = swapLead.get().intValue() + 2 + lagTicks;
-        for (int t = 1; t <= horizon; t++) {
-            double nx = px + vx, ny = py + vy, nz = pz + vz;
-            Box tb = base.offset(targetVel.x * t, targetVel.y * t, targetVel.z * t);
-            for (int s = 1; s <= 4; s++) {
-                double f = s / 4.0;
-                Vec3d eye = new Vec3d(px + (nx - px) * f, py + (ny - py) * f + EYE, pz + (nz - pz) * f);
-                if (tb.squaredMagnitude(eye) <= r2) {
-                    return true;
+        if (!attempting) {
+            attempting = true;
+            hitSentTick = -1;
+            attemptTick = TickPhase.tickId();
+            if (aiMode.get()) {
+                if (learner == null) {
+                    learner = new DiveLearner();
                 }
+                learner.choose(targetKind());
             }
-            px = nx;
-            py = ny;
-            pz = nz;
-            vx *= 0.91;
-            vy = (vy - 0.08) * 0.98;
-            vz *= 0.91;
         }
-        return false;
+        Vec3d pos = self.getEntityPos();
+        Box box = aimBox(self, target);
+        double bearing = MathUtil.yawTo(pos, box.getCenter());
+        int impact = smashIn(client, self, target.getBoundingBox());
+        // Already right over their head with the fall banked: no forecast needed, just drop and swing.
+        Box real = target.getBoundingBox();
+        boolean overhead = self.fallDistance >= minFall.get() && target.hurtTime <= 2
+                && pos.y > real.maxY - 0.2 && pos.y < real.maxY + 1.5
+                && real.squaredMagnitude(self.getEyePos()) <= reach.get() * reach.get();
+        if (swapAllowed(self, target) && (overhead || impact > 0 && target.hurtTime <= impact)) {
+            enter(State.STRIKE);
+            strike(client, self, target); // send the chest swap this tick
+            return;
+        }
+        FlightModel.Line line = FlightModel.bestDive(pos, self.getVelocity(), bearing, box, leadVel(), true);
+        // A line that will not connect is abandoned while there is still height to level out:
+        // finding that out at the bottom means flying (or falling) into the ground.
+        double pullOut = Math.max(0.0, -self.getVelocity().y) * 3.0 + 1.0;
+        boolean low = pos.y - box.maxY < pullOut;
+        if ((low && line.miss() > 2.0) || pos.y < box.maxY + 0.5 || blockedBefore(self, box)) {
+            misses++;
+            enter(State.CLIMB);
+            steer(bearing, -60.0);
+            return;
+        }
+        // While the target cannot be hurt again yet, keep the height instead of gliding down.
+        if (target.hurtTime > 4) {
+            steer(bearing, -25.0);
+            return;
+        }
+        steer(line.yaw(), line.pitch());
+        if (self.getVelocity().y > (learning() ? learner.value(DiveLearner.DIVE_AT) : diveAt.get())) {
+            return; // still rising fast off the bounce
+        }
+        // Rocket down: boost once the nose is on the line (an earlier rocket may still be burning).
+        if (Math.abs(self.getPitch() - line.pitch()) < 35.0 && line.pitch() > 10.0 && self.distanceTo(target) > 3.5f) {
+            tryRocket(client, self);
+        }
     }
 
-    // ------------------------------------------------------------------
-    // DROP: elytra off, strike
-    // ------------------------------------------------------------------
+    /** Forecast ticks until a smash if the elytra came off now, or -1. */
+    private int smashIn(MinecraftClient client, ClientPlayerEntity self, Box box) {
+        int lag = Math.min(6, 1 + CombatCoordinator.pingTicks(client));
+        int ahead = learning() ? (int) learner.value(DiveLearner.COMMIT) : commit.get().intValue();
+        if (targetKind().equals("fast")) {
+            ahead = Math.min(ahead, 2); // less time for the target to run out from under the fall
+        }
+        return FlightModel.ticksToSmash(self.getEntityPos(), self.getVelocity(), self.getYaw(), self.getPitch(),
+                self.fallDistance, lag, box, leadVel(), reach.get() - 0.25, minFall.get(), lag + ahead,
+                boosting(client, self));
+    }
 
-    private void drop(MinecraftClient client, ClientPlayerEntity self, LivingEntity target) {
+    private boolean swapAllowed(ClientPlayerEntity self, LivingEntity target) {
+        // A raised shield is no reason to wait: the strike breaks it with an axe, or the dive
+        // line (see aimBox) comes down behind it.
+        return maceSlot(self) != -1 && GearSlots.counterpartHotbarSlot(self) != -1;
+    }
+
+    private void strike(MinecraftClient client, ClientPlayerEntity self, LivingEntity target) {
         if (target == null || !target.isAlive()) {
             enter(State.RECOVER);
             return;
         }
-        aimAt(self, target);
-        if (GearSlots.wearingElytra(self)) {
-            // The swap click needs a full server round trip before the worn item changes here
-            // (the client does not predict armour clicks), so the patience scales with ping -
-            // the old fixed 3-tick wait declared every drop's click dead on ~150 ms and the
-            // bot climbed away right before the hit, dive after dive.
-            int patience = (int) Math.min(8, 4 + 2L * CombatCoordinator.pingTicks(client));
-            if (swapSent && stateTicks > patience) {
-                swapAttempts++;
-                enter(State.DIVE); // the click did not take: keep diving, try again (capped)
-                return;
-            }
-            if (!swapSent && stateTicks > 3) {
-                miss(); // the click could not even be sent (screen open / eating / busy)
-                return;
-            }
-            slamPending = true;
-            if (!swapSent) {
-                int h = GearSlots.counterpartHotbarSlot(self);
-                if (h == -1) {
-                    abort("chestplate left the hotbar");
-                    return;
-                }
-                if (!acted() && GearSlots.swapWorn(client, h)) {
-                    noteAct();
-                    swapSent = true;
-                    chestplateOn = true;
-                    swapTick = TickPhase.tickId();
-                }
-            }
-            return;
-        }
         slamPending = true;
-        if (elytraOffTick == Long.MIN_VALUE) {
-            elytraOffTick = TickPhase.tickId(); // free fall starts NOW, not at the click
-        }
-        long offElapsed = TickPhase.tickId() - elytraOffTick;
-        Box tb = target.getBoundingBox();
         Vec3d eye = self.getEyePos();
-        if (offElapsed > strikeWindow.get() || eye.y < tb.minY + 0.5) {
-            if (!miss()) {
-                enter(State.RECOVER); // missed: elytra back on right away, never fall with the chestplate
+        Box box = target.getBoundingBox();
+        Vec3d aim = MathUtil.bestAimPoint(self, target, RotationManager.currentYaw(), self.getPitch());
+        steer(MathUtil.yawTo(eye, aim), MathUtil.pitchTo(eye, aim));
+
+        if (GearSlots.wearingElytra(self)) {
+            if (stateTicks > 8) {
+                misses++;
+                enter(State.CLIMB); // the chest click was never accepted
+            } else if (!acted()) {
+                int h = GearSlots.counterpartHotbarSlot(self);
+                if (h != -1 && GearSlots.swapWorn(client, h)) {
+                    noteAct();
+                }
             }
             return;
         }
-        // The server must have dropped gliding (it does on its tick after the click) before
-        // the hit, or the smash bonus is not applied.
-        if (offElapsed < swapLead.get() || self.isGliding() || acted()) {
+        boolean inReach = box.squaredMagnitude(eye) <= reach.get() * reach.get();
+        if (!inReach && Math.hypot(box.getCenter().x - eye.x, box.getCenter().z - eye.z) > 0.8) {
+            InputOverride.requestForward(targetVel.horizontalLength() > 0.2); // air control: drift towards a target that moved
+        }
+        // Stun slam: the axe disables the shield this tick, the mace lands on a following one.
+        if (inReach && !acted() && !self.isGliding() && axeBreak.get()
+                && CombatCoordinator.shieldBlocks(target, self)) {
+            int axe = InventoryManager.findHotbarSlot(self, s -> ItemUtil.id(s).endsWith("_axe"));
+            if (axe != -1 && CombatActions.attributeSwapAttack(client, axe, target, 3)) {
+                noteAct();
+                CombatCoordinator.noteShieldBroken(target);
+                shieldBreaks++;
+                return;
+            }
+        }
+        if (inReach && !acted() && !self.isGliding() && self.fallDistance >= minFall.get() && target.hurtTime <= 1
+                && !(respectShield.get() && CombatCoordinator.shieldBlocks(target, self))) {
+            int mace = maceSlot(self);
+            if (mace == -1) {
+                stop(self, "the mace left the hotbar.");
+                return;
+            }
+            if (CombatActions.attributeSwapAttack(client, mace, target, 1)) {
+                noteAct();
+                strikes++;
+                strikeTick = TickPhase.tickId();
+                hitSentTick = strikeTick;
+                enter(State.RECOVER);
+            }
             return;
         }
-        double r = strikeReach(client);
-        if (tb.squaredMagnitude(eye) > r * r
-                || self.fallDistance < minFall.get()
-                || target.hurtTime > maxHurt.get().intValue()
-                || (respectShield.get() && CombatCoordinator.shieldBlocks(target, self))) {
+        // Hold a wind charge while falling so a save needs no slot change at the last moment
+        // (the mace hit swaps from whatever is held).
+        int wind = InventoryManager.findHotbarSlot(self, s -> s.isOf(Items.WIND_CHARGE));
+        if (!inReach && self.fallDistance > 9.0 && wind != -1 && self.getInventory().getSelectedSlot() != wind && !SwapManager.pending()) {
+            SwapManager.select(client, wind);
+        }
+        // No longer a hit (target dodged, or we are past it): get the elytra back before the ground.
+        if (!inReach && stateTicks > 3 && (eye.y < box.minY + 0.5 || stateTicks > 20 || !stillReaching(self, box))) {
+            misses++;
+            enter(State.RECOVER);
+            recover(client, self, target);
             return;
         }
-        int mace = maceSlot(self);
-        if (mace == -1) {
-            abort("mace left the hotbar");
-            return;
-        }
-        if (CombatActions.attributeSwapAttack(client, mace, target, backTicks.get().intValue())) {
-            noteAct();
-            strikes++;
-            misses = 0;
-            failures = 0;
-            strikeTick = TickPhase.tickId();
+        if (self.isOnGround()) {
+            misses++;
             enter(State.RECOVER);
         }
     }
 
-    // ------------------------------------------------------------------
-    // RECOVER: elytra on, glide again
-    // ------------------------------------------------------------------
+    /** With the elytra already off: does the remaining free fall still pass within reach? */
+    private boolean stillReaching(ClientPlayerEntity self, Box box) {
+        return FlightModel.ticksToSmash(self.getEntityPos(), self.getVelocity(), self.getYaw(), self.getPitch(),
+                self.fallDistance, 0, box, targetVel, reach.get() + 0.3, minFall.get(), 10, false) > 0;
+    }
 
     private void recover(MinecraftClient client, ClientPlayerEntity self, LivingEntity target) {
+        if (target != null) {
+            // Already face the target, nose down: the dive then starts without a turn.
+            Vec3d aim = target.getBoundingBox().getCenter();
+            steer(MathUtil.yawTo(self.getEyePos(), aim), Math.max(30.0, MathUtil.pitchTo(self.getEyePos(), aim)));
+        }
         if (!GearSlots.wearingElytra(self)) {
             if (stateTicks > 40) {
-                abort("cannot re-equip the elytra");
+                stop(self, "could not put the elytra back on.");
                 return;
             }
-            // Never in the attack tick; one click per tick.
-            if (TickPhase.tickId() > strikeTick && !acted()) {
+            if (!acted()) {
                 int h = GearSlots.counterpartHotbarSlot(self);
                 if (h == -1) {
-                    abort("elytra left the hotbar");
+                    stop(self, "the elytra left the hotbar.");
                     return;
                 }
                 if (GearSlots.swapWorn(client, h)) {
                     noteAct();
-                    chestplateOn = false;
                 }
             }
             return;
         }
-        chestplateOn = false;
         if (self.isGliding()) {
-            enter(State.CLIMB);
+            int rockets = rocketSlot(self);
+            if (rockets != -1 && self.getInventory().getSelectedSlot() != rockets && !SwapManager.pending()) {
+                SwapManager.select(client, rockets); // in hand before the dive, so no tick is lost
+            }
+            // The bounce is all the height needed; only climb when it left us too low or too far out.
+            boolean canDive = target != null && !target.isGliding() && self.getY() - target.getY() > target.getHeight() + 1.5
+                    && Math.hypot(target.getX() - self.getX(), target.getZ() - self.getZ())
+                    < 3.0 + (self.getY() - target.getY()) * 1.2;
+            if (canDive) {
+                enter(State.DIVE);
+                dive(client, self, target);
+            } else if (stateTicks > 8 || self.getVelocity().y < 0.2) {
+                enter(State.CLIMB);
+            }
             return;
         }
         if (self.isOnGround()) {
-            enter(State.EQUIP);
+            enter(State.PREPARE);
             return;
         }
         if (stateTicks > 80) {
-            fail("could not resume gliding");
+            retry(self, "could not start gliding again.");
             return;
         }
-        if (target != null) {
-            steer(MathUtil.yawTo(self.getEyePos(), target.getEntityPos()) + 180.0, -25.0);
-        }
-        if (GearSlots.wearingUsableElytra(self) && !InputOverride.jumpedLastTick()
-                && (self.getVelocity().y < 0.0 || stateTicks >= 6)) {
+        if (!InputOverride.jumpedLastTick()) {
             InputOverride.requestJump();
         }
     }
 
-    private void aborting(MinecraftClient client, ClientPlayerEntity self) {
-        if (!GearSlots.wearingElytra(self) && !self.isOnGround() && stateTicks <= 20) {
-            int h = GearSlots.counterpartHotbarSlot(self);
-            if (h != -1 && !acted() && GearSlots.swapWorn(client, h)) {
-                noteAct();
-                chestplateOn = false;
-            }
+    /**
+     * Last-moment save for a missed drop: a wind charge thrown straight down just before the
+     * ground cancels the fall damage. Needs wind charges in the hotbar.
+     */
+    private boolean learning() {
+        return aiMode.get() && learner != null;
+    }
+
+    /**
+     * Decides how the current attempt went. A landed Wind Burst smash launches us upwards, so
+     * that launch is the proof of a hit: a swing the target blocked or dodged gives none.
+     */
+    private void judgeAttempt(ClientPlayerEntity self) {
+        if (!attempting) {
             return;
         }
-        if (GearSlots.wearingElytra(self)) {
-            chestplateOn = false;
+        long now = TickPhase.tickId();
+        boolean hit = hitSentTick >= 0 && now > hitSentTick && self.getVelocity().y > 0.4;
+        boolean failed = hitSentTick >= 0 ? now - hitSentTick > 6
+                : (state != State.DIVE && state != State.STRIKE && now > attemptTick + 1) || now - attemptTick > 100;
+        if (!hit && !failed) {
+            return;
         }
-        self.sendMessage(Text.literal("[Zephyr] ElytraMaceBot: " + abortReason), true);
-        setEnabled(false); // onDisable still warns if we are airborne with the chestplate on
+        attempting = false;
+        if (learning()) {
+            // Quick hits score highest, so the learner prefers speed as well as accuracy.
+            learner.learn(hit ? MathHelper.clamp(20.0 / (now - attemptTick), 0.2, 1.0) : 0.0);
+        }
+    }
+
+    private String targetKind() {
+        double speed = targetVel.horizontalLength();
+        return speed > 0.3 ? "fast" : speed > 0.08 ? "moving" : "still";
+    }
+
+    /** Target velocity as used for aiming ahead (the AI mode tunes how far). */
+    private Vec3d leadVel() {
+        return learning() ? targetVel.multiply(learner.value(DiveLearner.LEAD)) : targetVel;
+    }
+
+    /**
+     * The box the dive aims for. Against a raised shield with no axe to break it, aim a little
+     * behind the target: shields only cover the front.
+     */
+    private Box aimBox(ClientPlayerEntity self, LivingEntity target) {
+        Box box = target.getBoundingBox();
+        boolean hasAxe = axeBreak.get()
+                && InventoryManager.findHotbarSlot(self, s -> ItemUtil.id(s).endsWith("_axe")) != -1;
+        if (hasAxe || !target.isBlocking()) {
+            return box;
+        }
+        Vec3d facing = target.getRotationVector(0.0f, target.getHeadYaw());
+        Vec3d flat = new Vec3d(facing.x, 0.0, facing.z);
+        return flat.lengthSquared() < 1.0e-4 ? box : box.offset(flat.normalize().multiply(-0.9));
+    }
+
+    private boolean windClutch(MinecraftClient client, ClientPlayerEntity self) {
+        double fallSpeed = -self.getVelocity().y;
+        if (TickPhase.tickId() - clutchTick < 10) {
+            return false;
+        }
+        int slot = InventoryManager.findHotbarSlot(self, s -> s.isOf(Items.WIND_CHARGE));
+        if (slot == -1) {
+            return false;
+        }
+        Vec3d feet = self.getEntityPos();
+        if (RaycastValidator.canSee(feet, feet.add(0, -(fallSpeed * 3.0 + 1.0), 0), self)) {
+            return false; // ground is still more than three ticks away
+        }
+        if (self.getInventory().getSelectedSlot() != slot && !SwapManager.select(client, slot)) {
+            return false;
+        }
+        RotationManager.clear(PRIORITY);
+        self.setPitch(90.0f);
+        if (CombatActions.interactItem(client).isAccepted()) {
+            noteAct();
+            clutchTick = TickPhase.tickId();
+            clutches++;
+            return true;
+        }
+        return false;
+    }
+
+    /** Falling fast towards the ground with no mace hit left to break the fall. */
+    private boolean fallingFromMiss(ClientPlayerEntity self, LivingEntity target) {
+        if (state != State.STRIKE && state != State.RECOVER && state != State.CLIMB) {
+            return false;
+        }
+        if (self.isOnGround() || self.getVelocity().y > -0.6 || self.fallDistance < 4.0
+                || TickPhase.tickId() - strikeTick < 3) { // a landed hit's Wind Burst is still arriving
+            return false;
+        }
+        if (state != State.STRIKE || target == null) {
+            return true;
+        }
+        Box box = target.getBoundingBox();
+        if (box.squaredMagnitude(self.getEyePos()) <= reach.get() * reach.get()) {
+            return false;
+        }
+        // Out of reach: save as soon as the fall stops lining up, and in any case once the
+        // ground is about to arrive (a target that moved can look reachable for a few ticks).
+        Vec3d feet = self.getEntityPos();
+        double nextTicks = -self.getVelocity().y * 2.0;
+        return !stillReaching(self, box) || !RaycastValidator.canSee(feet, feet.add(0, -nextTicks, 0), self);
     }
 
     // ------------------------------------------------------------------
-    // Rockets
+    // Rockets and helpers
     // ------------------------------------------------------------------
 
-    private void tryRocket(MinecraftClient client, ClientPlayerEntity self, ClientWorld world) {
-        if (!self.isGliding() || acted() || sinceRocket < rocketGap.get() || SwapManager.pending()) {
+    private void tryRocket(MinecraftClient client, ClientPlayerEntity self) {
+        if (!self.isGliding() || acted() || sinceRocket < 5 || SwapManager.pending()) {
             return;
         }
         int slot = rocketSlot(self);
         if (slot == -1) {
-            abort("out of firework rockets");
+            stop(self, "out of firework rockets.");
             return;
         }
         if (self.getInventory().getSelectedSlot() != slot) {
@@ -745,24 +701,19 @@ public final class ElytraMaceBot extends Module {
             }
             return;
         }
-        if (ItemUtil.coolingDown(self, self.getMainHandStack()) || rocketActive(world, self)) {
+        if (boosting(client, self) || ItemUtil.coolingDown(self, self.getMainHandStack())) {
             return;
         }
         if (CombatActions.interactItem(client).isAccepted()) {
             noteAct();
             sinceRocket = 0;
-            rockets++;
         }
     }
 
-    private boolean rocketActive(ClientWorld world, ClientPlayerEntity self) {
-        return !world.getEntitiesByClass(FireworkRocketEntity.class, self.getBoundingBox().expand(6.0),
-                r -> r.getOwner() == self && !r.isRemoved()).isEmpty();
+    private static boolean boosting(MinecraftClient client, ClientPlayerEntity self) {
+        return !client.world.getEntitiesByClass(FireworkRocketEntity.class,
+                self.getBoundingBox().expand(8.0), r -> r.getOwner() == self && !r.isRemoved()).isEmpty();
     }
-
-    // ------------------------------------------------------------------
-    // Helpers
-    // ------------------------------------------------------------------
 
     private boolean isStrikeMace(ItemStack s) {
         return ItemUtil.isMace(s) && (!requireWindBurst.get() || ItemUtil.enchantLevel(s, "wind_burst") > 0);
@@ -784,38 +735,28 @@ public final class ElytraMaceBot extends Module {
         actTick = TickPhase.tickId();
     }
 
-    private static double horizontal(ClientPlayerEntity self, LivingEntity target) {
-        return Math.hypot(target.getX() - self.getX(), target.getZ() - self.getZ());
+    /** A block within a few ticks of travel along the current flight direction. */
+    private static boolean blockedAhead(ClientPlayerEntity self) {
+        Vec3d v = self.getVelocity();
+        if (v.lengthSquared() < 0.09) {
+            return false;
+        }
+        Vec3d from = self.getEntityPos();
+        return !RaycastValidator.canSee(from, from.add(v.multiply(6.0)), self);
     }
 
-    /** A block along the flight direction within ~7 ticks of travel. */
-    private boolean blockedAhead(ClientPlayerEntity self, double speed) {
-        Vec3d eye = self.getEyePos();
-        Vec3d dir = speed > 0.3 ? self.getVelocity().normalize() : self.getRotationVector();
-        double dist = Math.max(8.0, speed * 7.0);
-        return !RaycastValidator.canSee(eye, eye.add(dir.multiply(dist)), self);
-    }
-
-    /** The target's head (where a falling attacker meets it), advanced by its motion over the time to impact. */
-    private Vec3d leadPoint(ClientPlayerEntity self, LivingEntity target) {
-        Box b = target.getBoundingBox();
-        Vec3d head = new Vec3d((b.minX + b.maxX) * 0.5, b.maxY - 0.2, (b.minZ + b.maxZ) * 0.5);
-        double speed = Math.max(0.6, self.getVelocity().length());
-        double t = MathHelper.clamp(self.getEyePos().distanceTo(head) / speed, 0.0, 15.0);
-        return head.add(targetVel.multiply(t));
-    }
-
-    private void aimAt(ClientPlayerEntity self, LivingEntity target) {
-        Vec3d aim = MathUtil.bestAimPoint(self, target, RotationManager.currentYaw(), self.getPitch());
-        Vec3d eye = self.getEyePos();
-        steer(MathUtil.yawTo(eye, aim), MathUtil.pitchTo(eye, aim));
+    /** Something solid in the flight path that is closer than the target. */
+    private static boolean blockedBefore(ClientPlayerEntity self, Box box) {
+        Vec3d from = self.getEntityPos();
+        Vec3d ahead = from.add(self.getVelocity().multiply(4.0));
+        return ahead.y > box.maxY && !RaycastValidator.canSee(from, ahead, self);
     }
 
     private void steer(double yaw, double pitch) {
         RotationManager.request(RotationRequest.to(MathHelper.wrapDegrees(yaw), MathHelper.clamp(pitch, -90.0, 90.0))
-                .speed(rotSpeedMin.get(), rotSpeedMax.get())
-                .jitter(jitter.get())
-                .silent(false) // flight physics follow the real view: client and server agree
+                .speed(55.0, 80.0)
+                .jitter(0.0)
+                .silent(false) // elytra physics follow the real view
                 .priority(PRIORITY)
                 .validWhile(this::isEnabled)
                 .expiresAfter(3)
@@ -832,8 +773,8 @@ public final class ElytraMaceBot extends Module {
         }
         Vec3d p = target.getEntityPos();
         if (target.getId() == trackedId && lastTargetPos != null) {
-            Vec3d dlt = p.subtract(lastTargetPos);
-            targetVel = dlt.length() > 1.5 ? Vec3d.ZERO : targetVel.multiply(0.5).add(dlt.multiply(0.5));
+            Vec3d delta = p.subtract(lastTargetPos);
+            targetVel = delta.length() > 4.0 ? Vec3d.ZERO : targetVel.multiply(0.5).add(delta.multiply(0.5));
         } else {
             targetVel = Vec3d.ZERO;
         }
@@ -843,6 +784,6 @@ public final class ElytraMaceBot extends Module {
 
     @Override
     public String hudLabel() {
-        return name + " · " + state.name().toLowerCase() + " · " + strikes + " hits";
+        return name + " · " + state.name().toLowerCase() + " · " + strikes + " hits " + misses + " missed " + clutches + " saves " + shieldBreaks + " shields" + (aiMode.get() ? " AI" : "");
     }
 }

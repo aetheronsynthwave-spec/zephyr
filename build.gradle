@@ -60,6 +60,11 @@ loom {
         client {
             client()
             property "java.awt.headless", "false"
+            if (System.getProperty("zephyr.elytratest")) {
+                property "zephyr.elytratest", "1"
+                property "zephyr.scen", System.getProperty("zephyr.scen") ?: "still,walk,strafe,dodge"
+                programArgs "--quickPlaySingleplayer", "ZephyrTest"
+            }
         }
     }
 }
