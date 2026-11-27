@@ -72,6 +72,9 @@ public final class ElytraMaceBot extends Module {
     private final NumberSetting range = num("range", "Target range", 16, 96, 2, 64);
     private final NumberSetting climbHeight = num("climbHeight", "Dive height above target", 10, 60, 1, 24);
     private final NumberSetting maxHoriz = num("maxHoriz", "Max horizontal dive offset", 8, 64, 1, 32);
+    /** Dive only starts when (nearly) overhead: a steep dive is what banks fall distance. */
+    private final NumberSetting diveRadius = num("diveRadius", "Start dive within (blocks)", 2, 12, 0.5, 5);
+    private final NumberSetting minDivePitch = num("minDivePitch", "Min dive pitch (deg down)", 45, 89, 1, 60);
     private final NumberSetting climbPitch = num("climbPitch", "Climb pitch (deg up)", 30, 80, 1, 55);
     private final NumberSetting minFall = num("minFall", "Min fall distance to smash", 2, 20, 0.5, 5);
     private final NumberSetting reach = num("reach", "Strike reach", 2.5, 3.0, 0.05, 2.95);
@@ -354,16 +357,24 @@ public final class ElytraMaceBot extends Module {
         boolean high = alt >= needed;
         double clearance = DamageCalculator.distanceToGround(world, self);
 
-        if (high && horiz <= maxHoriz.get() && clearance >= groundClear.get()) {
+        // Lead the dive start by how far the target drifts while we fall (~alt / 2 ticks).
+        Vec3d lead = target.getEntityPos().add(targetVel.multiply(MathHelper.clamp(alt / 2.0, 0.0, 15.0)));
+        double leadHoriz = Math.hypot(lead.x - self.getX(), lead.z - self.getZ());
+        if (high && leadHoriz <= diveRadius.get() + Math.min(4.0, speed * 2.0)
+                && clearance >= groundClear.get()) {
             losLost = 0;
             enter(State.DIVE);
             return;
         }
 
         Vec3d eye = self.getEyePos();
-        double yaw = MathUtil.yawTo(eye, MathUtil.aimPoint(target));
-        // Below altitude: steep climb. At altitude but too far out: shallow glide toward target.
-        double pitch = high ? -6.0 : -climbPitch.get();
+        double yaw = MathUtil.yawTo(eye, new Vec3d(lead.x, eye.y, lead.z));
+        // Below altitude: steep climb. At altitude: cruise level toward the overhead point
+        // (a slight nose-up keeps altitude without rockets once the speed is up).
+        double pitch = high ? (alt > needed + 6.0 ? 4.0 : -4.0) : -climbPitch.get();
+        if (high && horiz > maxHoriz.get() * 2.5) {
+            pitch = -8.0; // far away: cover ground before worrying about the overhead point
+        }
         if (blockedAhead(self, speed)) {
             pitch = -75.0;
         }
@@ -371,6 +382,7 @@ public final class ElytraMaceBot extends Module {
         if (!high || speed < climbSpeed.get()) {
             tryRocket(client, self, world);
         }
+        slamPending = high && leadHoriz < diveRadius.get() * 3.0;
     }
 
     // ------------------------------------------------------------------
@@ -391,24 +403,55 @@ public final class ElytraMaceBot extends Module {
         Vec3d aim = leadPoint(self, target);
         double dist = eye.distanceTo(aim);
         double speed = self.getVelocity().length();
-        double pitch = MathHelper.clamp(MathUtil.pitchTo(eye, aim), -10.0, 80.0);
+        double alt = self.getY() - target.getY();
+        double horiz = Math.hypot(aim.x - eye.x, aim.z - eye.z);
+        // Always steep: vanilla clamps fallDistance to 1 while gliding slower than 0.5 b/t
+        // downward, so a shallow glide never banks a smash. Nose-down >= minDivePitch keeps
+        // vy well below -0.5; the yaw still tracks the lead point for the horizontal error.
+        double pitch = MathHelper.clamp(MathUtil.pitchTo(eye, aim), minDivePitch.get(), 89.0);
         steer(MathUtil.yawTo(eye, aim), pitch);
 
-        // Guards: ground too close while still far from the target, lost line of sight, undershoot.
+        // Overshoot: the target is now further sideways than a steep dive can correct.
+        if (horiz > Math.max(6.0, alt * 0.9) && alt > 4.0) {
+            reposition();
+            return;
+        }
+        // Missed: already level with (or below) the target without a strike.
+        if (alt < 0.5) {
+            reposition();
+            return;
+        }
+        // Terrain guard: only real obstacles count - ground under us that sits clearly ABOVE
+        // the target's feet (a ledge/roof). Ground at target level is the expected impact.
         double clearance = DamageCalculator.distanceToGround(world, self);
-        boolean far = dist > 12.0;
-        losLost = RaycastValidator.canSee(eye, aim, self) ? 0 : losLost + 1;
-        if ((far && clearance < groundClear.get() && self.getVelocity().y < -0.3)
-                || losLost >= 6 || (self.getY() - target.getY() < 2.0 && far)) {
+        if (clearance != Double.MAX_VALUE) {
+            double groundTop = self.getY() - clearance;
+            if (groundTop > target.getY() + 2.5 && clearance < 4.0) {
+                abortDive();
+                return;
+            }
+        }
+        losLost = RaycastValidator.hitboxVisible(eye, target.getBoundingBox(), self) ? 0 : losLost + 1;
+        if (losLost >= 10) {
             abortDive();
             return;
         }
-        if (far && rocketInDive.get() && speed < diveSpeed.get()) {
+        if (dist > 14.0 && rocketInDive.get() && speed < diveSpeed.get()) {
             tryRocket(client, self, world);
         }
         if (swapAllowed(self, target) && impactWindowOpen(self, target)) {
             enter(State.SWAP_OFF);
         }
+    }
+
+    /** Overshoot / miss: climb back over the target without counting it as a hard failure. */
+    private void reposition() {
+        losLost = 0;
+        enter(self() != null && self().isGliding() ? State.CLIMB : State.REGLIDE);
+    }
+
+    private static ClientPlayerEntity self() {
+        return MinecraftClient.getInstance().player;
     }
 
     private void abortDive() {
@@ -447,12 +490,18 @@ public final class ElytraMaceBot extends Module {
         double r = reach.get();
         double r2 = r * r;
         int delay = swapLead.get().intValue();
+        // Earliest tick the post-swap fall puts the target in reach. Swap when that is at
+        // most lead+2 ticks away; at fast dive speeds the reach sphere is crossed in 1-2
+        // ticks, so requiring it exactly inside [lead, lead+2] skipped most passes.
         for (int t = 1; t <= delay + 2; t++) {
+            Vec3d prev = pos;
             pos = pos.add(v);
             v = new Vec3d(v.x * 0.91, (v.y - 0.08) * 0.98, v.z * 0.91);
-            if (t >= delay) {
-                Vec3d eye = pos.add(0.0, STANDING_EYE, 0.0);
-                if (base.offset(targetVel.multiply(t)).squaredMagnitude(eye) <= r2) {
+            Box tb = base.offset(targetVel.multiply(t));
+            // Sample the tick's path (4 sub-steps) so a fast pass through the sphere counts.
+            for (int k = 1; k <= 4; k++) {
+                Vec3d eye = prev.lerp(pos, k / 4.0).add(0.0, STANDING_EYE, 0.0);
+                if (tb.squaredMagnitude(eye) <= r2) {
                     return true;
                 }
             }
@@ -501,7 +550,7 @@ public final class ElytraMaceBot extends Module {
             enter(State.SWAP_OFF); // the swap did not take
             return;
         }
-        if (elapsed > strikeWindow.get()) {
+        if (elapsed > strikeWindow.get() || self.getY() < target.getY() - 0.5) {
             enter(State.SWAP_ON); // missed: recover instead of falling with the chestplate on
             return;
         }
