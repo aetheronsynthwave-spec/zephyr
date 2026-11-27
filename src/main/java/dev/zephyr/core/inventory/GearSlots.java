@@ -81,7 +81,12 @@ public final class GearSlots {
      * the elytra is worn, otherwise a usable elytra. -1 if it is not in the hotbar.
      */
     public static int counterpartHotbarSlot(ClientPlayerEntity p) {
-        return InventoryManager.findHotbarSlot(p, wearingElytra(p) ? GearSlots::isChestplate : GearSlots::isUsableElytra);
+        if (wearingElytra(p)) {
+            return InventoryManager.findHotbarSlot(p, GearSlots::isChestplate);
+        }
+        int usable = InventoryManager.findHotbarSlot(p, GearSlots::isUsableElytra);
+        // Re-equipping a nearly broken elytra beats falling in a chestplate.
+        return usable != -1 ? usable : InventoryManager.findHotbarSlot(p, GearSlots::isElytra);
     }
 
     /** Inventory clicks need the player's own handler, no screen, an open action window. */
@@ -105,7 +110,7 @@ public final class GearSlots {
         }
         ItemStack other = p.getInventory().getStack(hotbarSlot);
         ItemStack worn = worn(p);
-        boolean valid = isElytra(worn) ? isChestplate(other) : isUsableElytra(other);
+        boolean valid = isElytra(worn) ? isChestplate(other) : isElytra(other);
         if (!valid) {
             return false;
         }

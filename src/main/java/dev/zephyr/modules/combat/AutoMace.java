@@ -79,6 +79,8 @@ public final class AutoMace extends Module {
     private int tickCounter;
     /** TRIGGER: consecutive ticks the strike conditions have held (compared to triggerDelay). */
     private int triggerStreak;
+    /** TRIGGER: a smash already landed during this fall (no repeat hits on the same drop). */
+    private boolean struckThisFall;
 
     public AutoMace() {
         super("AutoMace", ModuleCategory.COMBAT, 0);
@@ -198,7 +200,10 @@ public final class AutoMace extends Module {
                 && !self.isTouchingWater() && !self.isInLava();
         // Other hitters yield while a slam is building toward a player within 6 blocks.
         slamPending = falling && fall >= minFall.get() * 0.5 && anyPlayerWithin(client, self, 6.0);
-        if (!falling || fall < minFall.get()
+        if (self.isOnGround() || self.getVelocity().y > 0.0) {
+            struckThisFall = false; // landed or relaunched (Wind Burst): next fall may smash again
+        }
+        if (struckThisFall || !falling || fall < minFall.get()
                 || dev.zephyr.core.inventory.InventoryManager.findHotbarSlot(self, ItemUtil::isMace) == -1) {
             triggerStreak = 0;
             return;
@@ -217,6 +222,7 @@ public final class AutoMace extends Module {
         }
         if (strike(client, self, target, fall)) {
             triggerStreak = 0;
+            struckThisFall = true;
         }
     }
 

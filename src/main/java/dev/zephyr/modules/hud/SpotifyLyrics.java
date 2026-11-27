@@ -259,7 +259,7 @@ public final class SpotifyLyrics extends HudModule {
         String current;
         String next = null;
         if (s.track == null || !s.status.isEmpty() || s.lines.length == 0) {
-            if (s.track == null && s.status.startsWith("Waiting")) {
+            if (s.track == null && (s.status.startsWith("Waiting") || s.status.startsWith("Spotify is not"))) {
                 size[0] = 0f;
                 size[1] = 0f;
                 return size;

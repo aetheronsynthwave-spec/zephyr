@@ -327,7 +327,7 @@ public abstract class HudModule extends Module {
             return;
         }
         float anchorPx = screenX + anchorX() * bw;
-        float anchorPy = screenY + anchorY() * bh;
+        float anchorPy = screenY - offsetY() + anchorY() * bh; // offsetY is a transient slide
         xPct.set((double) (anchorPx / screenW * 100f));
         yPct.set((double) (anchorPy / screenH * 100f));
     }

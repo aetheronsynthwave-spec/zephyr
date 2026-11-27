@@ -106,6 +106,9 @@ public final class ZephyrClient implements ClientModInitializer {
 
         // 1.21.11 fabric api: HUD callback passes a RenderTickCounter, not a float delta.
         HudRenderCallback.EVENT.register((ctx, tickCounter) -> {
+            if (MinecraftClient.getInstance().currentScreen instanceof dev.zephyr.gui.HudEditorScreen) {
+                return; // the editor renders the HUDs itself (no double draw / double animation)
+            }
             long t0 = System.nanoTime();
             modules.hudRender(MinecraftClient.getInstance(), ctx, tickCounter.getTickProgress(false));
             dev.zephyr.core.ZephyrProfiler.addHudRender(System.nanoTime() - t0);

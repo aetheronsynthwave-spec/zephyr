@@ -65,6 +65,7 @@ public final class HudEditorScreen extends Screen {
                 }
             }
         }
+        Ui.beginFrame(1f); // elements leave their own scale behind; editor chrome is 1:1
 
         // Outline and name label per element.
         HudModule hovered = hitTest(mouseX, mouseY);

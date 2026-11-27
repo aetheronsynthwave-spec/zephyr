@@ -111,6 +111,8 @@ public final class ElytraMaceBot extends Module {
     private long strikeTick = Long.MIN_VALUE;
     private boolean chestplateOn;
     private boolean swapSent;
+    /** Chest swaps attempted on the current dive (a rejected click must not loop forever). */
+    private int swapAttempts;
     private boolean slamPending;
     private String abortReason = "";
     private int strikes;
@@ -141,6 +143,8 @@ public final class ElytraMaceBot extends Module {
     @Override
     protected void onEnable() {
         reset();
+        strikes = 0;
+        rockets = 0;
     }
 
     @Override
@@ -236,6 +240,10 @@ public final class ElytraMaceBot extends Module {
     // ------------------------------------------------------------------
 
     private void idle(ClientPlayerEntity self, LivingEntity target) {
+        if (chestplateOn && !self.isOnGround() && !GearSlots.wearingElytra(self)) {
+            enter(State.RECOVER); // never idle in the air with the chestplate on
+            return;
+        }
         if (target != null) {
             enter(State.EQUIP);
             return;
@@ -249,6 +257,10 @@ public final class ElytraMaceBot extends Module {
     private void equip(MinecraftClient client, ClientPlayerEntity self, LivingEntity target) {
         if (target == null) {
             enter(State.IDLE);
+            return;
+        }
+        if (stateTicks > 200) {
+            abort("could not prepare gear (inventory busy?)");
             return;
         }
         if (!ready(client, self, this::isStrikeMace, requireWindBurst.get() ? "Wind Burst mace" : "mace")
@@ -342,6 +354,10 @@ public final class ElytraMaceBot extends Module {
             enter(State.APPROACH);
             return;
         }
+        if (stateTicks > 400) {
+            miss(); // never reached altitude (ceiling / no rockets working)
+            return;
+        }
         Vec3d eye = self.getEyePos();
         double towards = MathUtil.yawTo(eye, target.getEntityPos());
         // Too close to start a clean line later: climb AWAY from the target to build a runway.
@@ -378,7 +394,11 @@ public final class ElytraMaceBot extends Module {
         double hSpeed = Math.sqrt(v.x * v.x + v.z * v.z);
         double heading = hSpeed < 1.0e-3 || horiz < 1.0e-3 ? 1.0 : (v.x * dx + v.z * dz) / (hSpeed * horiz);
         double lineAngle = Math.toDegrees(Math.atan2(alt, Math.max(horiz, 1.0e-3)));
-        slamPending = lineAngle > diveAngle.get() - 15.0;
+        slamPending = !target.isGliding() && lineAngle > diveAngle.get() - 15.0;
+        if (stateTicks > 400) {
+            miss(); // circling without ever getting a clean line (or the target keeps flying)
+            return;
+        }
 
         if (alt < cruiseHeight.get() * 0.5) {
             enter(State.CLIMB); // lost too much height on the way in
@@ -387,6 +407,7 @@ public final class ElytraMaceBot extends Module {
         if (!target.isGliding()
                 && ((lineAngle >= diveAngle.get() && (heading > 0.6 || hSpeed < 0.4)) || lineAngle >= 82.0)) {
             losLost = 0;
+            swapAttempts = 0;
             enter(State.DIVE);
             return;
         }
@@ -473,19 +494,25 @@ public final class ElytraMaceBot extends Module {
             tryRocket(client, self, world);
         }
         if (swapReady(self, target) && impactSoon(self, target)) {
+            if (swapAttempts >= 2) {
+                miss(); // the chest click keeps being rejected: climb and retry the whole dive
+                return;
+            }
             swapSent = false;
             enter(State.DROP);
             drop(client, self, target); // send the chest swap this tick
         }
     }
 
-    private void miss() {
+    /** @return true when this miss aborted the module (caller must not change state). */
+    private boolean miss() {
         losLost = 0;
         if (++misses >= 8) {
             abort("dive keeps missing (obstacles / target dodging)");
-        } else {
-            enter(State.CLIMB);
+            return true;
         }
+        enter(State.CLIMB);
+        return false;
     }
 
     /** Gear present, shield not raised at us, enough fall banked for a smash after the swap. */
@@ -544,13 +571,18 @@ public final class ElytraMaceBot extends Module {
             enter(State.RECOVER);
             return;
         }
-        slamPending = true;
         aimAt(self, target);
         if (GearSlots.wearingElytra(self)) {
             if (swapSent && stateTicks > 3) {
-                enter(State.DIVE); // the click did not take: keep diving, try again
+                swapAttempts++;
+                enter(State.DIVE); // the click did not take: keep diving, try again (capped)
                 return;
             }
+            if (!swapSent && stateTicks > 3) {
+                miss(); // the click could not even be sent (screen open / eating / busy)
+                return;
+            }
+            slamPending = true;
             if (!swapSent) {
                 int h = GearSlots.counterpartHotbarSlot(self);
                 if (h == -1) {
@@ -566,12 +598,14 @@ public final class ElytraMaceBot extends Module {
             }
             return;
         }
+        slamPending = true;
         long elapsed = TickPhase.tickId() - swapTick;
         Box tb = target.getBoundingBox();
         Vec3d eye = self.getEyePos();
         if (elapsed > strikeWindow.get() || eye.y < tb.minY + 0.5) {
-            miss();
-            enter(State.RECOVER); // missed: elytra back on right away, never fall with the chestplate
+            if (!miss()) {
+                enter(State.RECOVER); // missed: elytra back on right away, never fall with the chestplate
+            }
             return;
         }
         // The server must have dropped gliding (it does on its tick after the click) before
@@ -656,9 +690,11 @@ public final class ElytraMaceBot extends Module {
             }
             return;
         }
+        if (GearSlots.wearingElytra(self)) {
+            chestplateOn = false;
+        }
         self.sendMessage(Text.literal("[Zephyr] ElytraMaceBot: " + abortReason), true);
-        chestplateOn = false;
-        setEnabled(false);
+        setEnabled(false); // onDisable still warns if we are airborne with the chestplate on
     }
 
     // ------------------------------------------------------------------

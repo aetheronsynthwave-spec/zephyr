@@ -148,13 +148,14 @@ public final class BlockEsp extends Module implements WorldRenderParticipant {
         };
         int n = 0, max = maxBoxes.asInt();
         for (BlockPos p : found) {
-            if (n++ >= max) {
-                break;
-            }
             int x = p.getX(), y = p.getY(), z = p.getZ();
-            // Blocks fully behind the camera cannot reach the screen; skip their line submission.
+            // Blocks fully behind the camera cannot reach the screen; skip them BEFORE the quota,
+            // or nearby hidden ores would crowd out visible ones further away.
             if (RenderUtil.boxBehindCamera(x, y, z, x + 1, y + 1, z + 1)) {
                 continue;
+            }
+            if (n++ >= max) {
+                break;
             }
             RenderUtil.drawBoxOutline(ctx.matrices(), ctx.consumers(), x, y, z, x + 1, y + 1, z + 1,
                     c[0], c[1], c[2], 1f, false);

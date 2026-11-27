@@ -26,6 +26,7 @@ public final class SessionHud extends HudModule {
     private int deaths;
     private boolean wasDead;
     private Object worldSeen;
+    private Object handlerSeen;
     private final String[] lines = new String[4];
     private final float[] size = new float[2];
     private int lastSecond = -1;
@@ -59,8 +60,12 @@ public final class SessionHud extends HudModule {
         if (p == null || client.world == null) {
             return;
         }
+        if (handlerSeen != client.getNetworkHandler()) {
+            handlerSeen = client.getNetworkHandler(); // new server / world join -> fresh session
+            reset();
+        }
         if (worldSeen != client.world) {
-            if (worldSeen == null || client.getNetworkHandler() == null) {
+            if (worldSeen == null) {
                 reset();
             }
             worldSeen = client.world;
