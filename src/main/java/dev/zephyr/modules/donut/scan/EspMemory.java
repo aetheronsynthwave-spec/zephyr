@@ -23,7 +23,8 @@ import java.util.function.Predicate;
  */
 public final class EspMemory {
 
-    private static final int VERSION = 1;
+    /** 2: underground light is traced to its source, so older light hints are dropped. */
+    private static final int VERSION = 2;
     private static final int MISSES = 2;
     private static final int MAX_FINDS = 30000;
     private static final int MAX_HINTS = 12000;
@@ -385,9 +386,11 @@ public final class EspMemory {
         JsonObject root;
         JsonArray blocks;
         JsonArray traces;
+        int version;
         try {
             root = JsonParser.parseString(json).getAsJsonObject();
-            if (root.get("version").getAsInt() != VERSION) {
+            version = root.get("version").getAsInt();
+            if (version < 1 || version > VERSION) {
                 throw new IllegalArgumentException("unknown memory version");
             }
             blocks = root.getAsJsonArray("blocks");
@@ -420,6 +423,10 @@ public final class EspMemory {
                 }
                 Trace trace = new Trace(Trace.Kind.valueOf(o.get("kind").getAsString()),
                         pos(o.getAsJsonArray("at")), o.get("strength").getAsInt(), o.get("mats").getAsLong(), cells);
+                if (version < 2 && trace.kind() == Trace.Kind.DEEP_LIGHT) {
+                    memory.dirty = true;
+                    continue;
+                }
                 if (memory.hints.computeIfAbsent(trace.pos().chunkKey(), k -> new EnumMap<>(Trace.Kind.class))
                         .put(trace.kind(), new Hint(trace, o.get("time").getAsLong())) == null) {
                     memory.hintCount++;

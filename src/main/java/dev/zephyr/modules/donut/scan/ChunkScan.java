@@ -8,7 +8,9 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.EnumSet;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -24,9 +26,15 @@ public final class ChunkScan {
      * @param denoise       drop faint light patches with no brighter source
      * @param skipLava      drop light patches that touch lava
      * @param paletteGrowth judge amethyst growth from palettes instead of single blocks
+     * @param skipNatural   ignore light that traces back to a natural cave light
      */
     public record Params(int glowCells, int lightMin, int lightCells, boolean denoise, boolean skipLava,
-                         boolean paletteGrowth) {
+                         boolean paletteGrowth, boolean skipNatural) {
+        public Params(int glowCells, int lightMin, int lightCells, boolean denoise, boolean skipLava,
+                      boolean paletteGrowth) {
+            this(glowCells, lightMin, lightCells, denoise, skipLava, paletteGrowth, true);
+        }
+
         public static Params defaults() {
             return new Params(12, 5, 8, true, true, false);
         }
@@ -301,11 +309,14 @@ public final class ChunkScan {
         }
         byte[] lit = new byte[height * 256];
         boolean any = false;
+        Map<Pos, Boolean> sources = new HashMap<>();
         for (int y = 0; y < height; y++) {
             for (int z = 0; z < 16; z++) {
                 for (int x = 0; x < 16; x++) {
                     int light = world.blockLight(baseX + x, bottom + y, baseZ + z);
-                    if (light >= params.lightMin && light > world.skyLight(baseX + x, bottom + y, baseZ + z)) {
+                    if (light >= params.lightMin && light > world.skyLight(baseX + x, bottom + y, baseZ + z)
+                            && !(params.skipNatural
+                            && fromNature(world, new Pos(baseX + x, bottom + y, baseZ + z), sources))) {
                         lit[y * 256 + z * 16 + x] = (byte) light;
                         any = true;
                     }
@@ -344,7 +355,11 @@ public final class ChunkScan {
                         lava = true;
                     }
                     if (nx < 0 || nx > 15 || nz < 0 || nz > 15) {
-                        outside = Math.max(outside, world.blockLight(baseX + nx, bottom + ny, baseZ + nz));
+                        int there = world.blockLight(baseX + nx, bottom + ny, baseZ + nz);
+                        if (there > outside && !(params.skipNatural && there >= params.lightMin
+                                && fromNature(world, new Pos(baseX + nx, bottom + ny, baseZ + nz), sources))) {
+                            outside = there;
+                        }
                         continue;
                     }
                     if (ny < 0 || ny >= height) {
@@ -379,6 +394,39 @@ public final class ChunkScan {
             brightest.add(kept.get(order.get(i)));
         }
         out.add(new Trace(Trace.Kind.DEEP_LIGHT, brightest.get(0), kept.size(), 0, brightest));
+    }
+
+    /**
+     * Follows the light uphill, always to the brightest neighbour, to the block it comes
+     * from. A source the server did not send ends the walk on something that is no cave
+     * light, so unexplained light stays reported. Crosses chunk borders.
+     */
+    private static boolean fromNature(ScanWorld world, Pos start, Map<Pos, Boolean> known) {
+        List<Pos> path = new ArrayList<>();
+        Pos at = start;
+        Boolean natural = known.get(at);
+        while (natural == null) {
+            path.add(at);
+            Pos up = null;
+            int best = world.blockLight(at.x(), at.y(), at.z());
+            for (int[] s : SIDES) {
+                int light = world.blockLight(at.x() + s[0], at.y() + s[1], at.z() + s[2]);
+                if (light > best) {
+                    best = light;
+                    up = new Pos(at.x() + s[0], at.y() + s[1], at.z() + s[2]);
+                }
+            }
+            if (up == null) {
+                natural = world.naturalLight(at.x(), at.y(), at.z()) >= best;
+            } else {
+                at = up;
+                natural = known.get(at);
+            }
+        }
+        for (Pos cell : path) {
+            known.put(cell, natural);
+        }
+        return natural;
     }
 
     private static boolean deepBlocks(ScanWorld world, int baseX, int baseZ) {

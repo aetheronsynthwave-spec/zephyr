@@ -1,3 +1,19 @@
+v1.19.1 - BaseFinder natural light fix
+  - Underground light is followed back to its source. Glow berries, glow lichen, sea
+    pickles, magma, sculk, mushrooms and amethyst no longer count ("Ignore natural cave
+    light", Advanced). Light with no such source, and torches, still count.
+  - Light hints saved by earlier builds are dropped when the ESP memory is loaded.
+
+Auction chat and window fixes
+  - A buy is now recognised from the server's plural line ("You bought 64 Spruce Logs"),
+    so the flipper goes on to sell it. A buy an earlier build left "unconfirmed" beside
+    your own purchase of the same stack is joined back together when the game starts.
+  - A window missing for under a second is waited out, and a failed /ah is sent once more.
+  - "nothing to flip" shows on the HUD instead of chat. Failed browses reach chat from the
+    third in a row. An item with too many listings is mentioned once, then left alone longer.
+  - After "This command does not exist" the command just sent is named; a refused
+    balanceCommand is switched off until auction.json is reloaded.
+
 v1.19.0 - ESP memory and hidden-data hints update
   - StorageESP, AmethystFinder and BaseFinder share one scanner over the chunks your
     client holds. What it finds is remembered (drawn fainter) per server and dimension in

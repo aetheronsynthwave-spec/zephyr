@@ -64,6 +64,7 @@ public final class BaseFinder extends Module implements WorldRenderParticipant {
     private final NumberSetting lightCells = num("lightCells", "Lit cells needed", 1, 256, 1, 8);
     private final BooleanSetting denoise = bool("denoise", "Drop faint light patches", true);
     private final BooleanSetting skipLava = bool("skipLava", "Ignore lava-lit patches", true);
+    private final BooleanSetting skipNatural = bool("skipNatural", "Ignore natural cave light", true);
     private final BooleanSetting bees = bool("bees", "Hint: hives and honeyed nests", true);
 
     private static final int MAX_TRACES = 96;
@@ -114,6 +115,7 @@ public final class BaseFinder extends Module implements WorldRenderParticipant {
         config.lightCells = lightCells.asInt();
         config.denoise = denoise.get();
         config.skipLava = skipLava.get();
+        config.skipNatural = skipNatural.get();
     }
 
     @Override

@@ -24,12 +24,19 @@ public final class MarketScan implements AuctionRoutine.Task<MarketScan.Market> 
                     .thenComparingDouble(o -> o.price().high())).orElse(null);
         }
 
+        /** True when the listings did not fit in the page limit. */
+        public boolean tooBig() {
+            return !complete && problem != null && problem.startsWith(TOO_BIG);
+        }
+
         public Market without(Offer gone) {
             List<Offer> rest = new ArrayList<>(offers);
             rest.remove(gone);
             return new Market(item, rest, complete, problem);
         }
     }
+
+    private static final String TOO_BIG = "more than ";
 
     private final AuctionSetup setup;
     private final AuctionGame.Item item;
@@ -71,7 +78,8 @@ public final class MarketScan implements AuctionRoutine.Task<MarketScan.Market> 
             return done(true, null);
         }
         if (read >= setup.checkPages && w.at(setup.nextSlot) != null) {
-            return done(false, item.name() + " has more than " + setup.checkPages + " pages (raise checkPages)");
+            return done(false, TOO_BIG + setup.checkPages
+                    + " pages of results (raise \"Max pages per price check\")");
         }
         if (pager.next(now)) {
             return null;

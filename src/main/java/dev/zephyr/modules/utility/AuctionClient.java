@@ -21,6 +21,8 @@ import java.util.List;
 public final class AuctionClient implements AuctionGame {
 
     private boolean clicking;
+    private String lastCommand;
+    private long lastCommandAt;
 
     /** True while a click of ours is being sent, so it is not taken for yours. */
     public boolean clicking() {
@@ -120,7 +122,14 @@ public final class AuctionClient implements AuctionGame {
 
     @Override
     public void command(String command) {
+        lastCommand = command;
+        lastCommandAt = System.nanoTime();
         client().player.networkHandler.sendChatCommand(command);
+    }
+
+    @Override
+    public String recentCommand() {
+        return lastCommand != null && System.nanoTime() - lastCommandAt < 2_000_000_000L ? lastCommand : null;
     }
 
     @Override

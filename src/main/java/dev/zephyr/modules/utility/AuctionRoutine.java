@@ -31,6 +31,7 @@ public abstract class AuctionRoutine {
     private long moneyAt = Long.MIN_VALUE / 2;
     private BuyTask buying;
     protected String status = "starting";
+    private boolean quiet;
 
     protected AuctionRoutine(AuctionGame game, AuctionHost host, Supplier<AuctionSetup> setup) {
         this.game = game;
@@ -58,6 +59,7 @@ public abstract class AuctionRoutine {
     }
 
     protected <T> void await(Task<T> task, BiConsumer<T, Long> then) {
+        quiet = false;
         step = now -> {
             T result = task.tick(now);
             if (result == null) {
@@ -71,6 +73,17 @@ public abstract class AuctionRoutine {
     protected void rest(long now, int ticks, String why) {
         restUntil = now + ticks;
         status = why;
+        quiet = false;
+    }
+
+    /** A rest that is business as usual: shown on the HUD, not in chat. */
+    protected void restQuietly(long now, int ticks, String why) {
+        rest(now, ticks, why);
+        quiet = true;
+    }
+
+    public boolean quiet() {
+        return quiet;
     }
 
     /** Drops everything in progress and closes what the routine opened. */

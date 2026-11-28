@@ -50,6 +50,7 @@ public final class EspTracker {
         public int lightCells = 8;
         public boolean denoise = true;
         public boolean skipLava = true;
+        public boolean skipNatural = true;
         public int spread = 5;
         public int sensitivity = 6;
         public String growth = "AUTO";
@@ -198,7 +199,8 @@ public final class EspTracker {
         // a donutsmp address to mean that software is an assumption; the setting overrides it.
         boolean byPalette = c.growth.equals("PALETTE")
                 || c.growth.equals("AUTO") && server.contains("donutsmp");
-        return new ChunkScan.Params(c.glowCells, c.lightMin, c.lightCells, c.denoise, c.skipLava, byPalette);
+        return new ChunkScan.Params(c.glowCells, c.lightMin, c.lightCells, c.denoise, c.skipLava, byPalette,
+                c.skipNatural);
     }
 
     /** A block sound from the server: marks where it came from. Client thread only. */

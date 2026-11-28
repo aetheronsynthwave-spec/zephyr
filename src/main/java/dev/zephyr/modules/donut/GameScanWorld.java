@@ -13,6 +13,7 @@ import net.minecraft.world.chunk.WorldChunk;
 
 import java.util.IdentityHashMap;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * The client's loaded world as {@link ScanWorld}. Make one per tick and drop it: it caches
@@ -21,6 +22,10 @@ import java.util.Map;
 final class GameScanWorld implements ScanWorld {
 
     private static final Map<Block, Mat> KINDS = new IdentityHashMap<>();
+    /** Block ids that light natural caves. Lava has its own setting. */
+    private static final Set<String> CAVE_LIGHTS = Set.of("cave_vines", "cave_vines_plant", "glow_lichen",
+            "sea_pickle", "magma_block", "sculk_catalyst", "sculk_sensor", "brown_mushroom",
+            "amethyst_cluster", "large_amethyst_bud", "medium_amethyst_bud", "small_amethyst_bud");
 
     private final ClientWorld world;
     private final BlockPos.Mutable cursor = new BlockPos.Mutable();
@@ -116,6 +121,15 @@ final class GameScanWorld implements ScanWorld {
     public boolean emits(int x, int y, int z) {
         BlockState state = state(x, y, z);
         return state != null && state.getLuminance() > 0;
+    }
+
+    @Override
+    public int naturalLight(int x, int y, int z) {
+        BlockState state = state(x, y, z);
+        if (state == null || state.getLuminance() == 0) {
+            return 0;
+        }
+        return CAVE_LIGHTS.contains(Registries.BLOCK.getId(state.getBlock()).getPath()) ? state.getLuminance() : 0;
     }
 
     @Override

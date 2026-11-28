@@ -3,6 +3,7 @@ package dev.zephyr.modules.utility;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * What was bought and sold. A buy click is "expected" until the server's chat line
@@ -94,6 +95,32 @@ public final class AuctionLedger {
             entries.add(e);
             nextId = Math.max(nextId, e.id + 1);
         }
+        repair();
+    }
+
+    /**
+     * Joins the two halves an earlier build saved when it missed a plural chat line: the
+     * purchase seen as your own, and the module's click left unconfirmed seconds later.
+     */
+    private void repair() {
+        for (Entry waiting : entries) {
+            if (waiting.status != Status.UNCONFIRMED || waiting.owner.isEmpty()) {
+                continue;
+            }
+            Entry seen = entries.stream().filter(e -> e.status == Status.BOUGHT && e.owner.isEmpty()
+                    && e.key.isEmpty() && e.count == waiting.count && sameName(e.name, waiting.name)
+                    && waiting.time >= e.time && waiting.time - e.time <= 30_000L
+                    && samePrice(waiting.paid, e.paid, Math.max(e.paid, e.paidHigh))).findFirst().orElse(null);
+            if (seen != null) {
+                waiting.status = Status.BOUGHT;
+                waiting.paid = seen.paid;
+                waiting.paidHigh = seen.paidHigh;
+                entries.remove(seen);
+                // The list changed under this loop; look again from the start.
+                repair();
+                return;
+            }
+        }
     }
 
     private static boolean money(double d) {
@@ -118,21 +145,59 @@ public final class AuctionLedger {
         expected.remove(e);
     }
 
+    /**
+     * Whether a chat line's item name means this item. The server writes "64 Spruce Logs"
+     * for the item "Spruce Log" (DonutSMP chat screenshot dated 2026-11-27); the "es" and
+     * "ies" endings are assumptions.
+     */
+    public static boolean sameName(String chat, String item) {
+        String shown = plain(chat);
+        String name = plain(item);
+        return shown.equals(name) || shown.equals(name + "s") || shown.equals(name + "es")
+                || name.endsWith("y") && shown.equals(name.substring(0, name.length() - 1) + "ies");
+    }
+
+    private static String plain(String name) {
+        return name.trim().replaceAll("\\s+", " ").toLowerCase(Locale.ROOT);
+    }
+
+    /**
+     * The purchase a "you bought" line is about: by name, else the only click of ours that
+     * has the same count and price, for a name the server words differently.
+     */
+    private Expected waitingFor(String name, int count, double price, double high) {
+        for (Expected x : expected) {
+            if (plain(x.name).equals(plain(name)) && (count < 0 || x.count == count)) {
+                return x;
+            }
+        }
+        for (Expected x : expected) {
+            if (sameName(name, x.name) && (count < 0 || x.count == count)) {
+                return x;
+            }
+        }
+        List<Expected> alike = expected.stream()
+                .filter(x -> x.sent && x.count == count && samePrice(x.price, price, high)).toList();
+        return alike.size() == 1 ? alike.get(0) : null;
+    }
+
+    private static boolean samePrice(double listed, double paid, double high) {
+        return Math.abs(listed - paid) <= Math.max(0.5, high - paid);
+    }
+
     /** A "you bought" line. Always recorded, also for purchases made by hand. */
     public Purchase bought(String name, int count, double price, double high, long now) {
-        for (Iterator<Expected> it = expected.iterator(); it.hasNext(); ) {
-            Expected x = it.next();
-            if (x.name.equalsIgnoreCase(name) && (count < 0 || x.count == count)) {
-                it.remove();
-                Entry e = add(x.name, x.key, x.count, price, Status.BOUGHT, now);
-                e.paidHigh = high;
-                e.owner = x.owner;
-                return new Purchase(e, x);
-            }
+        Expected match = waitingFor(name, count, price, high);
+        if (match != null) {
+            expected.remove(match);
+            Entry e = add(match.name, match.key, match.count, price, Status.BOUGHT, now);
+            e.paidHigh = high;
+            e.owner = match.owner;
+            return new Purchase(e, match);
         }
         for (int i = entries.size() - 1; i >= 0; i--) {
             Entry e = entries.get(i);
-            if (e.status == Status.UNCONFIRMED && now - e.time <= LATE && e.name.equalsIgnoreCase(name)
+            if (e.status == Status.UNCONFIRMED && now - e.time <= LATE && sameName(name, e.name)
                     && (count < 0 || e.count == count)) {
                 double listed = e.paid;
                 e.status = Status.BOUGHT;
@@ -154,7 +219,7 @@ public final class AuctionLedger {
     public Entry sold(String name, int count, double price, long now) {
         Entry best = null;
         for (Entry e : entries) {
-            if (e.status == Status.LISTED && e.name.equalsIgnoreCase(name) && (count < 0 || e.count == count)
+            if (e.status == Status.LISTED && sameName(name, e.name) && (count < 0 || e.count == count)
                     && (best == null || Math.abs(e.asked - price) < Math.abs(best.asked - price))) {
                 best = e;
             }

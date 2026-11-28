@@ -36,6 +36,9 @@ public interface AuctionGame {
 
     void command(String command);
 
+    /** The command sent within the last two seconds, or null. */
+    String recentCommand();
+
     void click(int slot, int button, Press press);
 
     void select(int hotbar);

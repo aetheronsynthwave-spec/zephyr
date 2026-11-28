@@ -125,7 +125,7 @@ public final class AuctionCore implements AuctionHost {
         }
         current.tick(now);
         // Say why a routine is resting, once per reason.
-        if (current.idle() && !current.status().equals(reported)) {
+        if (current.idle() && !current.quiet() && !current.status().equals(reported)) {
             reported = current.status();
             if (!reported.equals("starting")) {
                 env.say(reported);
@@ -196,6 +196,7 @@ public final class AuctionCore implements AuctionHost {
 
     /** A server message. Returns the purchase it confirmed or recorded, if it was one. */
     public AuctionLedger.Purchase chat(String line) {
+        rejected(line);
         AuctionChat.Hit money = AuctionChat.match(balancePattern, line);
         if (money != null) {
             balance = money.price();
@@ -218,6 +219,25 @@ public final class AuctionCore implements AuctionHost {
             env.saveLedger();
         }
         return null;
+    }
+
+    /** Names the command of ours that the server refused, if one was just sent. */
+    private void rejected(String line) {
+        // Wording from a DonutSMP chat screenshot dated 2026-11-27.
+        if (line == null || !line.replaceAll("§.", "").trim().startsWith("This command does not exist")) {
+            return;
+        }
+        String sent = game.recentCommand();
+        if (sent == null) {
+            return; // not ours: nothing was sent just before it
+        }
+        if (!balanceCommand.isEmpty() && sent.equals(balanceCommand)) {
+            balanceCommand = "";
+            env.say("the server does not know /" + sent + ": money reading is off until you fix "
+                    + "balanceCommand in auction.json and reload");
+        } else {
+            env.say("the server said \"This command does not exist\" right after /" + sent);
+        }
     }
 
     private void confirmed(AuctionLedger.Purchase purchase, double paid) {

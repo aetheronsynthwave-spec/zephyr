@@ -10,6 +10,8 @@ import java.util.regex.Pattern;
 public final class AuctionPager {
 
     private static final Pattern PAGE = Pattern.compile("(?i)page\\s*([0-9]+)");
+    /** Ticks a window may be missing before it counts as closed (a server may swap windows). */
+    private static final int GAP_TICKS = 20;
 
     private enum State { CLOSE, SEND, OPENING, SETTLING, READY, TURNING, FAILED }
 
@@ -23,6 +25,8 @@ public final class AuctionPager {
     private int page = 1;
     private int clicks;
     private boolean ended;
+    private boolean retried;
+    private long goneSince = -1;
     private String problem;
 
     public AuctionPager(AuctionGame game, AuctionSetup setup, String command) {
@@ -50,6 +54,9 @@ public final class AuctionPager {
             since = now;
         }
         AuctionGame.Window w = game.window();
+        if (w != null) {
+            goneSince = -1;
+        }
         switch (state) {
             case CLOSE -> {
                 if (!game.free()) {
@@ -73,12 +80,14 @@ public final class AuctionPager {
                     stableSince = now;
                     enter(State.SETTLING, now);
                 } else if (now - since > setup.windowTicks) {
-                    fail("no window opened for /" + command);
+                    reopenOrFail("no window opened for /" + command, now);
                 }
             }
             case SETTLING -> {
                 if (w == null) {
-                    fail("the auction window closed");
+                    if (gone(now)) {
+                        reopenOrFail("the auction window closed after /" + command, now);
+                    }
                     break;
                 }
                 String seen = signature(w);
@@ -96,7 +105,9 @@ public final class AuctionPager {
             }
             case READY -> {
                 if (w == null) {
-                    fail("the auction window closed");
+                    if (gone(now)) {
+                        reopenOrFail("the auction window closed after /" + command, now);
+                    }
                     break;
                 }
                 return w;
@@ -170,6 +181,25 @@ public final class AuctionPager {
             return null;
         }
         return w;
+    }
+
+    private boolean gone(long now) {
+        if (goneSince < 0) {
+            goneSince = now;
+        }
+        return now - goneSince >= GAP_TICKS;
+    }
+
+    /** One more try from the command, only while still on page 1 so no page is skipped. */
+    private void reopenOrFail(String why, long now) {
+        if (retried || page != 1) {
+            fail(why);
+            return;
+        }
+        retried = true;
+        goneSince = -1;
+        // The extra gap is for a server that ignores commands sent in quick succession.
+        enter(State.CLOSE, now + setup.commandGapTicks);
     }
 
     private void fail(String why) {

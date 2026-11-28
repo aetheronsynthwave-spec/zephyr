@@ -731,7 +731,12 @@ public final class AuctionFlipper extends Module implements AuctionCore.Env {
     public String hudLabel() {
         return name + " · " + buyer.buys() + " buys " + PriceText.shorten(buyer.committed())
                 + (core.balance() >= 0 ? " · $" + PriceText.shorten(core.balance()) : "")
-                + (learning != null ? " · learning" : "");
+                + (learning != null ? " · learning" : "")
+                + (core.status().isEmpty() ? "" : " · " + brief(core.status()));
+    }
+
+    private static String brief(String text) {
+        return text.length() <= 40 ? text : text.substring(0, 39) + "…";
     }
 
     // ------------------------------------------------------------------

@@ -22,6 +22,14 @@ public interface ScanWorld {
     /** Whether the block here gives off light itself. */
     boolean emits(int x, int y, int z);
 
+    /**
+     * The light level of a block here that lights caves on its own (glow berries, glow
+     * lichen and the like), 0 for anything else.
+     */
+    default int naturalLight(int x, int y, int z) {
+        return 0;
+    }
+
     /** For a bud: whether the block it grows from is budding amethyst. */
     boolean budOnBudding(int x, int y, int z);
 

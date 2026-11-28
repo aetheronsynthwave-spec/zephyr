@@ -2,7 +2,9 @@ package dev.zephyr.modules.utility;
 
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Supplier;
 
 /**
@@ -18,6 +20,11 @@ public final class FlipRoutine extends AuctionRoutine {
 
     /** Item key -> tick until which its market is not checked again. */
     private final Map<String, Long> checked = new HashMap<>();
+    /** Item keys already reported as having too many listings to price. */
+    private final Set<String> oversized = new HashSet<>();
+    /** Browses in a row that failed to read /ah; chat hears of it from the third. */
+    private int failures;
+    private static final int FAILURES_TO_REPORT = 3;
 
     public FlipRoutine(AuctionGame game, AuctionHost host, Supplier<AuctionSetup> setup) {
         super(game, host, setup);
@@ -71,11 +78,19 @@ public final class FlipRoutine extends AuctionRoutine {
             return pager.page() >= setup.get().browsePages || !pager.next(now) ? NOTHING : null;
         }, (found, now) -> {
             if (found instanceof AuctionDeals.Deal d) {
+                failures = 0;
                 check(d, now);
             } else {
                 // Starting again reopens /ah: a refresh, back on page 1.
                 String why = pager.problem();
-                rest(now, setup.get().restTicks, why != null ? why : "nothing to flip, refreshing soon");
+                failures = pager.failed() ? failures + 1 : 0;
+                if (why == null) {
+                    restQuietly(now, setup.get().restTicks, "nothing to flip, refreshing soon");
+                } else if (pager.failed() && failures < FAILURES_TO_REPORT) {
+                    restQuietly(now, setup.get().restTicks, why + ", trying again");
+                } else {
+                    rest(now, setup.get().restTicks, why);
+                }
                 game.close();
             }
         });
@@ -108,8 +123,16 @@ public final class FlipRoutine extends AuctionRoutine {
                     break; // dearer listings can only be worse
                 }
             }
-            status = no;
             game.close();
+            if (market.tooBig()) {
+                // Reading this many pages again soon would only fail the same way.
+                checked.put(v.key(), now + 10L * s.recheckTicks);
+                if (!oversized.add(v.key())) {
+                    restQuietly(now, s.commandGapTicks, "skipping " + v.name() + ": too many listings");
+                    return;
+                }
+            }
+            status = no;
         });
     }
 }
