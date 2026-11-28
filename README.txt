@@ -1,3 +1,18 @@
+AuctionFlipper update (after v1.18.0)
+  - Buys the best deal on the open auction page that fits your limits, then confirms it.
+  - Setup: /zephyr set AuctionFlipper maxPrice 500  and  budget 2000  (thousands),
+    /zephyr ah learn confirm  (then click a listing and confirm: that one really buys),
+    optionally /zephyr ah learn refresh, enable the module and open /ah.
+  - Nothing is bought while maxPrice or budget is 0, or the confirm button is unlearned.
+  - Item whitelist, blacklist, per-item price caps and resale prices, and a custom auction
+    window title: config/zephyr/auction.json, then /zephyr ah reload. Example:
+      "rules": { "blacklist": ["minecraft:dirt"], "whitelist": [],
+                 "maxUnitPrice": {"minecraft:diamond": 900},
+                 "resaleUnitPrice": {"Netherite Ingot": 450000} }
+  - /zephyr ah status | reset | learn cancel. Bind dumpKey to write the open window's
+    title, slots and lore to config/zephyr/ for troubleshooting.
+  - "Spent" counts buy clicks sent; the server's reply is not read.
+
 v1.18.0
   - New: AutoCrystalPvP (crystal and anchor modules as one bot, flat pearl chase under a
     flung target), DonutSMP section (AmethystFinder, StorageESP, AuctionFlipper which only

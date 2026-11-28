@@ -3,10 +3,12 @@ package dev.zephyr.mixin;
 import dev.zephyr.ZephyrClient;
 import dev.zephyr.core.combat.ActionState;
 import dev.zephyr.modules.combat.BreachSwap;
+import dev.zephyr.modules.utility.AuctionFlipper;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerInteractionManager;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.player.PlayerEntity;
+import net.minecraft.screen.slot.SlotActionType;
 import net.minecraft.util.ActionResult;
 import net.minecraft.util.Hand;
 import org.spongepowered.asm.mixin.Mixin;
@@ -45,6 +47,19 @@ public abstract class MixinClientPlayerInteractionManager {
     @Inject(method = "stopUsingItem", at = @At("HEAD"))
     private void zephyr$noteRelease(PlayerEntity player, CallbackInfo ci) {
         ActionState.noteRelease();
+    }
+
+    /** AuctionFlipper: learns button positions from your own clicks. */
+    @Inject(method = "clickSlot", at = @At("HEAD"))
+    private void zephyr$learnClick(int syncId, int slotId, int button, SlotActionType actionType,
+                                   PlayerEntity player, CallbackInfo ci) {
+        if (ZephyrClient.modules() == null) {
+            return;
+        }
+        AuctionFlipper flipper = ZephyrClient.modules().get(AuctionFlipper.class);
+        if (flipper != null) {
+            flipper.onSlotClick(syncId, slotId);
+        }
     }
 
     @Inject(method = "attackEntity", at = @At("HEAD"), cancellable = true)

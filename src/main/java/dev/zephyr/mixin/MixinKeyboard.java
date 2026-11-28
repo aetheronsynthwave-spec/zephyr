@@ -17,6 +17,12 @@ public abstract class MixinKeyboard {
     private void zephyr$onKey(long window, int action, KeyInput input, CallbackInfo ci) {
         if (action == GLFW.GLFW_PRESS) {
             BindInput.keyPressed(input.key());
+            if (dev.zephyr.ZephyrClient.modules() != null) {
+                var flipper = dev.zephyr.ZephyrClient.modules().get(dev.zephyr.modules.utility.AuctionFlipper.class);
+                if (flipper != null) {
+                    flipper.onKey(input.key());
+                }
+            }
         }
     }
 }

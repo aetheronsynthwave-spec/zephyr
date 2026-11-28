@@ -47,6 +47,22 @@ public final class ZephyrCommand {
                     client.send(() -> client.setScreen(new dev.zephyr.gui.HudEditorScreen()));
                     return 1;
                 }))
+                .then(ClientCommandManager.literal("ah")
+                        .then(ClientCommandManager.literal("learn")
+                                .then(ClientCommandManager.literal("confirm").executes(ctx -> auction(ctx,
+                                        a -> a.learn(dev.zephyr.modules.utility.AuctionBuyer.Kind.CONFIRM))))
+                                .then(ClientCommandManager.literal("refresh").executes(ctx -> auction(ctx,
+                                        a -> a.learn(dev.zephyr.modules.utility.AuctionBuyer.Kind.REFRESH))))
+                                .then(ClientCommandManager.literal("cancel").executes(ctx -> auction(ctx,
+                                        dev.zephyr.modules.utility.AuctionFlipper::cancelLearning))))
+                        .then(ClientCommandManager.literal("status").executes(ctx -> auction(ctx,
+                                a -> reply(ctx, a.summary()))))
+                        .then(ClientCommandManager.literal("reload").executes(ctx -> auction(ctx, a -> {
+                            a.reload();
+                            reply(ctx, a.summary());
+                        })))
+                        .then(ClientCommandManager.literal("reset").executes(ctx -> auction(ctx,
+                                dev.zephyr.modules.utility.AuctionFlipper::resetSession))))
                 .then(ClientCommandManager.literal("calc")
                         .then(ClientCommandManager.argument("expr", StringArgumentType.greedyString())
                                 .executes(ZephyrCommand::calc)))
@@ -131,6 +147,17 @@ public final class ZephyrCommand {
                             + "(verified statically against 1.21.11 intermediary; see logs for warnings)");
                     return 1;
                 }));
+    }
+
+    private static int auction(CommandContext<FabricClientCommandSource> ctx,
+                               java.util.function.Consumer<dev.zephyr.modules.utility.AuctionFlipper> action) {
+        var flipper = ZephyrClient.modules().get(dev.zephyr.modules.utility.AuctionFlipper.class);
+        if (flipper == null) {
+            reply(ctx, "AuctionFlipper is not loaded");
+            return 0;
+        }
+        action.accept(flipper);
+        return 1;
     }
 
     private static Module module(CommandContext<FabricClientCommandSource> ctx) {
