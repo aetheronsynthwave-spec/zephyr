@@ -1,0 +1,19 @@
+Zephyr ESP scanner: adapted components
+======================================
+
+src/main/java/dev/zephyr/modules/donut/scan/ChunkScan.java
+src/main/java/dev/zephyr/modules/donut/scan/SuspectHeat.java
+
+These two files adapt scanning methods from Spectre by 4ldenz (GPL-3.0-only), as ported to
+Minecraft 1.21.11 in Donut Client 4.0 (https://github.com/Raindots/donut-client, tag v4.0,
+commit 58bf2b872eb2657fcf52e673f0e90899004a17ec):
+
+  - section palette entries for amethyst growth (extended here to storage blocks)
+  - bud-strength block light peaking beside geode blocks
+  - dark open cells bordering block light 4 ("ANBS+ Scan")
+  - underground block light not explained by skylight, with denoising
+  - amethyst growth heat with young-amethyst vetoes ("Sus Chunk Finder")
+
+They were rewritten for Zephyr in 2026 and are modified from the originals. They are licensed
+under GPL-3.0-only (see spectre-GPL-3.0.txt). The rest of Zephyr stays under its MIT license;
+distributing a build that includes these files carries the GPL-3.0 terms for that build.

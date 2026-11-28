@@ -178,7 +178,9 @@ public final class ZephyrClient implements ClientModInitializer {
         modules.register(new dev.zephyr.modules.utility.Waypoints());
         modules.register(new Freecam());
         modules.register(new Fly());
-        modules.register(new dev.zephyr.modules.utility.AuctionFlipper());
+        var auctionFlipper = new dev.zephyr.modules.utility.AuctionFlipper();
+        modules.register(auctionFlipper);
+        modules.register(new dev.zephyr.modules.utility.CraftAutomate(auctionFlipper));
         modules.register(new dev.zephyr.modules.donut.AmethystFinder());
         modules.register(new dev.zephyr.modules.donut.StorageESP());
         // Render & HUD

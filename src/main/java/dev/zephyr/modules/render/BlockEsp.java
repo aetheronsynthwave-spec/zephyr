@@ -2,8 +2,10 @@ package dev.zephyr.modules.render;
 
 import dev.zephyr.core.Module;
 import dev.zephyr.core.ModuleCategory;
+import dev.zephyr.core.settings.BooleanSetting;
 import dev.zephyr.core.settings.ModeSetting;
 import dev.zephyr.core.settings.NumberSetting;
+import dev.zephyr.modules.donut.scan.SeenSet;
 import net.fabricmc.fabric.api.client.rendering.v1.world.WorldRenderContext;
 import net.minecraft.block.Block;
 import net.minecraft.block.BlockState;
@@ -21,7 +23,8 @@ import java.util.Map;
  * BlockESP - outlines selected block families inside already-loaded chunks. Presets cover
  * what Donut Client's BlockESP / Amethyst scanner highlighted: ores, ancient debris,
  * amethyst geodes and spawners. The scan is budgeted per tick (no frame hitches) and
- * the draw path reuses the shared line-box helper.
+ * the draw path reuses the shared line-box helper. With remember on, blocks found earlier
+ * stay outlined (fainter) for the session until a close rescan twice finds them gone.
  */
 public final class BlockEsp extends Module implements WorldRenderParticipant {
 
@@ -30,6 +33,12 @@ public final class BlockEsp extends Module implements WorldRenderParticipant {
     private final NumberSetting radius = num("radius", "Radius", 8, 48, 1, 24);
     private final NumberSetting budget = num("budget", "Blocks scanned / tick", 2000, 60000, 1000, 20000);
     private final NumberSetting maxBoxes = num("maxBoxes", "Max outlines", 16, 1024, 16, 256);
+
+    private final BooleanSetting walls = bool("walls", "Through walls", true);
+    private final BooleanSetting remember = bool("remember", "Remember finds", true);
+
+    /** A miss only counts this close; further off a server may be masking the block. */
+    private static final double VERIFY = 16;
 
     private static final float[] C_DIAMOND = {0.3f, 0.9f, 1f};
     private static final float[] C_DEBRIS = {0.7f, 0.4f, 0.2f};
@@ -40,9 +49,13 @@ public final class BlockEsp extends Module implements WorldRenderParticipant {
     private final List<BlockPos> found = new ArrayList<>();
     private List<BlockPos> building = new ArrayList<>();
     private int cx, cy, cz;       // scan cursor (offset from origin)
+    private int scanRadius;       // radius of the sweep in progress
     private BlockPos origin = BlockPos.ORIGIN;
     private boolean scanning;
     public int lastCount;
+    private final SeenSet<BlockPos> memory = new SeenSet<>(4096);
+    private List<BlockPos> old = List.of();
+    private Object scannedWorld;
 
     /**
      * Per-block-type verdict for the active preset. The scan visits up to {@code budget}
@@ -61,6 +74,21 @@ public final class BlockEsp extends Module implements WorldRenderParticipant {
     protected void onEnable() {
         scanning = false;
         found.clear();
+        old = List.of();
+    }
+
+    @Override
+    public void onWorldLeave(MinecraftClient client) {
+        forget();
+        scannedWorld = null;
+    }
+
+    private void forget() {
+        scanning = false;
+        found.clear();
+        memory.clear();
+        old = List.of();
+        lastCount = 0;
     }
 
     private boolean matches(BlockState st) {
@@ -91,19 +119,25 @@ public final class BlockEsp extends Module implements WorldRenderParticipant {
         if (mc.world == null || mc.player == null) {
             return;
         }
-        int r = radius.asInt();
+        if (mc.world != scannedWorld) {
+            forget();
+            scannedWorld = mc.world;
+        }
+        String presetName = preset.get();
+        if (!presetName.equals(memoPreset)) {
+            matchMemo.clear();
+            forget();
+            memoPreset = presetName;
+        }
+        int r = scanning ? scanRadius : radius.asInt();
         if (!scanning) {
+            scanRadius = r;
             origin = mc.player.getBlockPos();
             building = new ArrayList<>();
             cx = cy = cz = -r;
             scanning = true;
         }
         int left = budget.asInt();
-        String presetName = preset.get();
-        if (!presetName.equals(memoPreset)) {
-            matchMemo.clear();
-            memoPreset = presetName;
-        }
         BlockPos.Mutable m = new BlockPos.Mutable();
         int minY = mc.world.getBottomY(), maxY = mc.world.getTopYInclusive();
         while (left > 0 && scanning) {
@@ -128,6 +162,17 @@ public final class BlockEsp extends Module implements WorldRenderParticipant {
                         found.addAll(building);
                         lastCount = found.size();
                         scanning = false;
+                        int reach = r;
+                        BlockPos from = origin;
+                        memory.update(found, p -> Math.abs(p.getX() - from.getX()) <= reach
+                                && Math.abs(p.getY() - from.getY()) <= reach
+                                && Math.abs(p.getZ() - from.getZ()) <= reach
+                                && p.getSquaredDistance(c) <= VERIFY * VERIFY && mc.world.isChunkLoaded(p));
+                        java.util.Set<BlockPos> current = new java.util.HashSet<>(found);
+                        List<BlockPos> kept = new ArrayList<>(memory.all());
+                        kept.removeIf(current::contains);
+                        kept.sort((a, b) -> Double.compare(a.getSquaredDistance(c), b.getSquaredDistance(c)));
+                        old = kept;
                     }
                 }
             }
@@ -136,7 +181,8 @@ public final class BlockEsp extends Module implements WorldRenderParticipant {
 
     @Override
     public void onWorldRender(WorldRenderContext ctx) {
-        if (ctx.consumers() == null || found.isEmpty()) {
+        List<BlockPos> saved = remember.get() ? old : List.of();
+        if (ctx.consumers() == null || found.isEmpty() && saved.isEmpty()) {
             return;
         }
         float[] c = switch (preset.get()) {
@@ -146,20 +192,28 @@ public final class BlockEsp extends Module implements WorldRenderParticipant {
             case "SPAWNERS" -> C_SPAWNERS;
             default -> C_DEFAULT;
         };
-        int n = 0, max = maxBoxes.asInt();
-        for (BlockPos p : found) {
+        int drawn = draw(ctx, found, c, 1f, maxBoxes.asInt());
+        draw(ctx, saved, c, 0.45f, maxBoxes.asInt() - drawn);
+    }
+
+    private int draw(WorldRenderContext ctx, List<BlockPos> blocks, float[] c, float alpha, int max) {
+        int n = 0;
+        boolean through = walls.get();
+        for (BlockPos p : blocks) {
             int x = p.getX(), y = p.getY(), z = p.getZ();
             // Blocks fully behind the camera cannot reach the screen; skip them BEFORE the quota,
             // or nearby hidden ores would crowd out visible ones further away.
             if (RenderUtil.boxBehindCamera(x, y, z, x + 1, y + 1, z + 1)) {
                 continue;
             }
-            if (n++ >= max) {
+            if (n >= max) {
                 break;
             }
+            n++;
             RenderUtil.drawBoxOutline(ctx.matrices(), ctx.consumers(), x, y, z, x + 1, y + 1, z + 1,
-                    c[0], c[1], c[2], 1f, false);
+                    c[0], c[1], c[2], alpha, through);
         }
+        return n;
     }
 
     @Override

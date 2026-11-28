@@ -142,6 +142,7 @@ final class FeatureTour {
                         + price + "\"]] 1");
             }
             cmd.accept("tp " + me + " 20.5 61 11.2 0 30");
+            set("AuctionFlipper", "auto", false); // the chest is marked, no commands are sent
             on("AuctionFlipper", true);
         } else if (s == 670) {
             client.interactionManager.interactBlock(self, Hand.MAIN_HAND,

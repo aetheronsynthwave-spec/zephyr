@@ -20,10 +20,15 @@ public final class AuctionLedger {
         public int count;
         /** What the purchase cost; 0 when no purchase was seen (a sale of your own item). */
         public double paid;
-        /** Suggested or chosen sale price for the whole stack; 0 when there is none. */
-        public double listAt;
+        /** The most it can have cost, given how roughly the price was shown. */
+        public double paidHigh;
+        /** "flip" or "craft" when a module bought it and may sell it; "" for your own buys. */
+        public String owner = "";
+        /** Why it is not listed yet. */
+        public String note = "";
         /** Price it was listed for. */
         public double asked;
+        public long listedAt;
         public double soldFor;
         public Status status = Status.BOUGHT;
     }
@@ -34,20 +39,20 @@ public final class AuctionLedger {
         public final String key;
         public final int count;
         public final double price;
-        public final double listAt;
+        public final String owner;
         /** True when the buy click was sent by the flipper, so the money is held. */
         public final boolean sent;
         public long deadline;
         /** Anything to hand back on confirmation (the button you clicked). */
         public Object tag;
 
-        public Expected(String name, String key, int count, double price, double listAt, boolean sent,
+        public Expected(String name, String key, int count, double price, String owner, boolean sent,
                         long deadline) {
             this.name = name;
             this.key = key;
             this.count = count;
             this.price = price;
-            this.listAt = listAt;
+            this.owner = owner;
             this.sent = sent;
             this.deadline = deadline;
         }
@@ -72,8 +77,9 @@ public final class AuctionLedger {
     /** Replaces the contents with saved entries; rejects anything malformed. */
     public void load(List<Entry> saved) {
         for (Entry e : saved) {
-            if (e == null || e.name == null || e.key == null || e.status == null || e.count < 0
-                    || !money(e.paid) || !money(e.listAt) || !money(e.asked) || !money(e.soldFor)) {
+            if (e == null || e.name == null || e.key == null || e.status == null || e.owner == null
+                    || e.note == null || e.count < 0 || !money(e.paid) || !money(e.paidHigh) || !money(e.asked)
+                    || !money(e.soldFor)) {
                 throw new IllegalArgumentException("bad ledger entry");
             }
         }
@@ -81,6 +87,9 @@ public final class AuctionLedger {
         for (Entry e : saved) {
             if (e.status == Status.SELLING) {
                 e.status = Status.BOUGHT; // the game closed mid-sale; nothing proves it was listed
+            }
+            if (e.paidHigh <= 0) {
+                e.paidHigh = e.paid; // saved by an earlier build
             }
             entries.add(e);
             nextId = Math.max(nextId, e.id + 1);
@@ -110,12 +119,14 @@ public final class AuctionLedger {
     }
 
     /** A "you bought" line. Always recorded, also for purchases made by hand. */
-    public Purchase bought(String name, int count, double price, long now) {
+    public Purchase bought(String name, int count, double price, double high, long now) {
         for (Iterator<Expected> it = expected.iterator(); it.hasNext(); ) {
             Expected x = it.next();
             if (x.name.equalsIgnoreCase(name) && (count < 0 || x.count == count)) {
                 it.remove();
-                Entry e = add(x.name, x.key, x.count, price, x.listAt, Status.BOUGHT, now);
+                Entry e = add(x.name, x.key, x.count, price, Status.BOUGHT, now);
+                e.paidHigh = high;
+                e.owner = x.owner;
                 return new Purchase(e, x);
             }
         }
@@ -126,11 +137,14 @@ public final class AuctionLedger {
                 double listed = e.paid;
                 e.status = Status.BOUGHT;
                 e.paid = price;
-                Expected late = new Expected(e.name, e.key, e.count, listed, e.listAt, true, 0);
+                e.paidHigh = high;
+                Expected late = new Expected(e.name, e.key, e.count, listed, e.owner, true, 0);
                 return new Purchase(e, late);
             }
         }
-        return new Purchase(add(name, "", Math.max(1, count), price, 0, Status.BOUGHT, now), null);
+        Entry own = add(name, "", Math.max(1, count), price, Status.BOUGHT, now);
+        own.paidHigh = high;
+        return new Purchase(own, null);
     }
 
     /**
@@ -146,7 +160,7 @@ public final class AuctionLedger {
             }
         }
         if (best == null) {
-            best = add(name, "", Math.max(1, count), 0, 0, Status.SOLD, now);
+            best = add(name, "", Math.max(1, count), 0, Status.SOLD, now);
         }
         best.status = Status.SOLD;
         best.soldFor = price;
@@ -161,12 +175,44 @@ public final class AuctionLedger {
             if (now >= x.deadline) {
                 it.remove();
                 if (x.sent) {
-                    add(x.name, x.key, x.count, x.price, x.listAt, Status.UNCONFIRMED, now);
+                    Entry e = add(x.name, x.key, x.count, x.price, Status.UNCONFIRMED, now);
+                    e.paidHigh = x.price;
+                    e.owner = x.owner;
                     changed = true;
                 }
             }
         }
         return changed;
+    }
+
+    /** A bought stack was crafted into something else; what it cost stays with the result. */
+    public void transform(Entry e, String name, String key, int count) {
+        e.name = name;
+        e.key = key;
+        e.count = count;
+        e.note = "";
+    }
+
+    /** Takes {@code count} off an entry into its own, with its share of the cost. */
+    public Entry split(Entry from, int count, long now) {
+        if (count >= from.count) {
+            return from;
+        }
+        double share = (double) count / from.count;
+        Entry part = add(from.name, from.key, count, from.paid * share, from.status, now);
+        part.paidHigh = from.paidHigh * share;
+        part.owner = from.owner;
+        from.paid -= part.paid;
+        from.paidHigh -= part.paidHigh;
+        from.count -= count;
+        return part;
+    }
+
+    /** What you ask per item for this key, in listings made since {@code since}. */
+    public List<Double> askedPerItem(String key, long since) {
+        return entries.stream()
+                .filter(e -> e.status == Status.LISTED && e.key.equals(key) && e.count > 0 && e.listedAt >= since)
+                .map(e -> e.asked / e.count).toList();
     }
 
     public Entry byId(long id) {
@@ -195,7 +241,7 @@ public final class AuctionLedger {
                 .mapToDouble(e -> e.soldFor - e.paid).sum();
     }
 
-    private Entry add(String name, String key, int count, double paid, double listAt, Status status, long now) {
+    private Entry add(String name, String key, int count, double paid, Status status, long now) {
         Entry e = new Entry();
         e.id = nextId++;
         e.time = now;
@@ -203,12 +249,17 @@ public final class AuctionLedger {
         e.key = key;
         e.count = count;
         e.paid = paid;
-        e.listAt = listAt;
         e.status = status;
         entries.add(e);
-        while (entries.size() > LIMIT) {
-            Entry oldest = entries.stream().filter(x -> x.status == Status.SOLD).findFirst().orElse(entries.get(0));
-            entries.remove(oldest);
+        // Old history goes first; stock that is still waiting to be sold is never dropped.
+        for (Status gone : new Status[]{Status.SOLD, Status.LISTED, Status.UNCONFIRMED}) {
+            while (entries.size() > LIMIT) {
+                Entry oldest = entries.stream().filter(x -> x.status == gone).findFirst().orElse(null);
+                if (oldest == null) {
+                    break;
+                }
+                entries.remove(oldest);
+            }
         }
         return e;
     }

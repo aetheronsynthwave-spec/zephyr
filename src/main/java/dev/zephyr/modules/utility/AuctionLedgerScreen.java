@@ -5,7 +5,6 @@ import dev.zephyr.gui.render.Ui;
 import net.minecraft.client.gui.Click;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.Screen;
-import net.minecraft.client.input.CharInput;
 import net.minecraft.client.input.KeyInput;
 import net.minecraft.text.Text;
 import org.lwjgl.glfw.GLFW;
@@ -14,8 +13,8 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Everything bought and sold. On the Bought tab, click a price to type a new one (1500,
- * 1.5k, 2m) and press Enter, then Sell. Newest entries are first.
+ * Everything bought and sold, newest first. Sell checks the market and lists the item just
+ * under the cheapest; hover a row to see why something is waiting or what the check found.
  */
 public final class AuctionLedgerScreen extends Screen {
 
@@ -30,12 +29,11 @@ public final class AuctionLedgerScreen extends Screen {
     private final List<Button> buttons = new ArrayList<>();
     private boolean soldTab;
     private int scroll;
-    private long editing = -1;
-    private String typed = "";
     private long removing = -1;
     private String note = "";
     private float mouseGuiX;
     private float mouseGuiY;
+    private String hovered = "";
 
     public AuctionLedgerScreen(AuctionFlipper flipper) {
         super(Text.literal("Bought and sold"));
@@ -62,6 +60,7 @@ public final class AuctionLedgerScreen extends Screen {
         Ui.beginFrame(scale);
         try {
             buttons.clear();
+            hovered = "";
             Ui.panel(ctx, x, y, W, h, 9, Ui.BG, 1f);
             AuctionLedger ledger = flipper.ledger();
             Ui.text(ctx, "Spent $" + PriceText.shorten(ledger.spent()) + "   Earned $"
@@ -88,9 +87,12 @@ public final class AuctionLedgerScreen extends Screen {
             for (int i = scroll; i < shown.size() && i < scroll + rows; i++, rowY += ROW) {
                 row(ctx, shown.get(i), x, rowY);
             }
-            String hint = !note.isEmpty() ? note : soldTab && !flipper.soldMessageSet()
+            String hint = !note.isEmpty() ? note : !hovered.isEmpty() ? hovered : soldTab && !flipper.soldMessageSet()
                     ? "No sold message set: use \"Sold\" on listed items, or set soldMessage in auction.json"
-                    : "Click a price to change it, Enter keeps it. Wheel scrolls.";
+                    : "Sell lists just under the cheapest, only at a profit. Wheel scrolls.";
+            if (hint.length() > 92) {
+                hint = hint.substring(0, 91) + "…";
+            }
             Ui.text(ctx, hint, x + 10, y + h - 14, TEXT, Ui.TEXT_DIM, false);
         } finally {
             ctx.getMatrices().popMatrix();
@@ -104,6 +106,9 @@ public final class AuctionLedgerScreen extends Screen {
             name = name.substring(0, 27) + "…";
         }
         Ui.text(ctx, name, x + 10, y + 5, TEXT, Ui.TEXT, false);
+        if (mouseGuiX >= x && mouseGuiX < x + W && mouseGuiY >= y && mouseGuiY < y + ROW) {
+            hovered = e.note;
+        }
         String paid = e.paid > 0 ? "$" + PriceText.shorten(e.paid) : "-";
         if (soldTab) {
             Ui.text(ctx, "paid " + paid, x + 150, y + 5, TEXT, Ui.TEXT_DIM, false);
@@ -123,11 +128,9 @@ public final class AuctionLedgerScreen extends Screen {
             Ui.text(ctx, "asking $" + PriceText.shorten(e.asked), x + 252, y + 5, TEXT, Ui.TEXT, false);
             button(ctx, "Sold", x + 326, y + 2, 36, false, () -> flipper.markSold(id));
         } else if (e.status != AuctionLedger.Status.SELLING) {
-            String price = editing == id ? typed + "_" : e.listAt > 0 ? "$" + PriceText.shorten(e.listAt) : "set price";
-            button(ctx, price, x + 252, y + 2, 70, editing == id, () -> {
-                editing = id;
-                typed = "";
-            });
+            if (!e.note.isEmpty()) {
+                Ui.text(ctx, "waiting", x + 252, y + 5, TEXT, Ui.TEXT_DIM, false);
+            }
             button(ctx, "Sell", x + 326, y + 2, 36, false, () -> sell(id));
         }
         removeButton(ctx, e, x, y);
@@ -156,28 +159,16 @@ public final class AuctionLedgerScreen extends Screen {
     private void tab(boolean sold) {
         soldTab = sold;
         scroll = 0;
-        editing = -1;
         note = "";
     }
 
     private void sell(long id) {
-        keepTyped();
-        String why = flipper.requestSale(id, true);
+        String why = flipper.requestSale(id);
         if (why == null) {
-            close(); // selling needs every window closed
+            close(); // the market check and listing need every window closed
         } else {
             note = why;
         }
-    }
-
-    private void keepTyped() {
-        AuctionLedger.Entry e = flipper.ledger().byId(editing);
-        double price = AuctionChat.amount(typed);
-        if (e != null && price >= 1) {
-            e.listAt = Math.floor(price);
-        }
-        editing = -1;
-        typed = "";
     }
 
     @Override
@@ -204,34 +195,11 @@ public final class AuctionLedgerScreen extends Screen {
 
     @Override
     public boolean keyPressed(KeyInput input) {
-        int key = input.getKeycode();
-        if (editing >= 0) {
-            if (key == GLFW.GLFW_KEY_ENTER || key == GLFW.GLFW_KEY_KP_ENTER) {
-                keepTyped();
-            } else if (key == GLFW.GLFW_KEY_BACKSPACE && !typed.isEmpty()) {
-                typed = typed.substring(0, typed.length() - 1);
-            } else if (key == GLFW.GLFW_KEY_ESCAPE) {
-                editing = -1;
-            }
-            return true;
-        }
-        if (key == GLFW.GLFW_KEY_ESCAPE) {
+        if (input.getKeycode() == GLFW.GLFW_KEY_ESCAPE) {
             close();
             return true;
         }
         return super.keyPressed(input);
-    }
-
-    @Override
-    public boolean charTyped(CharInput input) {
-        if (editing < 0 || !input.isValidChar()) {
-            return false;
-        }
-        String c = input.asString();
-        if (typed.length() < 12 && c.matches("[0-9.,kKmMbB]")) {
-            typed += c;
-        }
-        return true;
     }
 
     @Override

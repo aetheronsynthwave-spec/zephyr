@@ -14,8 +14,8 @@ public final class AuctionChat {
 
     private static final Pattern PLACEHOLDER = Pattern.compile("\\{(item|price|count|player|any)}");
 
-    /** {@code count} is -1 when the template has no {count}. */
-    public record Hit(String item, int count, double price) {
+    /** {@code count} is -1 when the template has no {count}; {@code item} is "" without {item}. */
+    public record Hit(String item, int count, double price, double high) {
     }
 
     private AuctionChat() {
@@ -23,7 +23,12 @@ public final class AuctionChat {
 
     /** @return the compiled template, or null when it is blank or cannot be used. */
     public static Pattern compile(String template) {
-        if (template == null || !template.contains("{item}") || !template.contains("{price}")) {
+        return template == null || !template.contains("{item}") ? null : compileAmount(template);
+    }
+
+    /** A template that only has to name {price}, such as a balance line. */
+    public static Pattern compileAmount(String template) {
+        if (template == null || !template.contains("{price}")) {
             return null;
         }
         StringBuilder regex = new StringBuilder();
@@ -70,7 +75,9 @@ public final class AuctionChat {
         if (!m.matches()) {
             return null;
         }
-        double price = amount(m.group("price"));
+        PriceText.Amount shown = PriceText.read(List.of("$" + m.group("price").replace(" ", "")));
+        // At least one decimal is kept ("$ 1.1K" in a DonutSMP screenshot dated 2026-11-27).
+        PriceText.Amount price = shown == null ? null : shown.precise(1);
         int count = -1;
         if (pattern.pattern().contains("(?<count>")) {
             long c = Long.parseLong(m.group("count").replace(",", ""));
@@ -79,7 +86,11 @@ public final class AuctionChat {
             }
             count = (int) c;
         }
-        return price > 0 ? new Hit(m.group("item").trim(), count, price) : null;
+        if (price == null || price.value() < 0) {
+            return null;
+        }
+        String item = pattern.pattern().contains("(?<item>") ? m.group("item").trim() : "";
+        return new Hit(item, count, price.value(), price.high());
     }
 
     /** "23", "1.1K" or "2,500" as a number; -1 when it is not one. */

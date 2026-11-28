@@ -2,6 +2,7 @@ package dev.zephyr.modules.render;
 
 import dev.zephyr.core.Module;
 import dev.zephyr.core.ModuleCategory;
+import dev.zephyr.core.settings.BooleanSetting;
 import dev.zephyr.core.settings.NumberSetting;
 import dev.zephyr.core.combat.DamageCalculator;
 import net.fabricmc.fabric.api.client.rendering.v1.world.WorldRenderContext;
@@ -33,6 +34,8 @@ public final class CrystalEsp extends Module implements WorldRenderParticipant {
 
     private final NumberSetting range = num("range", "Range", 8.0, 64.0, 1.0, 32.0);
     private final NumberSetting dangerHealth = num("danger", "Red below self-dmg", 0.0, 20.0, 0.5, 6.0);
+
+    private final BooleanSetting walls = bool("walls", "Through walls", true);
 
     /** Per-crystal cached self-damage (entity id -> damage + position it was measured at). */
     private final Map<Integer, CachedDamage> damageCache = new HashMap<>();
@@ -96,7 +99,7 @@ public final class CrystalEsp extends Module implements WorldRenderParticipant {
                 b = 0.2f;
             }
             // Crystals are stationary entities; the raw box is already render-accurate.
-            RenderUtil.drawBoxOutline(matrices, consumers, bb, r, g, b, 1.0f);
+            RenderUtil.drawBoxOutline(matrices, consumers, bb, r, g, b, 1.0f, walls.get());
         }
     }
 

@@ -60,18 +60,19 @@ public final class SettingLayout {
         basic("Waypoints", "beams");
         basic("Freecam", "speed");
         basic("Fly", "speed");
-        basic("AuctionFlipper", "askFirst", "maxPrice", "budget", "autoSell");
-        basic("AmethystFinder", "range", "tracers");
-        basic("StorageESP", "range", "tracers");
+        basic("AuctionFlipper", "auto", "askFirst", "maxPrice", "budget", "sellMargin");
+        basic("CraftAutomate", "askFirst", "maxPrice", "minGain");
+        basic("AmethystFinder", "range", "tracers", "remember", "hidden");
+        basic("StorageESP", "range", "tracers", "remember", "hidden");
         // Render & HUD
         basic("Fullbright");
         basic("XRay", "diamonds", "netherite", "storage");
         basic("CustomSky", "style");
         basic("HandChams", "style", "opacity");
         basic("Cosmetics", "halo", "hat", "wings");
-        basic("BlockESP", "preset", "radius");
+        basic("BlockESP", "preset", "radius", "remember");
         basic("LightDebug", "radius");
-        basic("BaseFinder", "range", "tracers");
+        basic("BaseFinder", "range", "tracers", "remember", "suspect");
         basic("ProgressBar", "overworld", "nether", "end", "bases");
         basic("Hotbar", "amount");
         basic("InfoHUD", "coords", "fps", "ping");

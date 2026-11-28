@@ -20,35 +20,63 @@ public final class PriceText {
     private PriceText() {
     }
 
+    /**
+     * A price as shown. {@code step} is the value of its last shown digit ("1.1K" -> 100)
+     * and {@code unit} its suffix (1000 for K), so the real price is only known that closely.
+     */
+    public record Amount(double value, double step, double unit) {
+        /** The lowest the real price can be, whether the server rounds or cuts off. */
+        public double low() {
+            return step > 1 ? value - step / 2 : value;
+        }
+
+        /** The highest the real price can be. */
+        public double high() {
+            return step > 1 ? value + step - 1 : value;
+        }
+
+        /** The same price when the server is known to keep {@code decimals} decimals (0: unknown). */
+        public Amount precise(int decimals) {
+            return decimals > 0 && unit > 1
+                    ? new Amount(value, Math.min(step, unit / Math.pow(10, decimals)), unit) : this;
+        }
+    }
+
     /** The listing price in these lore lines, or -1. A line that names the price wins. */
     public static double price(List<String> lines) {
+        Amount a = read(lines);
+        return a == null ? -1 : a.value();
+    }
+
+    /** Like {@link #price}, with its precision; null when there is none. */
+    public static Amount read(List<String> lines) {
         for (String line : lines) {
             Matcher m = LABELLED.matcher(line);
             if (m.find()) {
-                return value(m.group(1), m.group(2));
+                return amount(m.group(1), m.group(2));
             }
         }
         for (String line : lines) {
             Matcher m = DOLLARS.matcher(line);
             // "Worth" and balance lines are not what the listing costs.
             if (m.find() && !line.toLowerCase(Locale.ROOT).matches(".*(worth|balance|value|tax).*")) {
-                return value(m.group(1), m.group(2));
+                return amount(m.group(1), m.group(2));
             }
         }
-        return -1;
+        return null;
     }
 
-    private static double value(String number, String suffix) {
-        double amount = Double.parseDouble(number.replace(",", ""));
-        if (suffix == null) {
-            return amount;
-        }
-        return amount * switch (suffix.toLowerCase(Locale.ROOT)) {
+    private static Amount amount(String number, String suffix) {
+        String plain = number.replace(",", "");
+        double unit = suffix == null ? 1 : switch (suffix.toLowerCase(Locale.ROOT)) {
             case "k" -> 1.0e3;
             case "m" -> 1.0e6;
             case "b" -> 1.0e9;
             default -> 1.0e12;
         };
+        int dot = plain.indexOf('.');
+        int decimals = dot < 0 ? 0 : plain.length() - dot - 1;
+        return new Amount(Double.parseDouble(plain) * unit, unit / Math.pow(10, decimals), unit);
     }
 
     /** Median of the prices; -1 when there are none. */

@@ -204,10 +204,10 @@ public final class AuctionSeller {
         }
         boolean shown = false;
         for (AuctionDeals.SlotView s : screen.slots()) {
-            double price = PriceText.price(s.lore());
-            // The server abbreviates ("1.1K"), so a tenth of difference is the same price.
-            if (price > 0 && Math.abs(price - job.price()) > job.price() * 0.1) {
-                return finish(false, "sell window shows " + PriceText.shorten(price) + ", not confirmed");
+            PriceText.Amount price = PriceText.read(s.lore());
+            // An abbreviated price ("1.1K") is only compared as closely as it is shown.
+            if (price != null && Math.abs(price.value() - job.price()) > Math.max(1, price.step())) {
+                return finish(false, "sell window shows " + PriceText.shorten(price.value()) + ", not confirmed");
             }
             shown |= s.slot() != button.slot && s.name().equalsIgnoreCase(job.name()) && s.count() == job.count();
         }

@@ -4,8 +4,6 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import dev.zephyr.core.Module;
 import dev.zephyr.core.ModuleCategory;
-import dev.zephyr.core.combat.SwapManager;
-import dev.zephyr.core.inventory.InventoryManager;
 import dev.zephyr.core.settings.BooleanSetting;
 import dev.zephyr.core.settings.KeySetting;
 import dev.zephyr.core.settings.ModeSetting;
@@ -18,11 +16,8 @@ import net.fabricmc.fabric.api.client.screen.v1.ScreenEvents;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.ingame.HandledScreen;
-import net.minecraft.component.DataComponentTypes;
-import net.minecraft.item.ItemStack;
 import net.minecraft.registry.Registries;
 import net.minecraft.screen.slot.Slot;
-import net.minecraft.screen.slot.SlotActionType;
 import net.minecraft.text.Text;
 
 import java.io.IOException;
@@ -31,23 +26,22 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
-import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Deque;
 import java.util.List;
 import java.util.Locale;
-import java.util.regex.Pattern;
 
 /**
- * AuctionFlipper - on DonutSMP's /ah it finds listings priced under what the same item has
- * been listed for, asks you, buys the best one (see {@link AuctionBuyer}), keeps a list of
- * what was bought and sold (see {@link AuctionLedger}) and relists bought stacks with
- * {@code /ah sell} (see {@link AuctionSeller}). Confirm buttons are remembered from your
- * own clicks and stored with the item rules in config/zephyr/auction.json. Money settings
- * are in thousands.
+ * AuctionFlipper - flips items on DonutSMP's /ah. With Auto on it browses page by page,
+ * searches {@code /ah <item>} to check each promising item's whole market, asks you, buys,
+ * searches again and relists with {@code /ah sell} just under the cheapest, and only when
+ * that makes your minimum profit (see {@link FlipRoutine}). With Auto off it marks deals
+ * in the window you open and asks before buying (see {@link AuctionBuyer}). It also runs
+ * the routine of {@link CraftAutomate}; both share the list of what was bought and sold.
+ * Confirm buttons are remembered from your own clicks and stored with the item rules in
+ * config/zephyr/auction.json. Money settings are in thousands.
  */
-public final class AuctionFlipper extends Module {
+public final class AuctionFlipper extends Module implements AuctionCore.Env {
 
     /** Contents of auction.json. */
     private static final class Saved {
@@ -59,6 +53,10 @@ public final class AuctionFlipper extends Module {
         String boughtMessage = "You bought {count} {item} for $ {price}";
         /** Unset: no sale message has been seen yet. */
         String soldMessage = "";
+        /** Unset: the command that prints your money, without the slash. */
+        String balanceCommand = "";
+        /** Unset: the line it prints, with {price} where the amount is. */
+        String balanceMessage = "";
         AuctionDeals.Rules rules = new AuctionDeals.Rules();
     }
 
@@ -72,26 +70,39 @@ public final class AuctionFlipper extends Module {
     private static final Path FILE = DIR.resolve("auction.json");
     private static final Path LEDGER_FILE = DIR.resolve("auction-ledger.json");
     private static final Path CHAT_LOG = DIR.resolve("auction-chat.log");
-    private static final long REPLY_MILLIS = 8_000;
 
     // Basic settings (see SettingLayout); everything else is in the Advanced section.
+    private final BooleanSetting auto = bool("auto", "Auto flip", true);
     private final BooleanSetting askFirst = bool("askFirst", "Ask before buying", true);
     private final NumberSetting maxPrice = num("maxPrice", "Max price (k, 0 = any)", 0, 1_000_000, 1, 0);
     private final NumberSetting budget = num("budget", "Budget (k, 0 = any)", 0, 10_000_000, 1, 0);
-    private final BooleanSetting autoSell = bool("autoSell", "Sell after buying", false);
+    private final NumberSetting sellMargin = num("sellMargin", "Min profit %", 0, 500, 1, 10);
 
     private final BooleanSetting autoBuy = bool("autoBuy", "Allow buying", true);
+    private final BooleanSetting autoSell = bool("autoSell", "Sell after buying (Auto off)", true);
     private final NumberSetting maxBuys = num("maxBuys", "Max buys per session", 1, 500, 1, 10);
+    private final NumberSetting keepMoney = num("keepMoney", "Money to keep (k)", 0, 10_000_000, 1, 0);
     private final KeySetting buyKey = s(new KeySetting("buyKey", "Yes, buy", 89));
     private final KeySetting skipKey = s(new KeySetting("skipKey", "No, skip", 78));
     private final KeySetting ledgerKey = s(new KeySetting("ledgerKey", "Open bought / sold", 0));
     private final NumberSetting promptTime = num("promptTime", "Question timeout (seconds)", 3, 60, 1, 10);
+    private final NumberSetting undercut = num("undercut", "List under the cheapest by $", 1, 100000, 1, 1);
+    private final NumberSetting priceDecimals = num("priceDecimals", "Decimals in \"1.1K\" prices", 1, 3, 1, 1);
+    private final NumberSetting browsePages = num("browsePages", "Pages to browse", 1, 50, 1, 3);
+    private final NumberSetting checkPages = num("checkPages", "Max pages per price check", 1, 50, 1, 10);
+    private final BooleanSetting cheapestFirst = bool("cheapestFirst", "Search is sorted cheapest first", false);
+    private final NumberSetting restTime = num("restTime", "Auto refresh pause (seconds)", 2, 300, 1, 10);
+    private final NumberSetting recheck = num("recheck", "Check an item again after (seconds)", 10, 3600, 10, 120);
+    private final NumberSetting commandGap = num("commandGap", "Ticks between commands", 5, 200, 5, 20);
+    private final NumberSetting nextSlot = num("nextSlot", "Next page button slot", 0, 89, 1, 53);
+    private final NumberSetting maxHeld = num("maxHeld", "Stop buying at unsold items", 1, 36, 1, 5);
+    private final BooleanSetting verifyListing = bool("verifyListing", "Search again after listing", true);
     private final ModeSetting rank = s(new ModeSetting("rank", "Best deal means",
             names(AuctionDeals.Rank.values()), AuctionDeals.Rank.PROFIT.name()));
-    private final ModeSetting reference = s(new ModeSetting("reference", "Resale price from",
+    private final ModeSetting reference = s(new ModeSetting("reference", "Deal reference price",
             names(AuctionDeals.Reference.values()), AuctionDeals.Reference.MEDIAN.name()));
     private final NumberSetting discount = num("discount", "Min % below reference", 0, 95, 1, 30);
-    private final NumberSetting minProfit = num("minProfit", "Min margin (thousands)", 0, 10000, 5, 10);
+    private final NumberSetting minProfit = num("minProfit", "Min margin (thousands)", 0, 10000, 1, 0);
     private final NumberSetting minRoi = num("minRoi", "Min return on price %", 0, 1000, 5, 0);
     private final NumberSetting minPrice = num("minPrice", "Min price (thousands)", 0, 100000, 1, 0);
     private final NumberSetting samples = num("samples", "Other listings needed", 1, 60, 1, 5);
@@ -103,28 +114,26 @@ public final class AuctionFlipper extends Module {
     private final BooleanSetting oneClick = bool("oneClick", "Server buys on first click", false);
     private final BooleanSetting confirmPrice = bool("confirmPrice", "Confirm window must show price", true);
     private final BooleanSetting refresh = bool("refresh", "Press learned refresh button", false);
-    private final NumberSetting settle = num("settle", "Page settle ticks", 0, 40, 1, 4);
+    private final NumberSetting settle = num("settle", "Page settle ticks", 0, 40, 1, 10);
     private final NumberSetting buyDelay = num("buyDelay", "Extra delay before buy (ticks)", 0, 100, 1, 0);
-    private final NumberSetting confirmDelay = num("confirmDelay", "Delay before confirm (ticks)", 0, 40, 1, 2);
-    private final NumberSetting timeout = num("timeout", "Confirm timeout (ticks)", 10, 200, 5, 60);
+    private final NumberSetting confirmDelay = num("confirmDelay", "Delay before confirm (ticks)", 0, 40, 1, 4);
+    private final NumberSetting timeout = num("timeout", "Window timeout (ticks)", 10, 200, 5, 60);
     private final NumberSetting cooldown = num("cooldown", "Pause between buys (ticks)", 1, 600, 1, 20);
     private final NumberSetting retry = num("retry", "Retry same listing after (seconds)", 5, 3600, 5, 60);
     private final NumberSetting refreshEvery = num("refreshEvery", "Refresh interval (ticks)", 10, 1200, 5, 40);
-    private final NumberSetting undercut = num("undercut", "Sell under reference %", 0, 50, 1, 2);
-    private final NumberSetting sellMargin = num("sellMargin", "Min gain over cost %", 0, 500, 1, 5);
     private final NumberSetting sellSlot = num("sellSlot", "Hotbar slot for selling", 1, 9, 1, 9);
     private final BooleanSetting sellCheckItem = bool("sellCheckItem", "Sell window must show item", true);
     private final BooleanSetting highlight = bool("highlight", "Highlight deals", true);
     private final BooleanSetting logChat = bool("logChat", "Log chat lines with $", false);
     private final KeySetting dumpKey = s(new KeySetting("dumpKey", "Dump open window", 0));
 
-    private final AuctionBuyer buyer = new AuctionBuyer();
-    private final AuctionSeller seller = new AuctionSeller();
-    private final AuctionLedger ledger = new AuctionLedger();
-    private final Deque<Long> sellQueue = new ArrayDeque<>();
+    private final AuctionClient game = new AuctionClient();
+    private final AuctionCore core;
+    private final AuctionBuyer buyer;
+    private final AuctionLedger ledger;
+    /** Set by {@link CraftAutomate} when it is created. */
+    private CraftAutomate crafter;
     private Saved saved = new Saved();
-    private Pattern boughtPattern;
-    private Pattern soldPattern;
     /** The JSON file exists but cannot be used: no buying or selling, and it is not overwritten. */
     private boolean broken;
     private boolean ledgerBroken;
@@ -133,18 +142,17 @@ public final class AuctionFlipper extends Module {
     private int learnFrom = -1;
     private String learnTitle = "";
     private String learnKey = "";
-    /** The window the flipper last clicked a listing in. */
-    private int listingWindow = -1;
-    private String listingTitle = "";
-    /** The sell button you clicked, kept until the item is seen to leave. */
-    private AuctionBuyer.Button sellCandidate;
-    private int sellWindow = -1;
-    private boolean ownClick;
     private boolean openRequested;
     private String reported = "";
+    private long ranTick = -1;
 
     public AuctionFlipper() {
         super("AuctionFlipper", ModuleCategory.DONUT, 0);
+        core = new AuctionCore(game, this, this::limits, () -> setup(askFirst.get(), sellMargin.get(),
+                maxPrice.get()), this::craftSetup, this::sellOptions, this::filter, () -> saved.rules,
+                () -> crafter == null ? List.of() : crafter.recipes());
+        buyer = core.buyer;
+        ledger = core.ledger;
         reload();
         loadLedger();
         ScreenEvents.AFTER_INIT.register((client, screen, width, height) -> {
@@ -164,26 +172,29 @@ public final class AuctionFlipper extends Module {
         return out;
     }
 
+    void attach(CraftAutomate module) {
+        crafter = module;
+    }
+
     @Override
     protected void onDisable() {
-        stop("AuctionFlipper switched off"); // totals stay: toggling must not reset the budget
+        // Totals stay: toggling must not reset the budget. A running CraftAutomate goes on.
+        if (crafter == null || !crafter.isEnabled()) {
+            core.stop("AuctionFlipper switched off");
+            saveLedger();
+        }
+    }
+
+    void craftStopped(String why) {
+        if (!isEnabled()) {
+            core.stop(why);
+            saveLedger();
+        }
     }
 
     @Override
     public void onWorldLeave(MinecraftClient client) {
-        stop("left the world");
-    }
-
-    private void stop(String why) {
-        buyer.abort();
-        seller.abort(why);
-        finishSale();
-        sellQueue.clear();
-        for (AuctionLedger.Entry e : ledger.entries()) {
-            if (e.status == AuctionLedger.Status.SELLING) {
-                e.status = AuctionLedger.Status.BOUGHT;
-            }
-        }
+        core.stop("left the world");
         saveLedger();
     }
 
@@ -193,70 +204,74 @@ public final class AuctionFlipper extends Module {
 
     @Override
     public void onTick(MinecraftClient client) {
+        run(client);
+    }
+
+    /** Once per tick, from whichever of the two auction modules is on. */
+    void run(MinecraftClient client) {
+        long now = TickPhase.tickId();
+        if (now == ranTick) {
+            return;
+        }
         if (client.player == null || client.interactionManager == null) {
             buyer.abort();
             return;
         }
-        HandledScreen<?> screen = client.currentScreen instanceof HandledScreen<?> h
-                && h.getScreenHandler() == client.player.currentScreenHandler ? h : null;
-        // Teaching a button is your click; the flipper stays out of the way meanwhile.
-        if (learning != null || !TickPhase.actionWindowOpen()
-                || screen != null && !screen.getScreenHandler().getCursorStack().isEmpty()) {
-            return; // decided before anything runs, so nothing counts a click that is not sent
-        }
-        long now = TickPhase.tickId();
-        AuctionBuyer.ScreenView view = screen == null ? null : view(client, screen);
-        boolean free = client.currentScreen == null;
-        if (!seller.busy() && !sellQueue.isEmpty() && free && buyer.opening() == null) {
-            startSale(sellQueue.poll(), now);
-        }
-        if (seller.busy() || seller.restoring() && free) {
-            buyer.abort();
-            act(client, seller.tick(inventory(client), view, free, now, sellOptions(), saved.sellConfirm));
-            finishSale();
-        } else {
-            AuctionBuyer.Click click = buyer.tick(view, now, options(), filter(), saved.rules, saved.confirm,
-                    saved.refresh);
-            if (click != null && screen != null) {
-                if (click.kind() == AuctionBuyer.Kind.LISTING) {
-                    listingWindow = screen.getScreenHandler().syncId;
-                    listingTitle = view.title();
-                    AuctionDeals.Deal opening = buyer.opening();
-                    if (opening != null && !saved.confirm.set()) {
-                        ledger.expect(expectation(opening, false, promptTime.asInt() * 1000L + REPLY_MILLIS));
-                    }
-                }
-                if (click.buys() != null) {
-                    ledger.expect(expectation(click.buys(), true, REPLY_MILLIS));
-                }
-                click(client, click.slot(), SlotActionType.PICKUP, 0);
-            }
-        }
-        report();
-    }
-
-    private void click(MinecraftClient client, int slot, SlotActionType type, int button) {
-        ownClick = true;
-        try {
-            InventoryManager.clickSlot(client, slot, button, type);
-        } finally {
-            ownClick = false;
-        }
-    }
-
-    private void act(MinecraftClient client, AuctionSeller.Act act) {
-        if (act == null) {
+        // Teaching a button is your click; the modules stay out of the way meanwhile.
+        if (learning != null || !TickPhase.actionWindowOpen()) {
             return;
         }
-        switch (act.kind()) {
-            case SWAP -> click(client, act.slot(), SlotActionType.SWAP, act.hotbar());
-            case SELECT -> SwapManager.select(client, act.hotbar());
-            case COMMAND -> client.player.networkHandler.sendChatCommand(act.command());
-            case CLICK -> click(client, act.slot(), SlotActionType.PICKUP, 0);
+        ranTick = now;
+        if (broken) {
+            if (isEnabled()) {
+                assist(client, now); // marks deals; buying stays blocked
+            }
+            return;
+        }
+        boolean flipping = isEnabled() && auto.get();
+        boolean crafting = crafter != null && crafter.isEnabled();
+        core.tick(now, flipping, crafting);
+        if (core.working() || flipping || crafting) {
+            buyer.abort();
+        } else if (isEnabled()) {
+            assist(client, now);
         }
     }
 
-    /** Runs whether or not the module is on: chat replies and the ledger screen. */
+    /** Auto off: mark deals in the window you opened, ask, and buy. */
+    private void assist(MinecraftClient client, long now) {
+        HandledScreen<?> screen = AuctionClient.serverScreen();
+        if (screen != null && !screen.getScreenHandler().getCursorStack().isEmpty()) {
+            return; // decided before anything runs, so nothing counts a click that is not sent
+        }
+        AuctionBuyer.ScreenView view = screen == null ? null : view(client, screen);
+        AuctionBuyer.Click click = buyer.tick(view, now, options(), filter(), saved.rules, core.confirm,
+                saved.refresh);
+        if (click != null && screen != null) {
+            if (click.kind() == AuctionBuyer.Kind.LISTING) {
+                core.listingClicked(screen.getScreenHandler().syncId, view.title());
+                AuctionDeals.Deal opening = buyer.opening();
+                if (opening != null && !core.confirm.set()) {
+                    core.expect(opening.view(), opening.price(), FlipRoutine.OWNER, false,
+                            promptTime.asInt() * 20 + 160);
+                }
+            }
+            if (click.buys() != null) {
+                core.expect(click.buys().view(), click.buys().price(), FlipRoutine.OWNER, true, 160);
+            }
+            game.click(click.slot(), 0, AuctionGame.Press.PICKUP);
+        }
+        String status = buyer.status();
+        if (!status.equals(reported)) {
+            reported = status;
+            if (status.startsWith("sent buy") || status.contains("not confirmed") || status.startsWith("click confirm")
+                    || status.startsWith("confirm button")) {
+                say(status);
+            }
+        }
+    }
+
+    /** Runs whether or not the module is on: expired buys and the ledger screen. */
     private void endTick(MinecraftClient client) {
         if (ledger.expire(System.currentTimeMillis())) {
             say("no chat reply for a buy: listed as unconfirmed.");
@@ -268,29 +283,7 @@ public final class AuctionFlipper extends Module {
         }
     }
 
-    private AuctionLedger.Expected expectation(AuctionDeals.Deal d, boolean sent, long millis) {
-        double listAt = Math.floor(d.reference() * d.view().count() * (1.0 - undercut.get() / 100.0));
-        return new AuctionLedger.Expected(d.view().name(), d.view().key(), d.view().count(), d.price(), listAt, sent,
-                System.currentTimeMillis() + millis);
-    }
-
-    private void report() {
-        String status = buyer.status();
-        if (!status.equals(reported)) {
-            reported = status;
-            if (status.startsWith("sent buy") || status.contains("not confirmed") || status.startsWith("click confirm")
-                    || status.startsWith("confirm button")) {
-                say(status);
-            }
-        }
-    }
-
-    // ------------------------------------------------------------------
-    // Chat
-    // ------------------------------------------------------------------
-
     private void onChat(String line) {
-        long now = System.currentTimeMillis();
         if (logChat.get() && line.contains("$")) {
             try {
                 Files.createDirectories(DIR);
@@ -300,42 +293,16 @@ public final class AuctionFlipper extends Module {
                 System.err.println("[Zephyr] chat log: " + e);
             }
         }
-        AuctionChat.Hit bought = AuctionChat.match(boughtPattern, line);
-        if (bought != null) {
-            AuctionLedger.Purchase purchase = ledger.bought(bought.item(), bought.count(), bought.price(), now);
-            AuctionLedger.Expected x = purchase.expected();
-            if (x != null) {
-                if (x.sent) {
-                    buyer.adjust(x.price, bought.price());
-                } else {
-                    // You confirmed it yourself, and the reply proves which button bought.
-                    if (buyer.awaitingManualConfirm()) {
-                        buyer.manualBought(bought.price(), TickPhase.tickId());
-                    } else {
-                        buyer.adjust(0, bought.price()); // still counts against the budget
-                    }
-                    if (x.tag instanceof AuctionBuyer.Button button) {
-                        saved.confirm = button;
-                        save();
-                        say("remembered the confirm button: slot " + button.slot + " in \"" + button.title + "\"");
-                    }
-                }
-                if (autoSell.get() && isEnabled()) {
-                    requestSale(purchase.entry().id, false);
-                }
-            }
-            saveLedger();
-            return;
-        }
-        AuctionChat.Hit sold = AuctionChat.match(soldPattern, line);
-        if (sold != null) {
-            ledger.sold(sold.item(), sold.count(), sold.price(), now);
-            saveLedger();
+        boolean assisting = isEnabled() && !auto.get() && !core.working();
+        AuctionLedger.Purchase purchase = core.chat(line);
+        // In auto mode the routine sells what it bought itself.
+        if (purchase != null && purchase.expected() != null && assisting && autoSell.get()) {
+            requestSale(purchase.entry().id);
         }
     }
 
     // ------------------------------------------------------------------
-    // Selling
+    // Bought / sold screen
     // ------------------------------------------------------------------
 
     public AuctionLedger ledger() {
@@ -343,13 +310,7 @@ public final class AuctionFlipper extends Module {
     }
 
     public boolean soldMessageSet() {
-        return soldPattern != null;
-    }
-
-    /** The lowest price a stack may be listed at, from what it cost. */
-    public double floorPrice(AuctionLedger.Entry e) {
-        // The selling fee comes out of the sale, so the floor is raised to cover it.
-        return e.paid > 0 ? Math.ceil(e.paid * (1.0 + sellMargin.get() / 100.0) / (1.0 - tax.get() / 100.0)) : 1;
+        return core.soldPattern != null;
     }
 
     /** Marks a sale by hand, for when no sold message is set. */
@@ -363,72 +324,79 @@ public final class AuctionFlipper extends Module {
     }
 
     public void removeEntry(long id) {
-        sellQueue.remove(id);
-        AuctionSeller.Job job = seller.job();
-        if (!(seller.busy() && job.entryId() == id)) {
+        core.unqueueSale(id);
+        AuctionSeller.Job job = core.seller.job();
+        if (!(core.seller.busy() && job.entryId() == id)) {
             ledger.remove(id);
             saveLedger();
         }
     }
 
     /**
-     * Queues a bought stack for sale. {@code chosen} means you picked the price on the
-     * ledger screen; an automatic sale never goes under {@link #floorPrice}.
+     * Queues a bought stack: the market is checked, then it is listed as the cheapest if
+     * that makes the minimum profit.
      *
      * @return why it was not queued, or null
      */
-    public String requestSale(long id, boolean chosen) {
+    public String requestSale(long id) {
         AuctionLedger.Entry e = ledger.byId(id);
-        String why = null;
         if (broken) {
-            why = "fix " + FILE + " first";
-        } else if (!isEnabled()) {
-            why = "switch AuctionFlipper on to sell";
-        } else if (e == null || e.status == AuctionLedger.Status.SOLD || e.status == AuctionLedger.Status.LISTED
+            return "fix " + FILE + " first";
+        }
+        if (!isEnabled() && !(crafter != null && crafter.isEnabled())) {
+            return "switch AuctionFlipper on to sell";
+        }
+        if (e == null || e.status == AuctionLedger.Status.SOLD || e.status == AuctionLedger.Status.LISTED
                 || e.status == AuctionLedger.Status.SELLING) {
-            why = "that entry cannot be sold";
-        } else if (e.listAt < 1) {
-            why = e.name + " has no sale price: set one on the bought / sold screen";
-        } else if (!chosen && e.listAt < floorPrice(e)) {
-            why = e.name + ": suggested " + PriceText.shorten(e.listAt) + " is under your minimum gain, not listed";
-        } else if (!sellQueue.contains(id)) {
-            sellQueue.add(id);
+            return "that entry cannot be sold";
         }
-        if (why != null && !chosen) {
-            say(why);
-        }
-        return why;
+        core.queueSale(id);
+        return null;
     }
 
-    private void startSale(long id, long now) {
-        AuctionLedger.Entry e = ledger.byId(id);
-        if (e == null || e.listAt < 1) {
-            return;
-        }
-        e.status = AuctionLedger.Status.SELLING;
-        e.asked = Math.floor(e.listAt);
-        sellCandidate = null;
-        seller.start(new AuctionSeller.Job(e.id, e.name, e.key, e.count, (long) e.asked), now);
-        say("selling " + e.count + "x " + e.name + " for " + (long) e.asked);
+    // ------------------------------------------------------------------
+    // Settings snapshots
+    // ------------------------------------------------------------------
+
+    private AuctionSetup setup(boolean ask, double gainPercent, double maxThousands) {
+        AuctionSetup o = new AuctionSetup();
+        o.askFirst = ask;
+        o.minGain = gainPercent / 100.0;
+        o.maxPrice = maxThousands * 1000.0;
+        o.fee = tax.get() / 100.0;
+        o.undercut = undercut.get();
+        o.priceDecimals = priceDecimals.asInt();
+        o.listingSlots = listingSlots.asInt() == 0 ? nextSlot.asInt() : listingSlots.asInt();
+        o.nextSlot = nextSlot.asInt();
+        o.browsePages = browsePages.asInt();
+        o.checkPages = checkPages.asInt();
+        o.cheapestFirst = cheapestFirst.get();
+        o.settleTicks = Math.max(2, settle.asInt());
+        o.windowTicks = timeout.asInt();
+        o.commandGapTicks = commandGap.asInt();
+        o.promptTicks = promptTime.asInt() * 20;
+        o.restTicks = restTime.asInt() * 20;
+        o.recheckTicks = recheck.asInt() * 20;
+        o.confirmDelayTicks = confirmDelay.asInt();
+        o.confirmPrice = confirmPrice.get();
+        o.oneClick = oneClick.get();
+        o.maxHeld = maxHeld.asInt();
+        o.verifyListing = verifyListing.get();
+        return o;
     }
 
-    private void finishSale() {
-        AuctionSeller.Result result = seller.poll();
-        if (result == null) {
-            return;
-        }
-        AuctionLedger.Entry e = ledger.byId(result.entryId());
-        if (e != null) {
-            e.status = result.listed() ? AuctionLedger.Status.LISTED : AuctionLedger.Status.BOUGHT;
-        }
-        if (result.listed() && sellCandidate != null) {
-            saved.sellConfirm = sellCandidate;
-            save();
-            say("remembered the sell confirm button: slot " + sellCandidate.slot);
-        }
-        sellCandidate = null;
-        say(result.message());
-        saveLedger();
+    private AuctionSetup craftSetup() {
+        return crafter == null ? setup(true, sellMargin.get(), maxPrice.get())
+                : setup(crafter.askFirst(), crafter.minGain(), crafter.maxPrice());
+    }
+
+    private AuctionCore.Limits limits() {
+        AuctionCore.Limits l = new AuctionCore.Limits();
+        l.allowed = autoBuy.get() && !broken;
+        l.budget = budget.get() * 1000.0;
+        l.maxBuys = maxBuys.asInt();
+        l.keepMoney = keepMoney.get() * 1000.0;
+        return l;
     }
 
     private AuctionSeller.Options sellOptions() {
@@ -437,30 +405,6 @@ public final class AuctionFlipper extends Module {
         o.checkItem = sellCheckItem.get();
         return o;
     }
-
-    /** Main inventory and hotbar, by the ids of the player's own screen handler (9-44). */
-    private static AuctionSeller.Inventory inventory(MinecraftClient client) {
-        var slots = client.player.playerScreenHandler.slots;
-        List<AuctionSeller.InvStack> stacks = new ArrayList<>();
-        List<Integer> empty = new ArrayList<>();
-        for (int i = 9; i < 45 && i < slots.size(); i++) {
-            ItemStack stack = slots.get(i).getStack();
-            int hotbar = i >= 36 ? i - 36 : -1;
-            if (stack.isEmpty()) {
-                if (hotbar >= 0) {
-                    empty.add(hotbar);
-                }
-                continue;
-            }
-            stacks.add(new AuctionSeller.InvStack(i, hotbar, stack.getName().getString(), key(stack),
-                    stack.getCount()));
-        }
-        return new AuctionSeller.Inventory(stacks, empty, client.player.getInventory().getSelectedSlot());
-    }
-
-    // ------------------------------------------------------------------
-    // Settings snapshots
-    // ------------------------------------------------------------------
 
     private AuctionBuyer.Options options() {
         AuctionBuyer.Options o = new AuctionBuyer.Options();
@@ -502,27 +446,8 @@ public final class AuctionFlipper extends Module {
         return f;
     }
 
-    private static String key(ItemStack stack) {
-        return Registries.ITEM.getId(stack.getItem()) + "|" + stack.getName().getString() + "|"
-                + stack.getEnchantments() + "|" + stack.get(DataComponentTypes.POTION_CONTENTS);
-    }
-
-    /** The window's own slots (never your inventory), filled ones only. */
     private static AuctionBuyer.ScreenView view(MinecraftClient client, HandledScreen<?> screen) {
-        List<AuctionDeals.SlotView> out = new ArrayList<>();
-        var slots = screen.getScreenHandler().slots;
-        for (int i = 0; i < slots.size(); i++) {
-            Slot slot = slots.get(i);
-            if (slot.inventory == client.player.getInventory() || !slot.hasStack()) {
-                continue;
-            }
-            ItemStack stack = slot.getStack();
-            // The position in the handler's list is the id a click addresses.
-            out.add(new AuctionDeals.SlotView(i, Registries.ITEM.getId(stack.getItem()).toString(), key(stack),
-                    stack.getName().getString(), stack.getCount(), lore(stack),
-                    stack.get(DataComponentTypes.CONTAINER) != null));
-        }
-        return new AuctionBuyer.ScreenView(screen.getTitle().getString(), out);
+        return new AuctionBuyer.ScreenView(screen.getTitle().getString(), AuctionClient.slots(client, screen));
     }
 
     // ------------------------------------------------------------------
@@ -532,7 +457,7 @@ public final class AuctionFlipper extends Module {
     /** From the mixin, before any slot click is sent. */
     public void onSlotClick(int syncId, int slotId) {
         MinecraftClient client = MinecraftClient.getInstance();
-        if (ownClick || client.player == null || !(client.currentScreen instanceof HandledScreen<?> screen)
+        if (game.clicking() || client.player == null || !(client.currentScreen instanceof HandledScreen<?> screen)
                 || screen.getScreenHandler().syncId != syncId) {
             return;
         }
@@ -547,25 +472,14 @@ public final class AuctionFlipper extends Module {
         button.itemId = Registries.ITEM.getId(slots.get(slotId).getStack().getItem()).toString();
         if (learning != null) {
             learnClick(client, screen, syncId, button);
-        } else if (buyer.awaitingManualConfirm() && syncId != listingWindow
-                && !AuctionBuyer.Button.normalize(button.title)
-                .equals(AuctionBuyer.Button.normalize(listingTitle))) {
-            AuctionLedger.Expected x = ledger.latestExpected();
-            if (x != null && !x.sent) {
-                x.tag = button; // kept only if the chat reply proves this click bought
-                x.deadline = System.currentTimeMillis() + REPLY_MILLIS;
-            }
-        } else if (!saved.sellConfirm.set() && (seller.awaitingConfirm()
-                || seller.verifying() && syncId == sellWindow)) {
-            sellWindow = syncId;
-            sellCandidate = button; // kept only if the item then leaves your inventory
-            seller.manualConfirm(TickPhase.tickId());
+        } else {
+            core.clicked(syncId, button);
         }
     }
 
     private void learnClick(MinecraftClient client, HandledScreen<?> screen, int syncId, AuctionBuyer.Button button) {
         if (learning == AuctionBuyer.Kind.CONFIRM) {
-            List<AuctionDeals.SlotView> shown = view(client, screen).slots();
+            List<AuctionDeals.SlotView> shown = AuctionClient.slots(client, screen);
             AuctionDeals.SlotView clicked = shown.stream().filter(v -> v.slot() == button.slot).findFirst()
                     .orElse(null);
             if (clicked == null) {
@@ -585,7 +499,7 @@ public final class AuctionFlipper extends Module {
                 }
                 return;
             }
-            saved.confirm = button;
+            core.confirm = button;
         } else {
             saved.refresh = button;
         }
@@ -606,8 +520,18 @@ public final class AuctionFlipper extends Module {
                 dump();
             } else if (keyCode == buyKey.get()) {
                 buyer.answer(true);
+                core.answer(true);
             } else if (keyCode == skipKey.get()) {
                 buyer.answer(false);
+                core.answer(false);
+            } else if (core.working()) {
+                // A module's own key switches it off even while its window is open.
+                if (isEnabled() && keyMatches(keyCode)) {
+                    setEnabled(false);
+                }
+                if (crafter != null && crafter.isEnabled() && crafter.keyMatches(keyCode)) {
+                    crafter.setEnabled(false);
+                }
             }
         } else if (client.currentScreen == null && client.player != null && keyCode == ledgerKey.get()) {
             openLedger();
@@ -628,9 +552,9 @@ public final class AuctionFlipper extends Module {
             say("fix " + FILE + " and run /zephyr ah reload first.");
             return;
         }
+        core.stop("learning a button");
         learning = kind;
         learnFrom = -1;
-        buyer.abort();
         say(kind == AuctionBuyer.Kind.CONFIRM
                 ? "open the auction house, click a listing, then click confirm. That second click really buys."
                 : "open the auction house and click its refresh button.");
@@ -646,9 +570,9 @@ public final class AuctionFlipper extends Module {
             say("fix " + FILE + " and run /zephyr ah reload first.");
             return;
         }
-        saved.confirm = new AuctionBuyer.Button();
+        core.confirm = new AuctionBuyer.Button();
         saved.refresh = new AuctionBuyer.Button();
-        saved.sellConfirm = new AuctionBuyer.Button();
+        core.sellConfirm = new AuctionBuyer.Button();
         buyer.abort();
         save();
         say("forgot the confirm, sell and refresh buttons.");
@@ -681,6 +605,7 @@ public final class AuctionFlipper extends Module {
     }
 
     public void reload() {
+        core.stop("reloading auction.json");
         broken = false;
         try {
             if (!Files.exists(FILE)) {
@@ -689,7 +614,8 @@ public final class AuctionFlipper extends Module {
             } else {
                 Saved read = GSON.fromJson(Files.readString(FILE, StandardCharsets.UTF_8), Saved.class);
                 if (read == null || read.rules == null || read.auctionTitle == null || read.boughtMessage == null
-                        || read.soldMessage == null || Arrays.asList(read.confirm, read.refresh, read.sellConfirm)
+                        || read.soldMessage == null || read.balanceCommand == null || read.balanceMessage == null
+                        || Arrays.asList(read.confirm, read.refresh, read.sellConfirm)
                         .stream().anyMatch(b -> b == null || b.title == null || b.itemId == null)) {
                     throw new IllegalStateException("missing fields");
                 }
@@ -700,14 +626,23 @@ public final class AuctionFlipper extends Module {
             broken = true; // no buying without your blacklist and price caps
             System.err.println("[Zephyr] " + FILE + " not loaded, buying and selling are blocked: " + e);
         }
-        boughtPattern = AuctionChat.compile(saved.boughtMessage);
-        soldPattern = AuctionChat.compile(saved.soldMessage);
+        core.confirm = saved.confirm;
+        core.sellConfirm = saved.sellConfirm;
+        core.boughtPattern = AuctionChat.compile(saved.boughtMessage);
+        core.soldPattern = AuctionChat.compile(saved.soldMessage);
+        core.balancePattern = AuctionChat.compileAmount(saved.balanceMessage);
+        core.balanceCommand = saved.balanceCommand.replaceFirst("^/", "").trim();
+        if (crafter != null) {
+            crafter.reload();
+        }
     }
 
     private void save() {
         if (broken) {
             return;
         }
+        saved.confirm = core.confirm;
+        saved.sellConfirm = core.sellConfirm;
         write(FILE, GSON.toJson(saved));
     }
 
@@ -724,7 +659,8 @@ public final class AuctionFlipper extends Module {
         }
     }
 
-    private void saveLedger() {
+    @Override
+    public void saveLedger() {
         if (ledgerBroken) {
             return;
         }
@@ -746,24 +682,40 @@ public final class AuctionFlipper extends Module {
     }
 
     public void resetSession() {
-        buyer.resetSession();
+        core.resetSession();
         say("session buy count, budget use and price history cleared. The bought / sold list stays.");
     }
 
     public String summary() {
         return (broken ? "CANNOT READ " + FILE + " - blocked. " : "")
                 + (ledgerBroken ? "CANNOT READ " + LEDGER_FILE + " - not saving it. " : "")
-                + buyer.buys() + " buys, " + PriceText.shorten(buyer.committed()) + " of budget used, confirm "
-                + describe(saved.confirm) + ", sell " + describe(saved.sellConfirm) + ", refresh "
-                + describe(saved.refresh) + ", sold message " + (soldPattern == null ? "unset" : "set") + " - "
-                + (seller.busy() ? seller.status() : buyer.status());
+                + buyer.buys() + " buys, " + PriceText.shorten(buyer.committed()) + " of budget used, money "
+                + (core.balance() < 0 ? "unknown" : "$" + PriceText.shorten(core.balance())) + ", confirm "
+                + describe(core.confirm) + ", sell " + describe(core.sellConfirm) + ", sold message "
+                + (core.soldPattern == null ? "unset" : "set") + " - "
+                + (core.status().isEmpty() ? buyer.status() : core.status());
     }
 
     private static String describe(AuctionBuyer.Button b) {
         return b.set() ? "slot " + b.slot : "unset";
     }
 
-    static void say(String message) {
+    // ------------------------------------------------------------------
+    // AuctionCore.Env
+    // ------------------------------------------------------------------
+
+    @Override
+    public long millis() {
+        return System.currentTimeMillis();
+    }
+
+    @Override
+    public long tickId() {
+        return TickPhase.tickId();
+    }
+
+    @Override
+    public void say(String message) {
         MinecraftClient client = MinecraftClient.getInstance();
         if (client.player != null) {
             client.player.sendMessage(Text.literal("[Zephyr] AuctionFlipper: " + message), false);
@@ -771,8 +723,14 @@ public final class AuctionFlipper extends Module {
     }
 
     @Override
+    public void saveButtons() {
+        save();
+    }
+
+    @Override
     public String hudLabel() {
         return name + " · " + buyer.buys() + " buys " + PriceText.shorten(buyer.committed())
+                + (core.balance() >= 0 ? " · $" + PriceText.shorten(core.balance()) : "")
                 + (learning != null ? " · learning" : "");
     }
 
@@ -782,14 +740,30 @@ public final class AuctionFlipper extends Module {
 
     private void draw(DrawContext context, HandledScreen<?> screen) {
         MinecraftClient client = MinecraftClient.getInstance();
-        if (!isEnabled() || client.player == null
-                || !AuctionBuyer.isAuctionTitle(screen.getTitle().getString(), saved.auctionTitle)
-                || saved.confirm.set() && AuctionBuyer.Button.normalize(saved.confirm.title)
-                .equals(AuctionBuyer.Button.normalize(screen.getTitle().getString()))) {
+        boolean crafting = crafter != null && crafter.isEnabled();
+        if (!isEnabled() && !crafting || client.player == null) {
             return;
         }
         HandledScreenAccessor at = (HandledScreenAccessor) screen;
         var slots = screen.getScreenHandler().slots;
+        if (core.working()) {
+            String question = core.question();
+            if (question == null) {
+                context.drawText(client.textRenderer, "Zephyr: " + core.status(), at.zephyr$x(),
+                        at.zephyr$y() - 11, 0xFFFFFFFF, true);
+            } else {
+                ask(context, client, at, slots, core.questionSlot(), question);
+            }
+            return;
+        }
+        if (!isEnabled() || auto.get() || crafting) {
+            return;
+        }
+        String title = screen.getTitle().getString();
+        if (!AuctionBuyer.isAuctionTitle(title, saved.auctionTitle) || core.confirm.set()
+                && AuctionBuyer.Button.normalize(core.confirm.title).equals(AuctionBuyer.Button.normalize(title))) {
+            return;
+        }
         AuctionDeals.Deal asked = buyer.question();
         List<AuctionDeals.Deal> marks = buyer.marks();
         if (highlight.get()) {
@@ -814,12 +788,17 @@ public final class AuctionFlipper extends Module {
                     0xFFFFFFFF, true);
             return;
         }
-        if (asked.view().slot() < slots.size()) {
-            Slot slot = slots.get(asked.view().slot());
+        ask(context, client, at, slots, asked.view().slot(), "Buy " + asked.view().count() + "x "
+                + asked.view().name() + " for $" + PriceText.shorten(asked.price()) + "?  (est. +"
+                + PriceText.shorten(asked.profit()) + ")");
+    }
+
+    private void ask(DrawContext context, MinecraftClient client, HandledScreenAccessor at, List<Slot> slots,
+                     int index, String first) {
+        if (index >= 0 && index < slots.size()) {
+            Slot slot = slots.get(index);
             box(context, at.zephyr$x() + slot.x, at.zephyr$y() + slot.y, 0xFF40C8FF);
         }
-        String first = "Buy " + asked.view().count() + "x " + asked.view().name() + " for $"
-                + PriceText.shorten(asked.price()) + "?  (est. +" + PriceText.shorten(asked.profit()) + ")";
         String second = "[" + buyKey.display() + "] buy    [" + skipKey.display() + "] skip";
         int width = Math.max(client.textRenderer.getWidth(first), client.textRenderer.getWidth(second)) + 10;
         int x = at.zephyr$x();
@@ -836,13 +815,5 @@ public final class AuctionFlipper extends Module {
         context.fill(x - 1, y + 16, x + 17, y + 17, color);
         context.fill(x - 1, y, x, y + 16, color);
         context.fill(x + 16, y, x + 17, y + 16, color);
-    }
-
-    private static List<String> lore(ItemStack stack) {
-        var component = stack.get(DataComponentTypes.LORE);
-        if (component == null) {
-            return List.of();
-        }
-        return component.lines().stream().map(Text::getString).toList();
     }
 }

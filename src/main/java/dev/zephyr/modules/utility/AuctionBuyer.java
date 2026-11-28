@@ -305,34 +305,53 @@ public final class AuctionBuyer {
         if (blocked(o, confirm) != null || overLimit(o, pending)) {
             return end(now, "limits changed, not confirmed");
         }
-        boolean itemShown = false;
-        for (AuctionDeals.SlotView s : view.slots()) {
-            if (s.slot() == confirm.slot) {
-                continue;
-            }
-            double shown = PriceText.price(s.lore());
-            boolean same = s.key().equals(pending.view().key()) && s.count() == pending.view().count();
-            if (shown > 0 && shown != pending.price() && same) {
-                return end(now, "price changed to " + PriceText.shorten(shown) + ", not confirmed");
-            }
-            itemShown |= same && (!o.confirmPrice || shown == pending.price());
-        }
-        if (!itemShown) {
-            return end(now, o.confirmPrice ? "confirm window does not show that item at that price, not confirmed"
-                    : "confirm window does not show that item, not confirmed");
-        }
-        // A price written on the confirm button itself must agree too.
-        for (AuctionDeals.SlotView s : view.slots()) {
-            double shown = s.slot() == confirm.slot ? PriceText.price(s.lore()) : -1;
-            if (shown > 0 && shown != pending.price()) {
-                return end(now, "confirm button shows another price, not confirmed");
-            }
+        String problem = confirmProblem(view, confirm.slot, pending.view(), pending.price(), o.confirmPrice);
+        if (problem != null) {
+            return end(now, problem);
         }
         AuctionDeals.Deal d = pending;
         send(d);
         pending = null;
         enter(State.COOLDOWN, now);
         return new Click(confirm.slot, Kind.CONFIRM, d);
+    }
+
+    /**
+     * Why this confirm window must not be confirmed, or null when it shows the wanted item
+     * and no other price. Used by manual buying and by the automatic routines.
+     */
+    public static String confirmProblem(ScreenView view, int button, AuctionDeals.SlotView wanted, double price,
+                                        boolean needPrice) {
+        boolean itemShown = false;
+        for (AuctionDeals.SlotView s : view.slots()) {
+            if (s.slot() == button) {
+                continue;
+            }
+            double shown = PriceText.price(s.lore());
+            boolean same = s.key().equals(wanted.key()) && s.count() == wanted.count();
+            if (shown > 0 && shown != price && same) {
+                return "price changed to " + PriceText.shorten(shown) + ", not confirmed";
+            }
+            itemShown |= same && (!needPrice || shown == price);
+        }
+        if (!itemShown) {
+            return needPrice ? "confirm window does not show that item at that price, not confirmed"
+                    : "confirm window does not show that item, not confirmed";
+        }
+        // A price written on the confirm button itself must agree too.
+        for (AuctionDeals.SlotView s : view.slots()) {
+            double shown = s.slot() == button ? PriceText.price(s.lore()) : -1;
+            if (shown > 0 && shown != price) {
+                return "confirm button shows another price, not confirmed";
+            }
+        }
+        return null;
+    }
+
+    /** Counts a buy made outside {@link #tick} against the session limits. */
+    public void count(double price) {
+        committed += price;
+        buys++;
     }
 
     private boolean overLimit(Options o, AuctionDeals.Deal d) {

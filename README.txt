@@ -1,3 +1,63 @@
+v1.19.0 - ESP memory and hidden-data hints update
+  - StorageESP, AmethystFinder and BaseFinder share one scanner over the chunks your
+    client holds. What it finds is remembered (drawn fainter) per server and dimension in
+    config/zephyr/esp-memory, so it stays visible from the surface. It is forgotten only
+    after two close rescans miss it ("Forget only within", default 16 blocks).
+    Singleplayer is remembered for the session only.
+  - Nothing can show data the server never sent. Walk or fly near a place once to learn it.
+  - Chunk hints (square at your height, line down): section palette lists storage or
+    amethyst that no block shows; bud-strength light beside geodes; impossible light edges;
+    block light underground; grown-out amethyst areas; hives; storage and amethyst sounds.
+    Hints are clues, not proof. A removed block can stay listed in a palette.
+  - Which of these DonutSMP leaks is unknown. To find out: StorageESP > Advanced > "Write
+    probe file now" on the surface, again next to a known stash underground, and compare
+    the two config/zephyr/esp-probe-*.txt files.
+  - BaseFinder, BlockESP and CrystalESP now draw through walls ("Through walls", on).
+    BlockESP also remembers its finds for the session.
+  - Sees little on a server you expect more from? AmethystFinder / BaseFinder Advanced hold
+    the thresholds. "Count growth by" AUTO reads palettes on addresses containing donutsmp.
+  - Hint methods adapted from Spectre by 4ldenz via Donut Client 4.0 are GPL-3.0-only; see
+    src/main/resources/licenses/. Not run in game.
+
+Auto flip and CraftAutomate update (part of v1.19.0)
+  - Every module menu shows a few basic settings; the rest are under "Advanced".
+  - AuctionFlipper, Auto flip on (default): browses /ah page by page, searches
+    /ah <item name> to read the whole market, asks [Y]/[N], buys, searches again and lists
+    with /ah sell <price> just under the cheapest, only if that is at least cost plus
+    "Min profit %". Otherwise it holds the item and tries again later. After listing it
+    searches once more and notes whether yours is the cheapest. It does not relist when
+    someone undercuts you afterwards.
+  - Auto flip off: it only marks deals in the window you open and asks before buying.
+  - CraftAutomate: spruce logs to planks to crafting tables, sold one at a time the same
+    way. Keep 4 inventory slots empty and no spruce logs or planks of your own in it.
+    Recipes: config/zephyr/craft.json. Budget, fee, keys and the list are shared with
+    AuctionFlipper; max price and min profit are its own.
+  - Both open and close windows by themselves. Their module keys stop them, also while a
+    window is open.
+  - askFirst off needs a max price and a budget above 0. Max 10 buys per session by
+    default (maxBuys); /zephyr ah reset starts a new session.
+  - Auto flip only checks items that are 30% under what at least 5 other listings of the
+    same item ask (Advanced: discount, samples, minProfit, minRoi).
+  - The first time, click confirm yourself in the window the server opens, once for buying
+    and once for selling. Both buttons are remembered.
+  - Your money is unknown until you set these in config/zephyr/auction.json, then run
+    /zephyr ah reload: "balanceCommand" (the command, no slash) and "balanceMessage" (the
+    line it prints, with {price} for the amount).
+  - Not seen on the server yet, so check them: the next page button (slot 53, the arrow),
+    that /ah <name> opens a window with the same layout, and that /ah sell takes the price
+    for the whole held stack. Advanced "cheapestFirst": only if search results are sorted
+    cheapest first; otherwise every page is read, up to checkPages (10).
+  - Abbreviated prices ("1.1K") are undercut from the lowest value they can stand for.
+  - /zephyr ah log (or bind ledgerKey): bought and sold list with Sell and Sold buttons.
+  - "Sold" entries: no sale message is known yet. Use the Sold button, or turn on logChat,
+    copy the sale line into soldMessage in config/zephyr/auction.json using {item},
+    {price} and optionally {count}, {player}, {any}, then /zephyr ah reload.
+  - Item rules also live in auction.json:
+      "rules": { "blacklist": ["minecraft:dirt"], "whitelist": [],
+                 "maxUnitPrice": {"minecraft:diamond": 900},
+                 "resaleUnitPrice": {"Netherite Ingot": 450000} }
+  - /zephyr ah status | forget | reset | learn confirm | learn refresh | learn cancel.
+
 v1.18.1 - Menus and AuctionFlipper update
   - Every module menu shows a few basic settings; the rest are under "Advanced".
   - AuctionFlipper asks before buying: [Y] buys, [N] skips (askFirst off = no question,

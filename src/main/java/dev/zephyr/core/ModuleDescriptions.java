@@ -32,9 +32,10 @@ public final class ModuleDescriptions {
         d("CustomSky", "Replaces the sky with an animated aurora, nebula, galaxy or ink-wind sky.");
         d("HandChams", "Recolours your first-person arms: tinted, solid or glowing.");
         d("Cosmetics", "Halo, hat and wings on your own character, seen in third person.");
-        d("AuctionFlipper", "Buys underpriced auction listings (asks first), tracks sales and relists with /ah sell.");
-        d("AmethystFinder", "Finds amethyst geodes in loaded chunks and shows them through walls.");
-        d("StorageESP", "Outlines chests, shulkers and other storage through walls.");
+        d("AuctionFlipper", "Browses /ah, buys flips (asks first) and relists them as the cheapest at a profit.");
+        d("CraftAutomate", "Buys ingredients on /ah, crafts them and sells the results as the cheapest at a profit.");
+        d("AmethystFinder", "Shows amethyst through walls, remembers it and marks chunks with traces of it.");
+        d("StorageESP", "Outlines storage through walls, remembers it and marks chunks with traces of it.");
         d("AutoCrystalPvP", "Runs the crystal and anchor modules as one bot that also moves and chases.");
         d("XRay", "Shows only ores and other chosen blocks through the ground.");
         d("LegitAura", "Attacks a visible nearby target with smooth rotations and full-charge timing.");
@@ -68,8 +69,8 @@ public final class ModuleDescriptions {
         d("NoPush", "Stops entities, knockback and water from pushing you.");
         d("Sprint", "Sprints automatically whenever you can (toggle sprint).");
         // Render / HUD
-        d("BaseFinder", "Highlights signs of player bases in loaded chunks: chests, spawners, beds and more.");
-        d("BlockESP", "Outlines chosen blocks (ores, debris, amethyst, spawners) through walls.");
+        d("BaseFinder", "Highlights signs of player bases (chests, spawners, beds) and marks suspect chunks.");
+        d("BlockESP", "Outlines chosen blocks (ores, debris, amethyst, spawners) through walls and remembers them.");
         d("CrystalESP", "Outlines end crystals, coloured by how much damage they would do to you.");
         d("DamageNumbers", "Shows floating numbers when nearby players take damage.");
         d("ESP", "Draws boxes around players (optionally mobs) visible through walls.");
