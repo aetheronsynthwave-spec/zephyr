@@ -20,7 +20,7 @@ public abstract class MixinLightmapTextureManager {
             require = 0)
     private Object zephyr$fullbright(SimpleOption<?> option) {
         Fullbright fb = ZephyrClient.modules() == null ? null : ZephyrClient.modules().get(Fullbright.class);
-        if (fb != null && fb.isEnabled()) {
+        if (fb != null && fb.isEnabled() || dev.zephyr.modules.render.XRay.active()) {
             Fullbright.applied++;
             return Fullbright.GAMMA;
         }

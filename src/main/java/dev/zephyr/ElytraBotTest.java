@@ -293,6 +293,13 @@ public final class ElytraBotTest {
             ((dev.zephyr.core.settings.BooleanSetting) bot.setting("aiMode")).set(name.replace("chain", "").contains("ai"));
             // "climb" in the name: the old behaviour (always climb before diving) as a baseline.
             ((dev.zephyr.core.settings.NumberSetting) bot.setting("rocketDiveFrom")).set(name.contains("climb") ? 0.0 : 2.5);
+            // -Dzephyr.ebtset=id=value,... overrides number settings for comparisons.
+            for (String pair : System.getProperty("zephyr.ebtset", "").split(",")) {
+                String[] kv = pair.split("=");
+                if (kv.length == 2) {
+                    ((dev.zephyr.core.settings.NumberSetting) bot.setting(kv[0])).set(Double.parseDouble(kv[1]));
+                }
+            }
             bot.setEnabled(true);
             System.out.println("[EBT] >> " + name + " enabled=" + bot.isEnabled());
         }

@@ -24,6 +24,9 @@ public final class InputOverride {
     private static boolean jump;
     private static boolean forward;
     private static boolean sprint;
+    private static boolean back;
+    private static boolean left;
+    private static boolean right;
     private static long lastJumpTick = Long.MIN_VALUE;
 
     private static void touch() {
@@ -33,7 +36,18 @@ public final class InputOverride {
             jump = false;
             forward = false;
             sprint = false;
+            back = false;
+            left = false;
+            right = false;
         }
+    }
+
+    /** Holds back and/or a strafe key for this tick. */
+    public static void requestMove(boolean backward, boolean strafeLeft, boolean strafeRight) {
+        touch();
+        back |= backward;
+        left |= strafeLeft;
+        right |= strafeRight;
     }
 
     /** Presses jump for this tick. */
@@ -57,7 +71,7 @@ public final class InputOverride {
 
     /** True while a request made this tick is waiting to be applied. */
     public static boolean active() {
-        return stamp == TickPhase.tickId() && (jump || forward || sprint);
+        return stamp == TickPhase.tickId() && (jump || forward || sprint || back || left || right);
     }
 
     public static boolean forceForward() {
@@ -69,7 +83,8 @@ public final class InputOverride {
         if (stamp != TickPhase.tickId()) {
             return in;
         }
-        return new PlayerInput(in.forward() || forward, in.backward() && !forward, in.left(), in.right(),
+        return new PlayerInput(in.forward() || forward, (in.backward() || back) && !forward, in.left() || left,
+                in.right() || right,
                 in.jump() || jump, in.sneak(), in.sprint() || sprint);
     }
 }

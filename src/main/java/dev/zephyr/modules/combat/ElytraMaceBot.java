@@ -44,10 +44,9 @@ import java.util.function.Predicate;
  * </pre>
  *
  * <ul>
- *   <li><b>Vertical drops only.</b> The bot attacks from directly above: it gets over the target
- *       (within 25 degrees of vertical, see {@link #VERTICAL_MIN_PITCH}, allowing for its own drift and the
- *       target's movement), looks down at the head and rockets straight down. It never dives in
- *       at an angle and never swings at the target's side.</li>
+ *   <li><b>Drops from above.</b> A dive starts within 25 degrees of vertical (see
+ *       {@link #VERTICAL_MIN_PITCH}); once under way it follows a moving target down to
+ *       {@link #DIVING_MIN_PITCH} and swings at them as soon as they are in reach.</li>
  *   <li><b>CLIMB</b> gains height and flies to the point over the target. Right after a hit the
  *       Wind Burst bounce already leaves the bot over the target, so the next drop starts at the
  *       top of the bounce with no climb at all (the look-down, rocket, smash chain).</li>
@@ -213,8 +212,10 @@ public final class ElytraMaceBot extends Module {
             reset();
             return;
         }
+        // Low health with a totem to hand is normal in a totem fight (a pop leaves half a
+        // heart); stop only when there is nothing left to catch us.
         if (self.getHealth() + self.getAbsorptionAmount() < minHealth.get() && state != State.RECOVER
-                && GearSlots.wearingElytra(self)) {
+                && GearSlots.wearingElytra(self) && !hasTotem(self)) {
             stop(self, "health below limit, stopped.");
             return;
         }
@@ -253,6 +254,12 @@ public final class ElytraMaceBot extends Module {
         }
     }
 
+
+    private static boolean hasTotem(ClientPlayerEntity self) {
+        return ItemUtil.isTotem(self.getOffHandStack())
+                || InventoryManager.findHotbarSlot(self, ItemUtil::isTotem) != -1
+                || InventoryManager.findHandlerSlot(self, ItemUtil::isTotem) != -1;
+    }
 
     private void prepare(MinecraftClient client, ClientPlayerEntity self, LivingEntity target) {
         if (target == null) {
@@ -445,7 +452,7 @@ public final class ElytraMaceBot extends Module {
                 && pos.y > real.maxY - 0.2 && pos.y < real.maxY + 1.5
                 && real.squaredMagnitude(self.getEyePos()) <= reach.get() * reach.get();
         // The elytra only comes off over the target: a pass at head height from the side never strikes.
-        if (swapAllowed(self, target) && verticalAim(self, target) != null
+        if (swapAllowed(self, target) && verticalAim(self, target, DIVING_MIN_PITCH) != null
                 && (overhead || impact > 0 && target.hurtTime <= impact)) {
             enteringRocketDive = false;
             enter(State.STRIKE);
@@ -453,7 +460,7 @@ public final class ElytraMaceBot extends Module {
             return;
         }
         enteringRocketDive = false;
-        double[] look = verticalAim(self, target);
+        double[] look = verticalAim(self, target, DIVING_MIN_PITCH);
         double headroom = pos.y - box.maxY;
         // Not over the target any more (it moved, or we drifted): no angled dive, reposition.
         if (look == null || pos.y < box.maxY + 0.5 || blockedBefore(self, box)) {
@@ -502,6 +509,8 @@ public final class ElytraMaceBot extends Module {
 
     /** Flattest drop allowed (degrees below the horizon): anything flatter repositions instead. */
     private static final double VERTICAL_MIN_PITCH = 65.0;
+    /** A dive already under way follows a moving target this far, rather than being called off. */
+    private static final double DIVING_MIN_PITCH = 45.0;
 
     /** Height over the head from which the look-down rocket drop is started. */
     private double minDropHeight() {
@@ -527,6 +536,10 @@ public final class ElytraMaceBot extends Module {
      * @return {yaw, pitch} or null
      */
     private double[] verticalAim(ClientPlayerEntity self, LivingEntity target) {
+        return verticalAim(self, target, VERTICAL_MIN_PITCH);
+    }
+
+    private double[] verticalAim(ClientPlayerEntity self, LivingEntity target, double minPitch) {
         Box box = aimBox(self, target);
         Vec3d eye = self.getEyePos();
         double headroom = eye.y - box.maxY;
@@ -538,7 +551,7 @@ public final class ElytraMaceBot extends Module {
         Vec3d aim = new Vec3d(box.getCenter().x + leadVel().x * ticks - drift.x, box.maxY,
                 box.getCenter().z + leadVel().z * ticks - drift.z);
         double pitch = MathUtil.pitchTo(eye, aim);
-        if (pitch < VERTICAL_MIN_PITCH) {
+        if (pitch < minPitch) {
             return null;
         }
         // Straight down has no meaningful yaw: keep ours instead of spinning the camera.
@@ -575,16 +588,15 @@ public final class ElytraMaceBot extends Module {
         slamPending = true;
         Vec3d eye = self.getEyePos();
         Box box = target.getBoundingBox();
-        // The turn lands next tick, so aim from where the eyes will be at where the target will be.
-        Vec3d nextEye = eye.add(self.getVelocity());
-        double[] turn = smallestTurnOnto(nextEye, box.offset(targetStep), self.getYaw(), self.getPitch());
-        if (turn != null) {
-            steer(turn[0], turn[1]);
-        } else {
-            Vec3d nextAim = MathUtil.bestAimPoint(self, target, self.getYaw(), self.getPitch()).add(targetStep);
-            steer(MathUtil.yawTo(nextEye, nextAim), MathUtil.pitchTo(nextEye, nextAim));
+        // The fall past a target lasts a few ticks: the view goes onto them at once, so the
+        // swing is never waiting for the camera to arrive.
+        Box core = box.contract(0.1);
+        Vec3d point = new Vec3d(MathHelper.clamp(eye.x, core.minX, core.maxX),
+                MathHelper.clamp(eye.y, core.minY, core.maxY), MathHelper.clamp(eye.z, core.minZ, core.maxZ));
+        if (point.squaredDistanceTo(eye) < 0.04) {
+            point = box.getCenter();
         }
-
+        RotationManager.snap(self, MathUtil.yawTo(eye, point), MathUtil.pitchTo(eye, point));
         if (GearSlots.wearingElytra(self)) {
             if (stateTicks > 8) {
                 misses++;
@@ -598,11 +610,8 @@ public final class ElytraMaceBot extends Module {
             return;
         }
         boolean inReach = box.squaredMagnitude(eye) <= reach.get() * reach.get();
-        // Only from above: eyes over the head and (nearly) inside its footprint. No side hits.
-        double sideGap = Math.max(Math.max(box.minX - eye.x, eye.x - box.maxX), Math.max(box.minZ - eye.z, eye.z - box.maxZ));
-        // Same 25-degree cone as the drop itself (tan 25 = 0.466), with a little slack right at the head.
-        boolean fromAbove = eye.y >= box.maxY + 0.3 && sideGap <= Math.max(0.15, (eye.y - box.maxY) * 0.466);
-        boolean hittable = inReach && fromAbove && hittable(self, target);
+        // The drop itself is vertical; once falling, anything in reach is hit.
+        boolean hittable = inReach && hittable(self, target);
         if (DEBUG) {
             System.out.printf("[EBT-D] strike st=%d eye=(%.2f,%.2f,%.2f) v=(%.2f,%.2f,%.2f) tgt=(%.2f,%.2f,%.2f) d=%.2f reach=%b hit=%b look=%b glide=%b worn=%b fall=%.2f hurt=%d yaw=%.0f pitch=%.0f%n",
                     stateTicks, eye.x, eye.y, eye.z, self.getVelocity().x, self.getVelocity().y, self.getVelocity().z,
@@ -610,8 +619,9 @@ public final class ElytraMaceBot extends Module {
                     HitGeometry.lookCrosses(eye, self.getYaw(), self.getPitch(), box, reach.get(), AIM_MARGIN),
                     self.isGliding(), GearSlots.wearingElytra(self), self.fallDistance, target.hurtTime, self.getYaw(), self.getPitch());
         }
-        if (!inReach && Math.hypot(box.getCenter().x - eye.x, box.getCenter().z - eye.z) > 0.8) {
-            InputOverride.requestForward(targetVel.horizontalLength() > 0.2); // air control: drift towards a target that moved
+        if (Math.hypot(box.getCenter().x - eye.x, box.getCenter().z - eye.z) > 0.5) {
+            // Air control: we are facing them, so forward closes the gap they open by moving.
+            InputOverride.requestForward(true);
         }
         // Stun slam: the axe disables the shield this tick, the mace lands on a following one.
         if (hittable && !acted() && !self.isGliding() && axeBreak.get()
@@ -657,44 +667,6 @@ public final class ElytraMaceBot extends Module {
             misses++;
             enter(State.RECOVER);
         }
-    }
-
-    /**
-     * The view closest to the current one (by true angle, not yaw+pitch) whose crosshair ray
-     * from {@code eye} passes through the middle part of {@code box} within reach. Falling onto a
-     * target from straight above, this changes pitch and leaves yaw alone - the bearing to a
-     * target underneath swings wildly, and chasing it is what made the crosshair miss.
-     *
-     * @return {yaw, pitch}, or null when no view within reach crosses the box
-     */
-    private double[] smallestTurnOnto(Vec3d eye, Box box, double yaw, double pitch) {
-        Box core = box.contract(Math.min(0.15, box.getLengthX() * 0.25), Math.min(0.25, box.getLengthY() * 0.2),
-                Math.min(0.15, box.getLengthZ() * 0.25));
-        Vec3d look = Vec3d.fromPolar((float) pitch, (float) yaw);
-        double max = reach.get() + 0.8; // the next eye position can be a little short of reach
-        double[] best = null;
-        double bestAngle = Double.MAX_VALUE;
-        for (int dyaw = -180; dyaw < 180; dyaw += 3) {
-            for (int p = -90; p <= 90; p += 2) {
-                double dp = p - pitch;
-                // RotationManager covers EASE of the requested turn per tick (below its speed cap),
-                // so test where the view actually lands, not where it was asked to go.
-                if (Math.hypot(dyaw, dp) * EASE > 55.0) {
-                    continue;
-                }
-                double ly = yaw + dyaw * EASE;
-                double lp = MathHelper.clamp(pitch + dp * EASE, -90.0, 90.0);
-                if (!HitGeometry.lookCrosses(eye, ly, lp, core, max, 0.0)) {
-                    continue;
-                }
-                double angle = Math.acos(MathHelper.clamp(look.dotProduct(Vec3d.fromPolar((float) lp, (float) ly)), -1.0, 1.0));
-                if (angle < bestAngle) {
-                    bestAngle = angle;
-                    best = new double[]{yaw + dyaw, p};
-                }
-            }
-        }
-        return best;
     }
 
     /**
@@ -931,8 +903,11 @@ public final class ElytraMaceBot extends Module {
         return ItemUtil.isMace(s) && (!requireWindBurst.get() || ItemUtil.enchantLevel(s, "wind_burst") > 0);
     }
 
+    /** A Wind Burst I mace first: its short bounce keeps the next drop quick. Else any that will do. */
     private int maceSlot(ClientPlayerEntity self) {
-        return InventoryManager.findHotbarSlot(self, this::isStrikeMace);
+        int one = InventoryManager.findHotbarSlot(self,
+                st -> ItemUtil.isMace(st) && ItemUtil.enchantLevel(st, "wind_burst") == 1);
+        return one != -1 ? one : InventoryManager.findHotbarSlot(self, this::isStrikeMace);
     }
 
     private int rocketSlot(ClientPlayerEntity self) {

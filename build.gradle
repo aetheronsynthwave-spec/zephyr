@@ -34,6 +34,10 @@ dependencies {
     mappings "net.fabricmc:yarn:${project.yarn_mappings}:v2"
     modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
     modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
+    // Practice-bot test only (see PracticeBotTest): -Pherobot=<path to the HeroBot jar>.
+    if (project.hasProperty("herobot")) {
+        modLocalRuntime files(project.property("herobot"))
+    }
 }
 
 processResources {
@@ -50,6 +54,12 @@ java {
     withSourcesJar()
 }
 
+// Test harnesses stay out of what is released; development runs use the class folders.
+tasks.named('jar') {
+    exclude 'dev/zephyr/HitCrystalTest*', 'dev/zephyr/PracticeBotTest*', 'dev/zephyr/SmartMaceArena*',
+            'dev/zephyr/FeatureTour*', 'dev/zephyr/DuelTest*', 'dev/zephyr/ChaseCheck*'
+}
+
 tasks.withType(JavaCompile).configureEach {
     it.options.release = 21
     it.options.encoding = "UTF-8"
@@ -57,6 +67,51 @@ tasks.withType(JavaCompile).configureEach {
 
 loom {
     runs {
+        // AutoCrystalPvP against ElytraMaceBot over LAN (see DuelTest and hct-out/run-duel.sh).
+        ["host": "Crystal", "guest": "Mace"].each { role, user ->
+            "duel${role.capitalize()}" {
+                client()
+                runDir "run-duel-${role}"
+                ideConfigGenerated false
+                property "zephyr.duel", role
+                property "zephyr.duel.dir", file("hct-out/duel").absolutePath
+                ["rounds", "ticks"].each {
+                    def v = System.getProperty("zephyr.duel.${it}")
+                    if (v) property "zephyr.duel.${it}", v
+                }
+                programArgs "--username", user
+                if (role == "guest") programArgs "--quickPlayMultiplayer", "localhost:25591"
+            }
+        }
+        // Two-instance AutoHitCrystal test (see HitCrystalTest): run hctHost, then hctVictim.
+        ["host": "Hunter", "victim": "Victim"].each { role, user ->
+            "hct${role.capitalize()}" {
+                client()
+                runDir "run-hct-${role}"
+                ideConfigGenerated false
+                property "zephyr.hct", role
+                property "zephyr.hct.dir", file("hct-out").absolutePath
+                ["trace", "floors", "modes", "reps", "kits"].each {
+                    def v = System.getProperty("zephyr.hct.${it}")
+                    if (v) property "zephyr.hct.${it}", v
+                }
+                programArgs "--username", user
+                if (role == "victim") programArgs "--quickPlayMultiplayer", "localhost:25590"
+            }
+        }
+        // Theobald practice-bot fight (see PracticeBotTest); world copy in run-pbt/saves/theo.
+        pbt {
+            client()
+            runDir "run-pbt"
+            ideConfigGenerated false
+            property "zephyr.pbt", "true"
+            property "zephyr.pbt.dir", file("hct-out/pbt").absolutePath
+            ["trace", "lead", "ticks", "ui", "set", "style", "hug", "ledge", "label", "bench", "with", "guard", "terrain", "buildmap", "speed", "smart", "sceneticks", "rounds", "features", "chase"].each {
+                def v = System.getProperty("zephyr.pbt.${it}")
+                if (v) property "zephyr.pbt.${it}", v
+            }
+            programArgs "--quickPlaySingleplayer", "theo"
+        }
         client {
             client()
             property "java.awt.headless", "false"
@@ -66,6 +121,9 @@ loom {
                 property "zephyr.reps", System.getProperty("zephyr.reps") ?: "1"
                 if (System.getProperty("zephyr.ebtdebug")) {
                     property "zephyr.ebtdebug", "true"
+                }
+                if (System.getProperty("zephyr.ebtset")) {
+                    property "zephyr.ebtset", System.getProperty("zephyr.ebtset")
                 }
                 if (System.getProperty("zephyr.drift")) {
                     property "zephyr.drift", System.getProperty("zephyr.drift")

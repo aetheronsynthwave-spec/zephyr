@@ -5,7 +5,6 @@ import net.minecraft.client.gl.RenderPipelines;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.util.Identifier;
 
-import java.awt.BasicStroke;
 import java.awt.Color;
 import java.awt.Font;
 import java.awt.FontMetrics;
@@ -54,15 +53,15 @@ public final class Ui {
     // Colours
     // ------------------------------------------------------------------
 
-    public static final int ACCENT = 0xFF6AD8FF;
-    public static final int ACCENT_2 = 0xFF8C7CFF;
-    public static final int BG = 0xE6101319;
-    public static final int BG_2 = 0xF0161A22;
-    public static final int ROW = 0xFF1A1F29;
-    public static final int ROW_HOVER = 0xFF222937;
-    public static final int TEXT = 0xFFF2F5FA;
-    public static final int TEXT_DIM = 0xFF8F9AAD;
-    public static final int TEXT_FAINT = 0xFF5C667A;
+    public static final int ACCENT = 0xFFFFFFFF;
+    public static final int ACCENT_2 = 0xFFC4C4C4;
+    public static final int BG = 0xE6080808;
+    public static final int BG_2 = 0xF0111111;
+    public static final int ROW = 0xFF1A1A1A;
+    public static final int ROW_HOVER = 0xFF262626;
+    public static final int TEXT = 0xFFF5F5F5;
+    public static final int TEXT_DIM = 0xFF9E9E9E;
+    public static final int TEXT_FAINT = 0xFF666666;
 
     public static int alpha(int argb, float a) {
         int base = (argb >>> 24) & 0xFF;
@@ -249,11 +248,11 @@ public final class Ui {
     private static final int[] LOGO_BUCKETS = {32, 64, 128, 256};
     private static final Map<Integer, Identifier> LOGOS = new HashMap<>();
 
-    /**
-     * The Zephyr mark: a geometric "Z" whose top bar sweeps off into a gust of wind, with
-     * two trailing wind lines. Drawn as round-capped vector strokes, white mask, tinted
-     * at draw time.
-     */
+    /** The Zephyr mark: a sharp brush-cut "Z" with bladed tips (white mask, tinted at draw time). */
+    private static final float[][] MARK = {
+        {2, 30}, {26, 10}, {98, 8}, {42, 72}, {70, 72}, {98, 66}, {76, 90}, {2, 92}, {58, 28}, {34, 28}
+    };
+
     private static Identifier logoTexture(int size) {
         return LOGOS.computeIfAbsent(size, s -> {
             BufferedImage img = new BufferedImage(s, s, BufferedImage.TYPE_INT_ARGB);
@@ -261,24 +260,13 @@ public final class Ui {
             hints(g);
             g.setColor(Color.WHITE);
             float u = s / 100f;
-            g.setStroke(new BasicStroke(11f * u, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
             GeneralPath z = new GeneralPath();
-            z.moveTo(22 * u, 24 * u);
-            z.lineTo(64 * u, 24 * u);
-            z.curveTo(78 * u, 24 * u, 84 * u, 14 * u, 80 * u, 9 * u); // gust curl off the top bar
-            z.moveTo(64 * u, 24 * u);
-            z.lineTo(24 * u, 76 * u);
-            z.lineTo(78 * u, 76 * u);
-            g.draw(z);
-            g.setStroke(new BasicStroke(6.5f * u, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
-            GeneralPath w = new GeneralPath();
-            w.moveTo(46 * u, 50 * u);
-            w.lineTo(84 * u, 50 * u);
-            w.moveTo(14 * u, 50 * u);
-            w.lineTo(30 * u, 50 * u);
-            w.moveTo(58 * u, 90 * u);
-            w.curveTo(76 * u, 90 * u, 90 * u, 86 * u, 92 * u, 80 * u);
-            g.draw(w);
+            z.moveTo(MARK[0][0] * u, MARK[0][1] * u);
+            for (int i = 1; i < MARK.length; i++) {
+                z.lineTo(MARK[i][0] * u, MARK[i][1] * u);
+            }
+            z.closePath();
+            g.fill(z);
             g.dispose();
             SmoothTexture.whiten(img);
             return SmoothTexture.register("ui/logo_" + s, img);
@@ -290,6 +278,178 @@ public final class Ui {
         push(ctx);
         tex(ctx, logoTexture(b), x, y, size, size, 0, 0, b, b, b, b, color);
         pop(ctx);
+    }
+
+    /** Width / height of {@code assets/zephyr/textures/gui/wordmark.png} (see brand/make_brand.py). */
+    public static final float WORDMARK_ASPECT = 1180f / 262f;
+
+    private static final int[] WORDMARK_BUCKETS = {48, 64, 96, 131, 262};
+    private static final Map<Integer, Identifier> WORDMARKS = new HashMap<>();
+
+    private static Identifier wordmarkTexture(int height) {
+        return WORDMARKS.computeIfAbsent(height, h -> {
+            int w = Math.round(h * WORDMARK_ASPECT);
+            BufferedImage img = new BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB);
+            try (var in = Ui.class.getResourceAsStream("/assets/zephyr/textures/gui/wordmark.png")) {
+                Graphics2D g = img.createGraphics();
+                g.drawImage(javax.imageio.ImageIO.read(in).getScaledInstance(w, h, java.awt.Image.SCALE_AREA_AVERAGING),
+                        0, 0, null);
+                g.dispose();
+            } catch (java.io.IOException e) {
+                throw new java.io.UncheckedIOException(e);
+            }
+            SmoothTexture.whiten(img);
+            return SmoothTexture.register("ui/wordmark_" + h, img);
+        });
+    }
+
+    /** The landscape ZEPHYR wordmark, {@code height} tall and {@link #WORDMARK_ASPECT} times as wide. */
+    public static void wordmark(DrawContext ctx, float x, float y, float height, int color) {
+        int b = bucket(WORDMARK_BUCKETS, height * pixelScale);
+        int w = Math.round(b * WORDMARK_ASPECT);
+        push(ctx);
+        tex(ctx, wordmarkTexture(b), x, y, height * WORDMARK_ASPECT, height, 0, 0, w, b, w, b, color);
+        pop(ctx);
+    }
+
+    // ------------------------------------------------------------------
+    // Surfaces: the one panel style of the whole client
+    // ------------------------------------------------------------------
+
+    private static final Map<Integer, Identifier> RINGS = new HashMap<>();
+
+    /** Hairline rounded outline, about {@code 0.8} gui px wide. */
+    public static void outline(DrawContext ctx, float x, float y, float w, float h, float radius, int color) {
+        if (w <= 0 || h <= 0 || (color >>> 24) == 0) {
+            return;
+        }
+        float r = Math.max(1f, Math.min(radius, Math.min(w, h) / 2f));
+        int b = bucket(SHAPE_BUCKETS, r * pixelScale);
+        int stroke = Math.max(1, Math.min(b, Math.round(0.8f / r * b)));
+        Identifier ring = RINGS.computeIfAbsent(b * 1000 + stroke, key -> {
+            int s = b * 2;
+            BufferedImage img = new BufferedImage(s, s, BufferedImage.TYPE_INT_ARGB);
+            Graphics2D g = img.createGraphics();
+            hints(g);
+            java.awt.geom.Area area = new java.awt.geom.Area(new Ellipse2D.Float(0, 0, s, s));
+            area.subtract(new java.awt.geom.Area(new Ellipse2D.Float(stroke, stroke, s - 2f * stroke, s - 2f * stroke)));
+            g.setColor(Color.WHITE);
+            g.fill(area);
+            g.dispose();
+            SmoothTexture.whiten(img);
+            return SmoothTexture.register("ui/ring_" + b + "_" + stroke, img);
+        });
+        nineSlice(ctx, ring, b, x, y, w, h, r, color);
+    }
+
+    /** A flat surface with its hairline edge. */
+    public static void surface(DrawContext ctx, float x, float y, float w, float h, float radius, int fill,
+                               float alpha) {
+        roundRect(ctx, x, y, w, h, radius, alpha(fill, alpha));
+        outline(ctx, x, y, w, h, radius, alpha(0x2EFFFFFF, alpha));
+    }
+
+    /** A raised surface: soft shadow, fill and edge. */
+    public static void panel(DrawContext ctx, float x, float y, float w, float h, float radius, int fill,
+                             float alpha) {
+        shadow(ctx, x, y, w, h, radius, 12, alpha(0x90000000, alpha));
+        surface(ctx, x, y, w, h, radius, fill, alpha);
+    }
+
+    // ------------------------------------------------------------------
+    // Icons (drawn once as white vector masks, tinted when shown)
+    // ------------------------------------------------------------------
+
+    private static final Map<String, Identifier> ICONS = new HashMap<>();
+
+    /** One of: combat, crystal, survival, utility, movement, render, gui. */
+    public static void icon(DrawContext ctx, String name, float x, float y, float size, int color) {
+        int b = bucket(LOGO_BUCKETS, size * pixelScale * 1.5f);
+        Identifier id = ICONS.computeIfAbsent(name + "_" + b, key -> iconTexture(name, b));
+        push(ctx);
+        tex(ctx, id, x, y, size, size, 0, 0, b, b, b, b, color);
+        pop(ctx);
+    }
+
+    private static Identifier iconTexture(String name, int size) {
+        BufferedImage img = new BufferedImage(size, size, BufferedImage.TYPE_INT_ARGB);
+        Graphics2D g = img.createGraphics();
+        hints(g);
+        g.setColor(Color.WHITE);
+        g.scale(size / 100.0, size / 100.0);
+        g.setStroke(new java.awt.BasicStroke(9f, java.awt.BasicStroke.CAP_ROUND, java.awt.BasicStroke.JOIN_ROUND));
+        GeneralPath p = new GeneralPath();
+        switch (name) {
+            case "combat" -> { // sword
+                p.moveTo(92, 8);
+                p.lineTo(88, 30);
+                p.lineTo(46, 72);
+                p.lineTo(28, 54);
+                p.lineTo(70, 12);
+                p.closePath();
+                g.fill(p);
+                g.draw(new java.awt.geom.Line2D.Float(18, 52, 48, 82));
+                g.draw(new java.awt.geom.Line2D.Float(30, 70, 10, 90));
+            }
+            case "crystal" -> { // faceted gem
+                p.moveTo(50, 6);
+                p.lineTo(86, 50);
+                p.lineTo(50, 94);
+                p.lineTo(14, 50);
+                p.closePath();
+                g.draw(p);
+                g.draw(new java.awt.geom.Line2D.Float(14, 50, 86, 50));
+                g.draw(new java.awt.geom.Line2D.Float(50, 6, 50, 50));
+            }
+            case "survival" -> { // heart
+                p.moveTo(50, 90);
+                p.curveTo(10, 62, 6, 44, 8, 32);
+                p.curveTo(12, 8, 42, 8, 50, 30);
+                p.curveTo(58, 8, 88, 8, 92, 32);
+                p.curveTo(94, 44, 90, 62, 50, 90);
+                p.closePath();
+                g.fill(p);
+            }
+            case "utility" -> { // sliders
+                for (int i = 0; i < 3; i++) {
+                    int row = 20 + i * 30;
+                    g.draw(new java.awt.geom.Line2D.Float(10, row, 90, row));
+                    int knob = i == 0 ? 64 : i == 1 ? 32 : 56;
+                    g.fill(new Ellipse2D.Float(knob - 12, row - 12, 24, 24));
+                }
+            }
+            case "movement" -> { // double chevron
+                for (int dx : new int[]{0, 40}) {
+                    p.moveTo(14 + dx, 18);
+                    p.lineTo(46 + dx, 50);
+                    p.lineTo(14 + dx, 82);
+                }
+                g.draw(p);
+            }
+            case "render" -> { // eye
+                p.moveTo(6, 50);
+                p.curveTo(28, 14, 72, 14, 94, 50);
+                p.curveTo(72, 86, 28, 86, 6, 50);
+                p.closePath();
+                g.draw(p);
+                g.fill(new Ellipse2D.Float(36, 36, 28, 28));
+            }
+            case "donut" -> { // ring with sprinkles
+                g.setStroke(new java.awt.BasicStroke(24f));
+                g.draw(new Ellipse2D.Float(20, 20, 60, 60));
+                g.setStroke(new java.awt.BasicStroke(7f, java.awt.BasicStroke.CAP_ROUND, java.awt.BasicStroke.JOIN_ROUND));
+                g.setComposite(java.awt.AlphaComposite.Clear);
+                g.draw(new java.awt.geom.Line2D.Float(36, 20, 44, 14));
+                g.draw(new java.awt.geom.Line2D.Float(76, 36, 82, 46));
+                g.draw(new java.awt.geom.Line2D.Float(24, 62, 20, 52));
+                g.draw(new java.awt.geom.Line2D.Float(60, 82, 70, 76));
+                g.setComposite(java.awt.AlphaComposite.SrcOver);
+            }
+            default -> g.fill(new Ellipse2D.Float(20, 20, 60, 60));
+        }
+        g.dispose();
+        SmoothTexture.whiten(img);
+        return SmoothTexture.register("ui/icon_" + name + "_" + size, img);
     }
 
     // ------------------------------------------------------------------

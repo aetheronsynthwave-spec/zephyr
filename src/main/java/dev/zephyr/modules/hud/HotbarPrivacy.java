@@ -30,7 +30,7 @@ public final class HotbarPrivacy extends Module {
             return;
         }
         int alpha = (int) (255 * Math.min(1.0, a * 0.92));
-        int color = (alpha << 24) | 0x20242C;
+        int color = (alpha << 24) | 0x222222;
         int w = ctx.getScaledWindowWidth(), h = ctx.getScaledWindowHeight();
         int x0 = w / 2 - 91, y0 = h - 22;
         // New root layer: without it the vanilla stack-count text (drawn in a later text

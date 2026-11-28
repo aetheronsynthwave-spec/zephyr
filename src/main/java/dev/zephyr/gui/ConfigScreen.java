@@ -54,12 +54,12 @@ public final class ConfigScreen extends Screen {
 
     private void ok(String msg) {
         status = msg;
-        statusColor = 0xFF6BE39A;
+        statusColor = 0xFFFFFFFF;
     }
 
     private void err(String msg) {
         status = msg;
-        statusColor = 0xFFFF7070;
+        statusColor = 0xFFA8A8A8;
     }
 
     @Override
@@ -76,15 +76,17 @@ public final class ConfigScreen extends Screen {
             float gw = this.width / sc, gh = this.height / sc;
             float w = 300, h = Math.min(gh - 20, 300);
             float x = (gw - w) / 2f, y = (gh - h) / 2f;
-            Ui.shadow(ctx, x, y, w, h, 12, 14, 0x99000000);
-            Ui.roundRect(ctx, x, y, w, h, 12, Ui.BG_2);
-            Ui.logo(ctx, x + 12, y + 10, 16, Ui.ACCENT);
-            Ui.text(ctx, "Configs", x + 34, y + 13, 11f, Ui.TEXT, true);
+            Ui.panel(ctx, x, y, w, h, 12, Ui.BG_2, 1f);
+            Ui.wordmark(ctx, x + 10, y + 6, 24, Ui.ACCENT);
+            float markEnd = x + 10 + 24 * Ui.WORDMARK_ASPECT;
+            Ui.rect(ctx, markEnd + 7, y + 11, 1, 14, 0x33FFFFFF);
+            Ui.text(ctx, "Configs", markEnd + 15, y + 13, 11f, Ui.TEXT, true);
+            Ui.rect(ctx, x + 1, y + 32, w - 2, 1, 0x24FFFFFF);
             button(ctx, x + w - 62, y + 10, 50, 16, "Back", () -> this.client.setScreen(parent), Ui.TEXT_DIM);
 
             // Name field + save / new
             float fy = y + 36;
-            Ui.roundRect(ctx, x + 12, fy, w - 132, 18, 6, 0xFF0E1117);
+            Ui.surface(ctx, x + 12, fy, w - 132, 18, 6, 0xFF0F0F0F, 1f);
             String shown = name.isEmpty() ? "config name..." : name;
             float tw = Ui.text(ctx, shown, x + 20, fy + 5, 8.5f, name.isEmpty() ? Ui.TEXT_FAINT : Ui.TEXT, false);
             if ((System.currentTimeMillis() / 500) % 2 == 0) {
@@ -102,7 +104,7 @@ public final class ConfigScreen extends Screen {
                 cfg().resetAll();
                 cfg().save();
                 ok("Started a fresh config (everything off, defaults)");
-            }, confirmNew ? 0xFFFF7070 : Ui.TEXT_DIM);
+            }, confirmNew ? 0xFFFFFFFF : Ui.TEXT_DIM);
 
             // Generate
             float gy = fy + 28;
@@ -158,7 +160,8 @@ public final class ConfigScreen extends Screen {
             for (int i = 0; i < rows && i + scroll < saved.size(); i++) {
                 String n = saved.get(i + scroll);
                 float ry = listTop + i * 20;
-                Ui.roundRect(ctx, x + 12, ry, w - 24, 17, 5, 0xFF161B24);
+                boolean over = mouseX >= x + 12 && mouseX < x + w - 12 && mouseY >= ry && mouseY < ry + 17;
+                Ui.surface(ctx, x + 12, ry, w - 24, 17, 5, over ? 0xFF262626 : 0xFF181818, 1f);
                 Ui.text(ctx, n, x + 20, ry + 5, 8.5f, Ui.TEXT, false);
                 button(ctx, x + w - 118, ry + 1.5f, 48, 14, "Load", () -> {
                     try {
@@ -182,7 +185,7 @@ public final class ConfigScreen extends Screen {
                         err("Could not delete \"" + n + "\"");
                     }
                     confirmDelete = null;
-                }, confirm ? 0xFFFF7070 : Ui.TEXT_DIM);
+                }, confirm ? 0xFFFFFFFF : Ui.TEXT_DIM);
             }
             if (!status.isEmpty()) {
                 Ui.text(ctx, status, x + 12, y + h - 16, 8f, statusColor, false);
@@ -195,8 +198,13 @@ public final class ConfigScreen extends Screen {
     /** Draws a button now and registers its click area for this frame. */
     private void button(DrawContext ctx, float x, float y, float w, float h, String label, Runnable action, int color) {
         boolean hov = mouseX >= x && mouseX < x + w && mouseY >= y && mouseY < y + h;
-        Ui.roundRect(ctx, x, y, w, h, Math.min(6, h / 2f), hov ? Ui.alpha(color, 0.30f) : Ui.alpha(color, 0.14f));
-        Ui.textCentered(ctx, label, x + w / 2f, y + (h - 7.5f) / 2f, 8f, hov ? Ui.TEXT : color, false);
+        float r = Math.min(6, h / 2f);
+        // Save is the one primary action: solid white. The rest are outlined and fill on hover.
+        boolean primary = label.equals("Save");
+        Ui.roundRect(ctx, x, y, w, h, r, primary ? Ui.alpha(color, hov ? 1f : 0.88f) : Ui.alpha(color, hov ? 0.28f : 0.08f));
+        Ui.outline(ctx, x, y, w, h, r, Ui.alpha(color, hov ? 0.85f : 0.32f));
+        Ui.textCentered(ctx, label, x + w / 2f, y + (h - 7.5f) / 2f, 8f,
+                primary ? 0xFF000000 : hov ? Ui.TEXT : color, primary);
         buttons.add(new Button(x, y, w, h, label, action, color));
     }
 

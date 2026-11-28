@@ -109,7 +109,13 @@ public final class ClickGuiScreen extends Screen {
                 cats.add(cat);
             }
         }
-        int total = cats.size() * COL_W + (cats.size() - 1) * GAP;
+        // As many columns as fit side by side (closing the gaps first); the rest go under
+        // whichever column in the row is shortest.
+        int width = (int) guiWidth() - 8;
+        int across = Math.max(1, Math.min(cats.size(), (width + 2) / (COL_W + 2)));
+        int gap = across > 1 ? Math.max(2, Math.min(GAP, (width - across * COL_W) / (across - 1))) : GAP;
+        int[] bottom = new int[across];
+        int total = across * COL_W + (across - 1) * gap;
         int startX = Math.max(10, ((int) guiWidth() - total) / 2);
         int i = 0;
         for (ModuleCategory cat : cats) {
@@ -121,8 +127,16 @@ public final class ClickGuiScreen extends Screen {
                 col.x = pos[0];
                 col.y = pos[1];
             } else {
-                col.x = startX + i * (COL_W + GAP);
-                col.y = TOP;
+                int slot = i;
+                if (i >= across) {
+                    slot = 0;
+                    for (int k = 1; k < across; k++) {
+                        slot = bottom[k] < bottom[slot] ? k : slot;
+                    }
+                }
+                col.x = startX + slot * (COL_W + gap);
+                col.y = i < across ? TOP : bottom[slot];
+                bottom[slot] = col.y + HEADER_H + mods.size() * ROW_H + 14;
             }
             columns.add(col);
             i++;
@@ -215,6 +229,14 @@ public final class ClickGuiScreen extends Screen {
         return out;
     }
 
+    /** Test harness: opens a module's settings list as a right-click would. */
+    public static void expandForTest(String name) {
+        Module m = ZephyrClient.modules().byName(name);
+        if (m != null) {
+            EXPANDED.put(m, true);
+        }
+    }
+
     private static boolean isExpanded(Module m) {
         return Boolean.TRUE.equals(EXPANDED.get(m));
     }
@@ -284,11 +306,35 @@ public final class ClickGuiScreen extends Screen {
             String hint = capturing != null
                     ? "Press a key or mouse button to bind  ·  Esc removes the bind  ·  Left-click cancels"
                     : "Left-click toggle  ·  Right-click settings  ·  Drag headers  ·  Ctrl + wheel resize";
+            float hintW = Ui.textWidth(hint, TEXT_SMALL, false) + 20;
+            Ui.surface(ctx, (guiWidth() - hintW) / 2f, guiHeight() - 21, hintW, 17, 8.5f, Ui.BG, ease);
             Ui.textCentered(ctx, hint, guiWidth() / 2f, guiHeight() - 16, TEXT_SMALL,
-                    Ui.alpha(capturing != null ? Ui.ACCENT : Ui.TEXT_FAINT, ease), false);
+                    Ui.alpha(capturing != null ? Ui.ACCENT : Ui.TEXT_DIM, ease), false);
         } finally {
             ctx.getMatrices().popMatrix();
         }
+    }
+
+    private float sizeX;
+    private float sizeY;
+    private float sizeW;
+    private float sizeH;
+
+    /** "- 40% +": the size of this menu (the HUD has its own editor). */
+    private void renderSizeControl(DrawContext ctx, float ease, float x, float y, float h) {
+        sizeW = 84;
+        sizeH = h;
+        sizeX = x;
+        sizeY = y;
+        Ui.panel(ctx, x, y, sizeW, h, h / 2f, Ui.BG_2, ease);
+        boolean over = lastMouseGuiY >= y && lastMouseGuiY < y + h && lastMouseGuiX >= x && lastMouseGuiX < x + sizeW;
+        boolean left = over && lastMouseGuiX < x + 26;
+        boolean right = over && lastMouseGuiX >= x + sizeW - 26;
+        Ui.textCentered(ctx, "-", x + 13, y + 9.5f, TEXT_SMALL, Ui.alpha(left ? Ui.ACCENT : Ui.TEXT_DIM, ease), true);
+        Ui.textCentered(ctx, "+", x + sizeW - 13, y + 9.5f, TEXT_SMALL,
+                Ui.alpha(right ? Ui.ACCENT : Ui.TEXT_DIM, ease), true);
+        Ui.textCentered(ctx, Math.round(renderScale * 100) + "%", x + sizeW / 2f, y + 9.5f, TEXT_SMALL,
+                Ui.alpha(Ui.ACCENT, ease), true);
     }
 
     private void renderTopBar(DrawContext ctx, float ease) {
@@ -296,16 +342,15 @@ public final class ClickGuiScreen extends Screen {
                 ZephyrClient.modules().all().size() - 1, countEnabled(),
                 (double) net.minecraft.client.MinecraftClient.getInstance().getCurrentFps());
         float statsW = Ui.textWidth(stats, TEXT_SMALL, false);
-        float titleW = Ui.textWidth("Zephyr", 11.5f, true);
-        float w = 14 + 16 + 7 + titleW + 16 + statsW + 14;
         float h = 28;
+        float markH = 24;
+        float markW = markH * Ui.WORDMARK_ASPECT;
+        float w = 12 + markW + 16 + statsW + 14;
         float x = (guiWidth() - w) / 2f;
         float y = 10;
-        Ui.shadow(ctx, x, y, w, h, h / 2f, 10, Ui.alpha(0x99000000, ease));
-        Ui.pill(ctx, x, y, w, h, Ui.alpha(Ui.BG_2, ease));
-        Ui.logo(ctx, x + 12, y + 5, 18, Ui.alpha(Ui.ACCENT, ease));
-        Ui.text(ctx, "Zephyr", x + 14 + 16 + 7, y + 8.5f, 11.5f, Ui.alpha(Ui.TEXT, ease), true);
-        float sx = x + 14 + 16 + 7 + titleW + 9;
+        Ui.panel(ctx, x, y, w, h, h / 2f, Ui.BG_2, ease);
+        Ui.wordmark(ctx, x + 12, y + 2, markH, Ui.alpha(Ui.ACCENT, ease));
+        float sx = x + 12 + markW + 8;
         Ui.rect(ctx, sx, y + 9, 1, h - 18, Ui.alpha(0x33FFFFFF, ease));
         Ui.text(ctx, stats, sx + 8, y + 10, TEXT_SMALL, Ui.alpha(Ui.TEXT_DIM, ease), false);
         // Configs button (right of the bar).
@@ -315,11 +360,9 @@ public final class ClickGuiScreen extends Screen {
         configsBtnY = y;
         boolean hov = lastMouseGuiX >= configsBtnX && lastMouseGuiX < configsBtnX + configsBtnW
                 && lastMouseGuiY >= configsBtnY && lastMouseGuiY < configsBtnY + configsBtnH;
-        Ui.shadow(ctx, configsBtnX, configsBtnY, configsBtnW, h, h / 2f, 8, Ui.alpha(0x77000000, ease));
-        Ui.pill(ctx, configsBtnX, configsBtnY, configsBtnW, h,
-                Ui.alpha(hov ? Ui.mix(Ui.BG_2, Ui.ACCENT, 0.25f) : Ui.BG_2, ease));
+        Ui.panel(ctx, configsBtnX, configsBtnY, configsBtnW, h, h / 2f, hov ? Ui.ACCENT : Ui.BG_2, ease);
         Ui.textCentered(ctx, "Configs", configsBtnX + configsBtnW / 2f, y + 9.5f, TEXT_SMALL,
-                Ui.alpha(Ui.ACCENT, ease), true);
+                Ui.alpha(hov ? 0xFF000000 : Ui.ACCENT, ease), true);
         // Edit HUD button (right of Configs): opens the drag-to-move HUD editor.
         hudBtnW = Ui.textWidth("Edit HUD", TEXT_SMALL, true) + 20;
         hudBtnH = h;
@@ -327,18 +370,20 @@ public final class ClickGuiScreen extends Screen {
         hudBtnY = y;
         boolean hudHov = lastMouseGuiX >= hudBtnX && lastMouseGuiX < hudBtnX + hudBtnW
                 && lastMouseGuiY >= hudBtnY && lastMouseGuiY < hudBtnY + hudBtnH;
-        Ui.shadow(ctx, hudBtnX, hudBtnY, hudBtnW, h, h / 2f, 8, Ui.alpha(0x77000000, ease));
-        Ui.pill(ctx, hudBtnX, hudBtnY, hudBtnW, h,
-                Ui.alpha(hudHov ? Ui.mix(Ui.BG_2, Ui.ACCENT, 0.25f) : Ui.BG_2, ease));
+        Ui.panel(ctx, hudBtnX, hudBtnY, hudBtnW, h, h / 2f, hudHov ? Ui.ACCENT : Ui.BG_2, ease);
         Ui.textCentered(ctx, "Edit HUD", hudBtnX + hudBtnW / 2f, y + 9.5f, TEXT_SMALL,
-                Ui.alpha(Ui.ACCENT, ease), true);
+                Ui.alpha(hudHov ? 0xFF000000 : Ui.ACCENT, ease), true);
+        renderSizeControl(ctx, ease, hudBtnX + hudBtnW + 6, y, h);
     }
 
     private void renderSearch(DrawContext ctx, float ease) {
         float w = 240, h = 18;
         float x = (guiWidth() - w) / 2f, y = 46;
-        Ui.roundRect(ctx, x, y, w, h, 9, Ui.alpha(Ui.BG_2, ease));
         boolean empty = search.isEmpty();
+        Ui.panel(ctx, x, y, w, h, 9, Ui.BG_2, ease);
+        if (!empty) {
+            Ui.outline(ctx, x, y, w, h, 9, Ui.alpha(0xB0FFFFFF, ease));
+        }
         String shown = empty ? "Type to search modules and settings" : search;
         // magnifier: ring + handle
         int ic = Ui.alpha(Ui.TEXT_FAINT, ease);
@@ -404,8 +449,7 @@ public final class ClickGuiScreen extends Screen {
             y = guiHeight() - 4 - h;
         }
         float a = show * ease;
-        Ui.shadow(ctx, x, y, w, h, 7, 10, Ui.alpha(0x99000000, a));
-        Ui.roundRect(ctx, x, y, w, h, 7, Ui.alpha(Ui.BG_2, a));
+        Ui.panel(ctx, x, y, w, h, 7, Ui.BG_2, a);
         Ui.roundRect(ctx, x + 6, y + 7, 2, 8, 1, Ui.alpha(Ui.ACCENT, a));
         Ui.text(ctx, title, x + 12, y + 7, size, Ui.alpha(Ui.TEXT, a), true);
         float ly = y + 7 + 13;
@@ -451,8 +495,7 @@ public final class ClickGuiScreen extends Screen {
         float x = col.x;
         float y = col.y;
         float h = HEADER_H + body;
-        Ui.shadow(ctx, x, y, COL_W, h, RADIUS, 12, Ui.alpha(0x88000000, ease));
-        Ui.roundRect(ctx, x, y, COL_W, h, RADIUS, Ui.alpha(Ui.BG, ease));
+        Ui.panel(ctx, x, y, COL_W, h, RADIUS, Ui.BG, ease);
 
         // Header: category name, active count and an accent underline.
         int active = 0;
@@ -461,14 +504,16 @@ public final class ClickGuiScreen extends Screen {
                 active++;
             }
         }
-        Ui.text(ctx, col.category.label(), x + 12, y + 9, TEXT, Ui.alpha(Ui.TEXT, ease), true);
+        Ui.icon(ctx, col.category.name().toLowerCase(java.util.Locale.ROOT), x + 11, y + 7.5f, 11,
+                Ui.alpha(Ui.TEXT, ease));
+        Ui.text(ctx, col.category.label(), x + 27, y + 9, TEXT, Ui.alpha(Ui.TEXT, ease), true);
         String count = active + "/" + col.modules.size();
         float cw = Ui.textWidth(count, TEXT_SMALL, false) + 10;
         Ui.pill(ctx, x + COL_W - 10 - cw, y + 7, cw, 12,
                 Ui.alpha(active > 0 ? Ui.alpha(Ui.ACCENT, 0.18f) : 0x14FFFFFF, ease));
         Ui.textCentered(ctx, count, x + COL_W - 10 - cw / 2f, y + 9.5f, TEXT_SMALL,
                 Ui.alpha(active > 0 ? Ui.ACCENT : Ui.TEXT_FAINT, ease), false);
-        Ui.rect(ctx, x + 10, y + HEADER_H - 1, COL_W - 20, 1, Ui.alpha(0x14FFFFFF, ease));
+        Ui.rect(ctx, x + 1, y + HEADER_H - 1, COL_W - 2, 1, Ui.alpha(0x24FFFFFF, ease));
 
         // Body (clipped to the panel so scrolled rows never spill out).
         // enableScissor is transformed by the current matrix, so plain gui-space coords.
@@ -499,31 +544,41 @@ public final class ClickGuiScreen extends Screen {
         float on = anim("t" + System.identityHashCode(m), m.isEnabled() ? 1f : 0f, 16f);
         float x = row.x + 5;
         float w = row.w - 10;
+        if (on > 0.01f) {
+            Ui.roundRect(ctx, x, row.y + 1, w, row.h - 2, 6, Ui.alpha(0x17FFFFFF, on * ease));
+            Ui.roundRect(ctx, x + 2, row.y + 6, 2, row.h - 12, 1, Ui.alpha(Ui.ACCENT, on * ease));
+        }
         if (hov > 0.01f) {
-            Ui.roundRect(ctx, x, row.y + 1, w, row.h - 2, 6, Ui.alpha(0x10FFFFFF, hov * ease));
+            Ui.roundRect(ctx, x, row.y + 1, w, row.h - 2, 6, Ui.alpha(0x12FFFFFF, hov * ease));
         }
         if (isExpanded(m)) {
             int h = 0;
             for (Setting<?> s : m.settings()) {
                 h += settingHeight(s);
             }
-            Ui.roundRect(ctx, x, row.y + row.h - 2, w, h + 4, 6, Ui.alpha(0x40000000, ease));
+            Ui.surface(ctx, x, row.y + row.h - 2, w, h + 4, 6, 0x50000000, ease);
         }
         int textColor = Ui.mix(Ui.TEXT_DIM, Ui.TEXT, Math.max(on, hov * 0.6f));
-        Ui.text(ctx, m.name(), x + 7, row.y + 7, TEXT, Ui.alpha(textColor, ease), false);
+        Ui.text(ctx, m.name(), x + 8 + 3 * on, row.y + 7, TEXT, Ui.alpha(textColor, ease), on > 0.5f);
 
         // Toggle switch.
         float tw = 20, th = 11;
         float tx = x + w - 7 - tw;
         float ty = row.y + (row.h - th) / 2f;
-        Ui.pill(ctx, tx, ty, tw, th, Ui.alpha(Ui.mix(0xFF2A303C, Ui.ACCENT, on), ease));
+        Ui.pill(ctx, tx, ty, tw, th, Ui.alpha(Ui.mix(0xFF2A2A2A, Ui.ACCENT, on), ease));
         float knob = th - 4;
         Ui.circle(ctx, tx + 2 + knob / 2f + (tw - 4 - knob) * on, ty + th / 2f, knob / 2f,
-                Ui.alpha(Ui.mix(0xFF9AA4B5, 0xFFFFFFFF, on), ease));
+                Ui.alpha(Ui.mix(0xFF9A9A9A, 0xFF000000, on), ease));
 
         if (m.bind().isBound()) {
             String k = m.bind().display();
-            Ui.textRight(ctx, k, tx - 6, row.y + 8, TEXT_SMALL - 1, Ui.alpha(Ui.TEXT_FAINT, ease), false);
+            float kw = Ui.textWidth(k, TEXT_SMALL - 1, false) + 7;
+            Ui.outline(ctx, tx - 6 - kw, row.y + 6, kw, 11, 3, Ui.alpha(0x40FFFFFF, ease));
+            Ui.textCentered(ctx, k, tx - 6 - kw / 2f, row.y + 8, TEXT_SMALL - 1, Ui.alpha(Ui.TEXT_DIM, ease), false);
+        } else if (!m.settings().isEmpty() && hov > 0.01f) {
+            for (int dot = 0; dot < 3; dot++) { // right-click for settings
+                Ui.circle(ctx, tx - 14 + dot * 4, row.y + row.h / 2f, 1f, Ui.alpha(Ui.TEXT_DIM, hov * ease));
+            }
         }
     }
 
@@ -538,16 +593,16 @@ public final class ClickGuiScreen extends Screen {
             float tw = 16, th = 9;
             float tx = right - tw;
             float ty = row.y + (row.h - th) / 2f;
-            Ui.pill(ctx, tx, ty, tw, th, Ui.alpha(Ui.mix(0xFF2A303C, Ui.ACCENT, on), ease));
+            Ui.pill(ctx, tx, ty, tw, th, Ui.alpha(Ui.mix(0xFF2A2A2A, Ui.ACCENT, on), ease));
             float knob = th - 4;
             Ui.circle(ctx, tx + 2 + knob / 2f + (tw - 4 - knob) * on, ty + th / 2f, knob / 2f,
-                    Ui.alpha(0xFFFFFFFF, ease));
+                    Ui.alpha(0xFF000000, ease));
         } else if (s instanceof ModeSetting mode) {
             Ui.text(ctx, s.label(), x, row.y + 6, TEXT_SMALL, label, false);
             String v = pretty(mode.get());
             float vw = Ui.textWidth(v, TEXT_SMALL, false) + 12;
             Ui.pill(ctx, right - vw, row.y + 4, vw, 12, Ui.alpha(Ui.alpha(Ui.ACCENT_2, 0.22f), ease));
-            Ui.textCentered(ctx, v, right - vw / 2f, row.y + 6.5f, TEXT_SMALL, Ui.alpha(0xFFD6D0FF, ease), false);
+            Ui.textCentered(ctx, v, right - vw / 2f, row.y + 6.5f, TEXT_SMALL, Ui.alpha(0xFFE6E6E6, ease), false);
         } else if (s instanceof NumberSetting num) {
             Ui.text(ctx, s.label(), x, row.y + 4, TEXT_SMALL, label, false);
             Ui.textRight(ctx, formatValue(num.get()), right, row.y + 4, TEXT_SMALL, Ui.alpha(Ui.TEXT, ease), false);
@@ -556,7 +611,7 @@ public final class ClickGuiScreen extends Screen {
             float trackX = x;
             float trackW = right - x;
             float ty = row.y + 17;
-            Ui.pill(ctx, trackX, ty, trackW, 3, Ui.alpha(0xFF2A303C, ease));
+            Ui.pill(ctx, trackX, ty, trackW, 3, Ui.alpha(0xFF2A2A2A, ease));
             Ui.pill(ctx, trackX, ty, Math.max(3, trackW * f), 3, Ui.alpha(Ui.ACCENT, ease));
             Ui.circle(ctx, trackX + trackW * f, ty + 1.5f, 3.5f, Ui.alpha(0xFFFFFFFF, ease));
         } else if (s instanceof KeySetting key) {
@@ -616,6 +671,15 @@ public final class ClickGuiScreen extends Screen {
         if (capturing == null && button == 0 && mx >= configsBtnX && mx < configsBtnX + configsBtnW
                 && my >= configsBtnY && my < configsBtnY + configsBtnH) {
             this.client.setScreen(new ConfigScreen(this));
+            return true;
+        }
+        if (capturing == null && button == 0 && mx >= sizeX && mx < sizeX + sizeW
+                && my >= sizeY && my < sizeY + sizeH && (mx < sizeX + 26 || mx >= sizeX + sizeW - 26)) {
+            var gui = ZephyrClient.modules().get(dev.zephyr.modules.gui.ClickGui.class);
+            if (gui != null) {
+                gui.adjustScale(mx < sizeX + 26 ? -0.05 : 0.05);
+                ZephyrClient.config().save();
+            }
             return true;
         }
         if (capturing == null && button == 0 && mx >= hudBtnX && mx < hudBtnX + hudBtnW

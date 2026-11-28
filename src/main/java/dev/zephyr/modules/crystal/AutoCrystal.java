@@ -93,6 +93,11 @@ public final class AutoCrystal extends Module {
     private static final int SOLVE_INTERVAL = 3;
 
     @Override
+    protected boolean conflicts(Module other) {
+        return super.conflicts(other) || other instanceof AnchorMacro;
+    }
+
+    @Override
     protected String exclusiveGroup() {
         return "crystal";
     }

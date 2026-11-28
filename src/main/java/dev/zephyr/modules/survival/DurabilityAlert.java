@@ -80,7 +80,7 @@ public final class DurabilityAlert extends Module {
 
     private void alert(MinecraftClient client, ItemStack stack, int left, boolean critical) {
         Text msg = Text.literal((critical ? "CRITICAL: " : "Low durability: "))
-                .formatted(critical ? Formatting.RED : Formatting.GOLD)
+                .formatted(critical ? Formatting.WHITE : Formatting.GRAY)
                 .append(stack.getName().copy().formatted(Formatting.WHITE))
                 .append(Text.literal(" - " + left + " uses left").formatted(Formatting.GRAY));
         client.inGameHud.setOverlayMessage(msg, false);

@@ -151,6 +151,8 @@ public final class ZephyrClient implements ClientModInitializer {
         modules.register(new TriggerBot());
         modules.register(new ShieldBreaker());
         // Crystal & anchor
+        // First among the crystal modules: it decides which of them runs this tick.
+        modules.register(new dev.zephyr.modules.crystal.AutoCrystalPvP());
         modules.register(new AutoCrystal());
         modules.register(new AutoHitCrystal());
         modules.register(new AnchorMacro());
@@ -167,6 +169,7 @@ public final class ZephyrClient implements ClientModInitializer {
         modules.register(new NoPush());
         modules.register(new Sprint());
         modules.register(new Freelook());
+        modules.register(new dev.zephyr.modules.movement.WalkInventory());
         // Utility (ported from Donut Client)
         modules.register(new StaffDetector());
         modules.register(new SoundDetector());
@@ -175,8 +178,15 @@ public final class ZephyrClient implements ClientModInitializer {
         modules.register(new dev.zephyr.modules.utility.Waypoints());
         modules.register(new Freecam());
         modules.register(new Fly());
+        modules.register(new dev.zephyr.modules.utility.AuctionFlipper());
+        modules.register(new dev.zephyr.modules.donut.AmethystFinder());
+        modules.register(new dev.zephyr.modules.donut.StorageESP());
         // Render & HUD
         modules.register(new Fullbright());
+        modules.register(new dev.zephyr.modules.render.XRay());
+        modules.register(new dev.zephyr.modules.render.CustomSky());
+        modules.register(new dev.zephyr.modules.render.HandChams());
+        modules.register(new dev.zephyr.modules.render.Cosmetics());
         modules.register(new BlockEsp());
         modules.register(new LightDebug());
         modules.register(new dev.zephyr.modules.render.BaseFinder());
@@ -237,6 +247,17 @@ public final class ZephyrClient implements ClientModInitializer {
         dev.zephyr.ZephyrSelfTest.tick(client);
         dev.zephyr.ZephyrGameTest.tick(client);
         dev.zephyr.ElytraBotTest.tick(client);
+        // Development harnesses: left out of the release jar (build.gradle), so each is only
+        // referenced when its system property asks for it.
+        if (System.getProperty("zephyr.hct") != null) {
+            dev.zephyr.HitCrystalTest.tick(client);
+        }
+        if (System.getProperty("zephyr.duel") != null) {
+            dev.zephyr.DuelTest.tick(client);
+        }
+        if (Boolean.getBoolean("zephyr.pbt")) {
+            dev.zephyr.PracticeBotTest.tick(client);
+        }
         dev.zephyr.core.ZephyrProfiler.chatReport(client);
     }
 

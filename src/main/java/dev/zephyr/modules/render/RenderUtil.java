@@ -227,11 +227,27 @@ public final class RenderUtil {
             float x1 = (edge[1] & 4) == 0 ? minX : maxX;
             float y1 = (edge[1] & 2) == 0 ? minY : maxY;
             float z1 = (edge[1] & 1) == 0 ? minZ : maxZ;
-            lines.vertex(matrix, x0, y0, z0).color(r, g, b, a)
-                    .normal(0, 1, 0).lineWidth(lineWidth);
-            lines.vertex(matrix, x1, y1, z1).color(r, g, b, a)
-                    .normal(0, 1, 0).lineWidth(lineWidth);
+            lines.vertex(matrix, x0, y0, z0).color(shade(r, r, g, b), shade(g, r, g, b), shade(b, r, g, b), a)
+                    .normal(Math.signum(x1 - x0), Math.signum(y1 - y0), Math.signum(z1 - z0)).lineWidth(lineWidth);
+            lines.vertex(matrix, x1, y1, z1).color(shade(r, r, g, b), shade(g, r, g, b), shade(b, r, g, b), a)
+                    .normal(Math.signum(x1 - x0), Math.signum(y1 - y0), Math.signum(z1 - z0)).lineWidth(lineWidth);
         }
+    }
+
+    /** Black and white theme: every world-space colour is drawn as its brightness. */
+    private static float shade(float channel, float r, float g, float b) {
+        return trueColor ? channel : luma(r, g, b);
+    }
+
+    /** Set around draw calls that keep their colour (render thread only). */
+    private static boolean trueColor;
+
+    public static void trueColor(boolean keep) {
+        trueColor = keep;
+    }
+
+    private static float luma(float r, float g, float b) {
+        return 0.299f * r + 0.587f * g + 0.114f * b;
     }
 
     /** Player-interpolated bounding box at the render tick. */
@@ -284,9 +300,9 @@ public final class RenderUtil {
         Vec3d cam = cameraPos(); // camera-relative matrices (see drawBoxOutline)
         // Tracer origin sits slightly in front of the eye so it is visible in first person.
         lines.vertex(matrix, (float) (from.x - cam.x), (float) (from.y - cam.y), (float) (from.z - cam.z))
-                .color(r, g, b, a).normal(nx, ny, nz).lineWidth(lineWidth);
+                .color(shade(r, r, g, b), shade(g, r, g, b), shade(b, r, g, b), a).normal(nx, ny, nz).lineWidth(lineWidth);
         lines.vertex(matrix, (float) (toX - cam.x), (float) (toY - cam.y), (float) (toZ - cam.z))
-                .color(r, g, b, a).normal(nx, ny, nz).lineWidth(lineWidth);
+                .color(shade(r, r, g, b), shade(g, r, g, b), shade(b, r, g, b), a).normal(nx, ny, nz).lineWidth(lineWidth);
     }
 
     // ------------------------------------------------------------------

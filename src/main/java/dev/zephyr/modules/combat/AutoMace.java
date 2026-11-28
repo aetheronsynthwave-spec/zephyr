@@ -5,6 +5,7 @@ import dev.zephyr.core.Module;
 import dev.zephyr.core.ModuleCategory;
 import dev.zephyr.core.combat.CombatActions;
 import dev.zephyr.core.combat.DamageCalculator;
+import dev.zephyr.core.combat.MaceChoice;
 import dev.zephyr.core.event.ZephyrEvents;
 import dev.zephyr.core.rotation.RotationManager;
 import dev.zephyr.core.rotation.RotationRequest;
@@ -70,6 +71,10 @@ public final class AutoMace extends Module {
     private final BooleanSetting showSwap = bool("showSwap", "Show mace swap", true);
     private final NumberSetting backTicks = num("backTicks", "Swap-back ticks", 1, 10, 1, 3);
     private final BooleanSetting weaponOnly = bool("weaponOnly", "Only holding sword/axe", false);
+    /** A raised shield gets an axe first and the mace right after. */
+    private final BooleanSetting stunSlam = bool("stunSlam", "Stun slam (axe, then mace)", true);
+    private final NumberSetting breachArmor = num("breachArmor", "Breach mace from armour", 0, 20, 1, 10);
+    private final BooleanSetting preferWindBurst = bool("preferWindBurst", "Prefer Wind Burst mace", true);
 
     /** Stage shown in the HUD while a Density 0-tick strike is armed. */
     private boolean armedZeroTick;
@@ -213,9 +218,13 @@ public final class AutoMace extends Module {
         // because the server sees us a round trip behind our client position.
         double reach = Math.min(2.85, maxTargetDist.get());
         LivingEntity target = triggerTarget(client, self, reach);
-        if (target == null || target.hurtTime > maxHurtTime.get().intValue()
-                || dev.zephyr.core.combat.CombatCoordinator.shieldBlocks(target, self)) {
+        if (target == null || target.hurtTime > maxHurtTime.get().intValue()) {
             triggerStreak = 0;
+            return;
+        }
+        if (dev.zephyr.core.combat.CombatCoordinator.shieldBlocks(target, self)) {
+            stun(client, self, target);
+            triggerStreak = triggerDelay.get().intValue(); // the mace goes on the next tick
             return;
         }
         triggerStreak++;
@@ -283,6 +292,11 @@ public final class AutoMace extends Module {
         // A smash into a raised shield is fully blocked. With ShieldBreaker on, its axe hit
         // opens the guard this tick and the slam lands next tick (stun slam).
         if (dev.zephyr.core.combat.CombatCoordinator.shieldBlocks(target, self)) {
+            if (self.squaredDistanceTo(target) <= maxTargetDist.get() * maxTargetDist.get()
+                    && (!this.aim.get() || RotationManager.isAimedAt(MathUtil.bestAimPoint(self, target,
+                    RotationManager.currentYaw(), self.getPitch()), Math.max(6.0, aimFov.get())))) {
+                stun(client, self, target);
+            }
             return false;
         }
         double distSq = self.squaredDistanceTo(target);
@@ -341,7 +355,8 @@ public final class AutoMace extends Module {
     /** Requests the BreachSwap transition, then attacks through the vanilla path. */
     private boolean strike(MinecraftClient client, ClientPlayerEntity self, LivingEntity target, double fall) {
         // Attribute swap: the hit goes out with the mace's attributes (smash damage) while
-        // you keep holding your sword. With BreachSwap on, a Breach mace is preferred.
+        // you keep holding your sword. With BreachSwap on, a Breach mace is preferred;
+        // otherwise the mace that does most to this armour from this height.
         BreachSwap breach = ZephyrClient.modules().get(BreachSwap.class);
         int slot = -1;
         if (breach != null && breach.isEnabled()) {
@@ -349,7 +364,7 @@ public final class AutoMace extends Module {
                     s -> ItemUtil.isMace(s) && ItemUtil.enchantLevel(s, "breach") > 0);
         }
         if (slot == -1) {
-            slot = dev.zephyr.core.inventory.InventoryManager.findHotbarSlot(self, ItemUtil::isMace);
+            slot = MaceChoice.bestSlot(self, fall, target.getArmor(), breachArmor.get(), preferWindBurst.get());
         }
         if (slot == -1) {
             return false; // no mace on the hotbar
@@ -367,6 +382,15 @@ public final class AutoMace extends Module {
             return true;
         }
         return false;
+    }
+
+    /** The axe half of a stun slam; the mace follows once the shield reads as down. */
+    private void stun(MinecraftClient client, ClientPlayerEntity self, LivingEntity target) {
+        int axe = MaceChoice.axeSlot(self);
+        // Held for a few ticks so the swap back does not use up the tick the mace needs.
+        if (stunSlam.get() && axe != -1 && CombatActions.attributeSwapAttack(client, axe, target, 3)) {
+            dev.zephyr.core.combat.CombatCoordinator.noteShieldBroken(target);
+        }
     }
 
     private void aimAt(MinecraftClient client, ClientPlayerEntity self, LivingEntity target) {

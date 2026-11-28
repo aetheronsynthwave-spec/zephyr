@@ -117,9 +117,10 @@ public final class DamageCalculator {
                 default -> { }
             }
         }
-        double armor = living.getArmor();
+        Defence defence = defence(living);
+        double armor = defence.armor;
         if (armor > 0) {
-            double toughness = living.getAttributeValue(net.minecraft.entity.attribute.EntityAttributes.ARMOR_TOUGHNESS);
+            double toughness = defence.toughness;
             double effArmor = MathHelper.clamp(armor - damage / (2.0 + toughness / 4.0), armor * 0.2, 20.0);
             damage *= 1.0 - effArmor / 25.0;
         }
@@ -127,14 +128,85 @@ public final class DamageCalculator {
         if (res != null) {
             damage *= Math.max(0.0, 1.0 - (res.getAmplifier() + 1) * 0.2);
         }
+        damage *= 1.0 - Math.min(20, defence.epf) / 25.0;
+        return damage;
+    }
+
+    /**
+     * Crystal damage to a target that will be standing at {@code feet} when it goes off,
+     * from a crystal at {@code origin} (bottom centre of its cell). Matches vanilla:
+     * distance is measured to the feet, exposure over the box at that position.
+     * {@code freshBase}: the obsidian under the crystal is not placed yet, so every ray
+     * that would have to pass down through it is counted as blocked.
+     */
+    public static double crystalDamageAt(World world, Vec3d origin, Entity target, Vec3d feet,
+                                         boolean freshBase) {
+        return damageAt(world, origin, target, feet, freshBase, true);
+    }
+
+    /**
+     * The most {@link #crystalDamageAt} could return for the same arguments, found without
+     * casting a single ray. Lets a search skip blocks that cannot beat what it already has.
+     */
+    public static double crystalDamageLimit(World world, Vec3d origin, Entity target, Vec3d feet,
+                                            boolean freshBase) {
+        return damageAt(world, origin, target, feet, freshBase, false);
+    }
+
+    private static double damageAt(World world, Vec3d origin, Entity target, Vec3d feet,
+                                   boolean freshBase, boolean raycast) {
+        double normalized = Math.sqrt(feet.squaredDistanceTo(origin)) / (2.0 * CRYSTAL_STRENGTH);
+        if (normalized > 1.0) {
+            return 0.0;
+        }
+        Box box = target.getBoundingBox().offset(feet.subtract(target.getX(), target.getY(), target.getZ()));
+        int visible = 0;
+        if (!raycast) {
+            for (int layer = 0; layer < 3; layer++) {
+                if (!freshBase || box.minY + layer * 0.5 * box.getLengthY() >= origin.y - 1.0e-3) {
+                    visible += 9;
+                }
+            }
+        }
+        for (int i = 0; raycast && i < 27; i++) {
+            Vec3d point = new Vec3d(box.minX + (i % 3) * 0.5 * box.getLengthX(),
+                    box.minY + (i / 3 % 3) * 0.5 * box.getLengthY(),
+                    box.minZ + (i / 9) * 0.5 * box.getLengthZ());
+            if (freshBase && point.y < origin.y - 1.0e-3) {
+                continue;
+            }
+            if (world.raycast(new net.minecraft.world.RaycastContext(origin, point,
+                    net.minecraft.world.RaycastContext.ShapeType.COLLIDER,
+                    net.minecraft.world.RaycastContext.FluidHandling.NONE, target))
+                    .getType() == net.minecraft.util.hit.HitResult.Type.MISS) {
+                visible++;
+            }
+        }
+        double impact = (1.0 - normalized) * (visible / 27.0);
+        double damage = (impact * impact + impact) / 2.0 * 7.0 * (CRYSTAL_STRENGTH * 2.0) + 1.0;
+        return Math.max(0.0, applyReductions(world, damage, target));
+    }
+
+    /** What an entity's gear takes off a blast; read once per entity per tick. */
+    private record Defence(LivingEntity entity, int generation, double armor, double toughness, int epf) {
+    }
+
+    private static final Defence[] DEFENCE = new Defence[8];
+
+    private static Defence defence(LivingEntity living) {
+        int slot = living.getId() & 7;
+        Defence cached = DEFENCE[slot];
+        if (cached != null && cached.entity == living && cached.generation == generation) {
+            return cached;
+        }
         int epf = 0;
-        for (net.minecraft.entity.EquipmentSlot slot : ARMOR_SLOTS) {
-            ItemStack armorStack = living.getEquippedStack(slot);
+        for (net.minecraft.entity.EquipmentSlot armorSlot : ARMOR_SLOTS) {
+            ItemStack armorStack = living.getEquippedStack(armorSlot);
             epf += 2 * ItemUtil.enchantLevel(armorStack, "blast_protection");
             epf += ItemUtil.enchantLevel(armorStack, "protection");
         }
-        damage *= 1.0 - Math.min(20, epf) / 25.0;
-        return damage;
+        return DEFENCE[slot] = new Defence(living, generation, living.getArmor(), living.getArmor() > 0
+                ? living.getAttributeValue(net.minecraft.entity.attribute.EntityAttributes.ARMOR_TOUGHNESS) : 0, epf);
     }
 
     /** Memoized vanilla-style exposure (3x3x3 sampled raycasts over the entity box). */

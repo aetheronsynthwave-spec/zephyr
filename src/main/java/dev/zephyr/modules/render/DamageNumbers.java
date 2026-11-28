@@ -126,7 +126,7 @@ public final class DamageNumbers extends Module implements WorldRenderParticipan
             float age = f.age + td; // smooth rise/fade between ticks
             float progress = Math.min(1f, age / lifetime);
             int alpha = Math.max(4, (int) ((1.0f - progress) * 255.0f));
-            int color = (alpha << 24) | 0xFF5050;
+            int color = (alpha << 24) | 0xFFFFFF;
             RenderUtil.drawBillboardText(matrices, consumers, f.x, f.y + age * rise, f.z,
                     f.display, f.width, color, 0x00000000, true);
         }

@@ -5,3 +5,10 @@ out/
 *.iml
 .idea/
 .vscode/
+
+# AutoHitCrystal two-instance test output
+run-hct-*/
+hct-out/
+run-pbt/
+testmap/
+run-duel-*/

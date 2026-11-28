@@ -138,10 +138,9 @@ public abstract class Module {
                 // Modules that drive the same hotbar/aim (e.g. AutoHitCrystal + AnchorMacro +
                 // SafeAnchor) fight each other when on together - the item flickers and
                 // nothing completes. Turning one on turns the rest of its group off.
-                String group = exclusiveGroup();
-                if (group != null && dev.zephyr.ZephyrClient.modules() != null) {
+                if (dev.zephyr.ZephyrClient.modules() != null) {
                     for (Module other : dev.zephyr.ZephyrClient.modules().all()) {
-                        if (other != this && other.isEnabled() && group.equals(other.exclusiveGroup())) {
+                        if (other != this && other.isEnabled() && (conflicts(other) || other.conflicts(this))) {
                             other.setEnabled(false);
                         }
                     }
@@ -156,6 +155,12 @@ public abstract class Module {
             this.enabled = false;
             ModuleManager.recordFault(this, value ? "onEnable" : "onDisable", e);
         }
+    }
+
+    /** Whether turning this on must turn {@code other} off. */
+    protected boolean conflicts(Module other) {
+        String group = exclusiveGroup();
+        return group != null && group.equals(other.exclusiveGroup());
     }
 
     /** Modules sharing a non-null group are mutually exclusive (see setEnabled). */

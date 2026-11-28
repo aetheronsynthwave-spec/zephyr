@@ -94,17 +94,9 @@ public final class ArmorHud extends HudModule {
         }
     }
 
-    /** Green (full) -> amber -> red (empty), opaque ARGB. */
+    /** White (full) -> dark grey (empty), opaque ARGB. */
     static int durabilityColor(float frac) {
-        frac = Math.max(0f, Math.min(1f, frac));
-        int r, g;
-        if (frac > 0.5f) {
-            r = (int) ((1f - frac) * 2f * 255f);
-            g = 255;
-        } else {
-            r = 255;
-            g = (int) (frac * 2f * 255f);
-        }
-        return 0xFF000000 | (r << 16) | (g << 8) | 0x40;
+        int v = 90 + (int) (Math.max(0f, Math.min(1f, frac)) * 165f);
+        return 0xFF000000 | (v << 16) | (v << 8) | v;
     }
 }

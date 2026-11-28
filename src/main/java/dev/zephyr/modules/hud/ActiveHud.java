@@ -37,7 +37,7 @@ public final class ActiveHud extends HudModule {
     private boolean infoFlagSeen;
     private int[] order = new int[0];
     private int drawCount;
-    private float watermarkTextW = -1f;
+    private static final float WATERMARK_W = 14f + (WATERMARK_H - 4f) * Ui.WORDMARK_ASPECT;
     private final float[] size = new float[2];
     private long lastNanos;
 
@@ -95,10 +95,7 @@ public final class ActiveHud extends HudModule {
         float w = rowsW;
         float h = rowsH;
         if (watermark.get()) {
-            if (watermarkTextW < 0f) {
-                watermarkTextW = Ui.textWidth("Zephyr", 10f, true);
-            }
-            w = Math.max(w, 8 + 14 + 6 + watermarkTextW + 10);
+            w = Math.max(w, WATERMARK_W);
             h += WATERMARK_H + 6f;
         }
         size[0] = w;
@@ -111,10 +108,8 @@ public final class ActiveHud extends HudModule {
         List<Module> all = ZephyrClient.modules().all();
         float ly = y;
         if (watermark.get()) {
-            float w = 8 + 14 + 6 + watermarkTextW + 10;
-            card(ctx, x, ly, w, WATERMARK_H, 11f, alpha);
-            Ui.logo(ctx, x + 6, ly + 4, 14, Ui.alpha(accent(), alpha));
-            drawText(ctx, "Zephyr", x + 8 + 14 + 6, ly + 7, 10f, text(), true, alpha);
+            card(ctx, x, ly, WATERMARK_W, WATERMARK_H, 11f, alpha);
+            Ui.wordmark(ctx, x + 7, ly + 2, WATERMARK_H - 4, Ui.alpha(accent(), alpha));
             ly += 28f;
         }
         for (int k = 0; k < drawCount; k++) {

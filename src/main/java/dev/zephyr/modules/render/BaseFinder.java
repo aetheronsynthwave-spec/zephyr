@@ -46,7 +46,7 @@ public final class BaseFinder extends Module implements WorldRenderParticipant {
     public int lastCount;
 
     public BaseFinder() {
-        super("BaseFinder", ModuleCategory.RENDER, 0);
+        super("BaseFinder", ModuleCategory.DONUT, 0);
     }
 
     @Override

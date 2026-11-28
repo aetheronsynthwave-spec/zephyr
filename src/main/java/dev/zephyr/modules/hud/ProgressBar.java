@@ -17,7 +17,7 @@ public final class ProgressBar extends HudModule {
 
     private static final String[] NAMES = {"Overworld", "Nether", "End"};
     /** Milestone tile colours (semantic: they identify each dimension). */
-    private static final int[] COLORS = {0xFF4CAF50, 0xFFB84A3A, 0xFF8E7CC3};
+    private static final int[] COLORS = {0xFFE0E0E0, 0xFF8A8A8A, 0xFF505050};
     private static final float LABEL = 8f;
     private static final float TILE_TOP = 4f;
     private static final float TILE_H = 34f;
@@ -35,7 +35,7 @@ public final class ProgressBar extends HudModule {
     private String basesText = "0";
 
     public ProgressBar() {
-        super("ProgressBar", ModuleCategory.RENDER, 0, 8, "TOP_LEFT");
+        super("ProgressBar", ModuleCategory.RENDER, 0, 100, "BOTTOM_LEFT");
     }
 
     @Override
@@ -56,7 +56,7 @@ public final class ProgressBar extends HudModule {
     protected void drawPanel(DrawContext ctx, float w, float h, float alpha) {
         if (outline.get()) {
             float pulse = 0.6f + 0.4f * (float) Math.sin(System.currentTimeMillis() / 400.0);
-            Ui.roundRect(ctx, -2f, -2f, w + 4f, h + 4f, radius() + 2f, Ui.alpha(accent(), pulse * alpha));
+            Ui.outline(ctx, -2f, -2f, w + 4f, h + 4f, radius() + 2f, Ui.alpha(accent(), pulse * alpha));
         }
         super.drawPanel(ctx, w, h, alpha);
     }
@@ -67,10 +67,12 @@ public final class ProgressBar extends HudModule {
             float tx = x + 4f + i * (tileW + 4f);
             Ui.roundRect(ctx, tx, y + TILE_TOP, tileW, TILE_H, 4f, Ui.alpha(COLORS[i], alpha));
             float lw = Ui.textWidth(NAMES[i], LABEL, false);
-            drawText(ctx, NAMES[i], tx + (tileW - lw) / 2f, y + 18f, LABEL, text(), false, alpha);
+            // Black lettering on the light tiles, white on the dark ones.
+            int ink = (COLORS[i] >> 8 & 0xFF) > 0x70 ? 0xFF000000 : text();
+            drawText(ctx, NAMES[i], tx + (tileW - lw) / 2f, y + 18f, LABEL, ink, false, alpha);
             boolean done = i == 0 ? overworld.get() : i == 1 ? nether.get() : end.get();
             if (done) {
-                drawText(ctx, "X", tx + tileW / 2f - 3f, y + 6f, LABEL, 0xFFFF3030, true, alpha);
+                drawText(ctx, "X", tx + tileW / 2f - 3f, y + 6f, LABEL, ink, true, alpha);
             }
         }
         int count = bases.asInt();

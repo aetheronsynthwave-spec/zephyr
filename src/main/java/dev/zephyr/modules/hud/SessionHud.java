@@ -32,7 +32,7 @@ public final class SessionHud extends HudModule {
     private int lastSecond = -1;
 
     public SessionHud() {
-        super("SessionHUD", ModuleCategory.RENDER, 0, 50, "CENTER");
+        super("SessionHUD", ModuleCategory.RENDER, 100, 33, "TOP_RIGHT");
         ZephyrEvents.ATTACK_LANDED.subscribe(e -> {
             if (isEnabled() && e.landed) {
                 hits++;

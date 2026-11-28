@@ -47,6 +47,21 @@ public final class RotationManager {
     }
 
     /** Clears the active request (used when a module disables itself mid-path). */
+    /** Turns at once: the camera and the server rotation both take the angle this tick. */
+    public static void snap(ClientPlayerEntity player, double yaw, double pitch) {
+        if (!Double.isFinite(yaw) || !Double.isFinite(pitch)) {
+            return;
+        }
+        active = null;
+        frameYaw = framePitch = 0;
+        frameApplied = 1.0;
+        player.setYaw((float) (player.getYaw() + MathUtil.angleDelta(player.getYaw(), yaw)));
+        player.setPitch((float) MathHelper.clamp(pitch, -90.0, 90.0));
+        serverYaw = player.getYaw();
+        serverPitch = player.getPitch();
+        seeded = true;
+    }
+
     public static void clear(int minPriority) {
         if (active != null && active.priority <= minPriority) {
             active = null;

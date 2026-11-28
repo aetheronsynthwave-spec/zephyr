@@ -125,7 +125,7 @@ public final class TargetHud extends HudModule {
         float dt = frameDt;
 
         // Head (players) or a neutral badge.
-        Ui.roundRect(ctx, x + 7, y + 7, HEAD + 2, HEAD + 2, 6, Ui.alpha(0xFF0B0E13, alpha));
+        Ui.roundRect(ctx, x + 7, y + 7, HEAD + 2, HEAD + 2, 6, Ui.alpha(0xFF0C0C0C, alpha));
         if (e instanceof AbstractClientPlayerEntity p) {
             PlayerSkinDrawer.draw(ctx, p.getSkin(), Math.round(x) + 8, Math.round(y) + 8, (int) HEAD,
                     Ui.alpha(0xFFFFFFFF, alpha));
@@ -146,11 +146,11 @@ public final class TargetHud extends HudModule {
             nameMaxW = nameMax;
         }
         drawText(ctx, nameCached, x + TEXT_X, y + 8, 9.5f,
-                e.hurtTime > 0 ? 0xFFFF8A8A : text(), true, alpha);
+                e.hurtTime > 0 ? 0xFFAAAAAA : text(), true, alpha);
 
         if (e instanceof PlayerEntity p && ItemUtil.isTotem(p.getOffHandStack())) {
-            Ui.pill(ctx, x + WIDTH - 23, y + 7, 16, 10, Ui.alpha(0x33FFC63C, alpha));
-            drawTextCentered(ctx, "T", x + WIDTH - 15, y + 8.5f, 7.5f, 0xFFFFC63C, true, alpha);
+            Ui.pill(ctx, x + WIDTH - 23, y + 7, 16, 10, Ui.alpha(0x33FFFFFF, alpha));
+            drawTextCentered(ctx, "T", x + WIDTH - 15, y + 8.5f, 7.5f, 0xFFFFFFFF, true, alpha);
         }
 
         float hp = e.getHealth();
@@ -175,14 +175,14 @@ public final class TargetHud extends HudModule {
         float barY = y + 30;
         float barW = WIDTH - TEXT_X - 8;
         float barH = 4;
-        Ui.pill(ctx, barX, barY, barW, barH, Ui.alpha(0xFF262C38, alpha));
-        int hpColor = Ui.mix(0xFFFF5A5A, 0xFF4BE38C, hpAnim * 1.4f - 0.2f);
+        Ui.pill(ctx, barX, barY, barW, barH, Ui.alpha(0xFF282828, alpha));
+        int hpColor = Ui.mix(0xFF6E6E6E, 0xFFFFFFFF, hpAnim * 1.4f - 0.2f);
         if (hpAnim > 0.01f) {
             Ui.pill(ctx, barX, barY, Math.max(barH, barW * hpAnim), barH, Ui.alpha(hpColor, alpha));
         }
         if (absAnim > 0.01f) {
             float aw = Math.min(barW, barW * absAnim);
-            Ui.pill(ctx, barX + barW - aw, barY, aw, barH, Ui.alpha(0xCCFFC63C, alpha));
+            Ui.pill(ctx, barX + barW - aw, barY, aw, barH, Ui.alpha(0xCC8A8A8A, alpha));
         }
 
         if (showItems.get()) {

@@ -139,7 +139,7 @@ public final class ZephyrCommand {
 
     private static int list(CommandContext<FabricClientCommandSource> ctx) {
         for (Module m : ZephyrClient.modules().all()) {
-            String state = m.isEnabled() ? Formatting.GREEN + "on" : Formatting.GRAY + "off";
+            String state = m.isEnabled() ? Formatting.WHITE + "on" : Formatting.GRAY + "off";
             ctx.getSource().sendFeedback(Text.literal(m.name() + " [" + state + Formatting.RESET + "]  "
                     + Formatting.GRAY + m.description()));
         }
@@ -152,8 +152,8 @@ public final class ZephyrCommand {
             reply(ctx, "no such module");
             return 0;
         }
-        String state = m.isEnabled() ? Formatting.GREEN + "on" : Formatting.GRAY + "off";
-        ctx.getSource().sendFeedback(Text.literal(Formatting.AQUA + m.name() + Formatting.RESET
+        String state = m.isEnabled() ? Formatting.WHITE + "on" : Formatting.GRAY + "off";
+        ctx.getSource().sendFeedback(Text.literal(Formatting.WHITE + m.name() + Formatting.RESET
                 + " (" + m.category().label() + ", " + state + Formatting.RESET + ")"));
         String d = m.description();
         ctx.getSource().sendFeedback(Text.literal(d.isEmpty() ? "No description." : d).formatted(Formatting.GRAY));

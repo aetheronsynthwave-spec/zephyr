@@ -74,8 +74,8 @@ public final class Profiles {
         legit("BreachSwap", "showSwap", true, "backTicks", 4.0, "weaponOnly", true, "playersOnly", true);
         smart("BreachSwap", "showSwap", true, "backTicks", 2.0, "weaponOnly", true, "playersOnly", true);
 
-        legit("JumpReset", "chance", 0.75, "armWindow", 3.0, "inAir", false);
-        smart("JumpReset", "chance", 1.0, "armWindow", 6.0, "inAir", true);
+        legit("JumpReset", "chance", 0.75, "armWindow", 2.0, "inAir", false);
+        smart("JumpReset", "chance", 1.0, "armWindow", 2.0, "inAir", true);
 
         legit("STap", "mode", "S_TAP", "tapMin", 2.0, "tapMax", 4.0, "delay", 1.0, "onlySprint", true, "resprint", true);
         smart("STap", "mode", "S_TAP", "tapMin", 1.0, "tapMax", 3.0, "delay", 0.0, "onlySprint", true, "resprint", true);
@@ -92,9 +92,11 @@ public final class Profiles {
                 "rotMin", 30.0, "rotMax", 70.0, "maxSelf", 8.0, "minDmg", 3.0, "faceplace", 6.0);
 
         legit("AutoHitCrystal", "cpsMin", 6.0, "cpsMax", 9.0, "swapMin", 50.0, "swapMax", 100.0,
-                "rotMin", 12.0, "rotMax", 30.0, "aimTol", 8.0, "perHit", 1.0, "ownObsidian", true);
-        smart("AutoHitCrystal", "cpsMin", 10.0, "cpsMax", 14.0, "swapMin", 25.0, "swapMax", 55.0,
-                "rotMin", 20.0, "rotMax", 45.0, "aimTol", 10.0, "perHit", 2.0, "ownObsidian", true);
+                "rotMin", 12.0, "rotMax", 30.0, "aimTol", 8.0, "perHit", 1.0,
+                "instantAim", false, "sameTick", false, "placeDelay", 1.0, "breakDelay", 1.0, "swordDelay", 80.0);
+        smart("AutoHitCrystal", "cpsMin", 20.0, "cpsMax", 26.0, "swapMin", 5.0, "swapMax", 20.0,
+                "rotMin", 45.0, "rotMax", 90.0, "aimTol", 14.0, "perHit", 4.0,
+                "instantAim", true, "sameTick", true, "placeDelay", 0.0, "breakDelay", 0.0, "swordDelay", 0.0);
 
         legit("AnchorMacro", "silent", false, "rotMin", 25.0, "rotMax", 55.0);
         smart("AnchorMacro", "silent", true, "rotMin", 50.0, "rotMax", 90.0);

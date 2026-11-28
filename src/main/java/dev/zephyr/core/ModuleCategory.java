@@ -10,6 +10,8 @@ public enum ModuleCategory {
     UTILITY("Utility"),
     MOVEMENT("Movement"),
     RENDER("Render"),
+    /** Tools meant for DonutSMP only. */
+    DONUT("DonutSMP"),
     GUI("Gui");
 
     private final String label;

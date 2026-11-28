@@ -4,6 +4,7 @@ import dev.zephyr.core.Module;
 import dev.zephyr.core.ModuleCategory;
 import dev.zephyr.core.combat.CombatActions;
 import dev.zephyr.core.combat.DamageCalculator;
+import dev.zephyr.core.combat.ExplosiveTurn;
 import dev.zephyr.core.inventory.InventoryManager;
 import dev.zephyr.core.rotation.RotationManager;
 import dev.zephyr.core.rotation.RotationRequest;
@@ -86,7 +87,18 @@ public class AnchorMacro extends Module {
 
     @Override
     protected String exclusiveGroup() {
-        return "crystal";
+        return "anchor"; // AutoHitCrystal may be on too: they take turns (ExplosiveTurn)
+    }
+
+    @Override
+    protected boolean conflicts(Module other) {
+        return super.conflicts(other) || other instanceof AutoCrystal;
+    }
+
+    /** Switched on and holding what a chain needs, so it is worth offering it a turn. */
+    public boolean stocked(ClientPlayerEntity self) {
+        return isEnabled() && InventoryManager.findHotbarSlot(self, ItemUtil::isRespawnAnchor) != -1
+                && InventoryManager.findHotbarSlot(self, ItemUtil::isGlowstone) != -1;
     }
 
     @Override
@@ -109,6 +121,10 @@ public class AnchorMacro extends Module {
         ClientWorld world = client.world;
         if (self == null || world == null || client.interactionManager == null || client.currentScreen != null) {
             return;
+        }
+        AutoHitCrystal crystals = dev.zephyr.ZephyrClient.modules().get(AutoHitCrystal.class);
+        if (crystals != null && crystals.isEnabled() && !ExplosiveTurn.anchorMayAct()) {
+            return; // a crystal cycle is running: wait for our turn
         }
         long now = System.currentTimeMillis();
         ignored.values().removeIf(t -> t < now);
@@ -293,6 +309,7 @@ public class AnchorMacro extends Module {
         CombatActions.interactBlock(client, new BlockHitResult(face, Direction.UP, work, false));
         lastStep = "detonated";
         shieldFor = null;
+        ExplosiveTurn.anchorFinished();
     }
 
     // ------------------------------------------------------------------
@@ -304,6 +321,7 @@ public class AnchorMacro extends Module {
     }
 
     private boolean aim(ClientPlayerEntity self, Vec3d point) {
+        ExplosiveTurn.anchorProgress();
         RotationManager.request(RotationRequest
                 .to(MathUtil.yawTo(self.getEyePos(), point), MathUtil.pitchTo(self.getEyePos(), point))
                 .speed(rotMin.get(), rotMax.get())

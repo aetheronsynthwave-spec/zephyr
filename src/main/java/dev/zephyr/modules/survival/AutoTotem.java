@@ -29,8 +29,9 @@ import net.minecraft.screen.slot.SlotActionType;
  *       Every hop is a vanilla screen-handler click paced by an independently
  *       randomized 20-55 ms micro-timer, so the click stream is bursty and uneven
  *       exactly like human inventory management under pressure.</li>
- *   <li><b>HOVER</b>: fastest possible restock - if a totem is already on the mouse
- *       cursor (player mid-drag), it clicks straight into the offhand.</li>
+ *   <li><b>HOVER</b>: fastest possible restock - one "swap with offhand" click (what
+ *       pressing F over a totem does) in the same tick the offhand is seen empty; a
+ *       totem already on the mouse cursor is clicked straight in.</li>
  * </ul>
  *
  * <p>Escalation: when the player is in "panic" (critical health band), the micro-timers
@@ -133,6 +134,18 @@ public final class AutoTotem extends Module {
             return; // no totems left
         }
         sourceSlot = slot;
+
+        // HOVER: hover the totem and press F - a single swap, no pick-up-and-carry.
+        if (mode.is("HOVER")) {
+            if (openScreen.get() && client.currentScreen == null) {
+                client.setScreen(new InventoryScreen(self));
+            }
+            InventoryManager.clickSlot(client, slot, 40, SlotActionType.SWAP);
+            sourceSlot = -2; // nothing to put back
+            timer.restart(clickMin.get(), clickMax.get());
+            stage = Stage.CLOSE;
+            return;
+        }
 
         boolean panic = self.getHealth() <= panicHealth.get();
         if (panic || !openScreen.get() || client.currentScreen != null) {

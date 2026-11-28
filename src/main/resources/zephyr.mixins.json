@@ -18,11 +18,18 @@
     "MixinClientPlayNetworkHandler",
     "MixinItemCooldownManager",
     "MixinGameRenderer",
+    "MixinBlock",
+    "MixinCloudRenderer",
+    "MixinPlayerEntityRenderer",
+    "MixinSkyRendering",
+    "MixinAbstractBlockState",
+    "MixinFluidRenderer",
     "accessor.MinecraftClientAccessor",
     "accessor.ClientPlayerInteractionManagerAccessor",
     "accessor.LivingEntityAccessor",
     "accessor.RenderPipelinesAccessor",
-    "accessor.RenderLayerInvoker"
+    "accessor.RenderLayerInvoker",
+    "accessor.HandledScreenAccessor"
   ],
   "injectors": {
     "defaultRequire": 0

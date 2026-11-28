@@ -183,90 +183,261 @@ public final class CrystalSolver {
      * geometric pre-score, full damage math on the top candidates only.
      */
     /**
-     * The hand-played hit-crystal placement (modelled on a real player's clip): a FRESH
-     * obsidian on the floor in one of the 8 cells around the target's feet, choosing the
-     * cell that needs the least camera movement from the current view and sits on the
-     * player's side - so the aim only dips slightly instead of flicking around. The
-     * crystal then goes on top, beside the (knocked-up) target.
-     *
-     * @param refYaw/refPitch the view the player currently has (camera, not packet).
+     * Where the target's feet will be {@code ticks} from now: vanilla gravity and drag
+     * while airborne, never below the floor under them.
      */
-    public static Spot findHandObsidianPlan(ClientWorld world, Entity self, LivingEntity target,
-                                           double placeRange, double maxSelfDamage,
-                                           double refYaw, double refPitch) {
-        Vec3d eye = self.getEyePos();
-        // Floor level under the target (it is usually airborne right after the hit).
-        BlockPos feet = target.getBlockPos();
-        for (int i = 0; i < 4 && world.getBlockState(feet.down()).isAir(); i++) {
-            feet = feet.down();
-        }
-        Spot best = null;
-        double bestScore = Double.MAX_VALUE;
-        for (int dx = -1; dx <= 1; dx++) {
-            for (int dz = -1; dz <= 1; dz++) {
-                if (dx == 0 && dz == 0) {
-                    continue;
-                }
-                BlockPos cell = feet.add(dx, 0, dz);
-                BlockPos crystal = cell.up();
-                var cellState = world.getBlockState(cell);
-                boolean existing = cellState.isOf(Blocks.OBSIDIAN) || cellState.isOf(Blocks.BEDROCK);
-                if ((!existing && !cellState.isAir()) || !world.getBlockState(crystal).isAir()
-                        || !world.getBlockState(crystal.up()).isAir()) {
-                    continue;
-                }
-                if (existing) {
-                    // Obsidian already right beside the target (usually our own from the last
-                    // cycle): reuse it instead of placing yet another block.
-                    if (!crystalCellLegal(world, crystal, self)) {
-                        continue;
-                    }
-                    Vec3d eyeE = self.getEyePos();
-                    Vec3d topE = Vec3d.ofCenter(cell).add(0, 0.5, 0);
-                    if (eyeE.distanceTo(topE) > placeRange) {
-                        continue;
-                    }
-                    Vec3d blastE = Vec3d.ofBottomCenter(crystal);
-                    double selfE = DamageCalculator.crystalDamage(world, blastE, self);
-                    double tgtE = DamageCalculator.crystalDamage(world, blastE, target);
-                    double turnE = Math.hypot(MathUtil.angleDelta(refYaw, MathUtil.yawTo(eyeE, topE)),
-                            MathUtil.pitchTo(eyeE, topE) - refPitch);
-                    double scoreE = turnE + eyeE.distanceTo(topE) * 6.0 - tgtE * 0.5 + selfE - 25.0;
-                    if (scoreE < bestScore) {
-                        bestScore = scoreE;
-                        best = new Spot(crystal, cell, null, tgtE, selfE, null);
-                    }
-                    continue;
-                }
-                if (!blockCellPlaceable(world, cell, self)) {
-                    continue;
-                }
-                Vec3d top = Vec3d.ofCenter(cell).add(0, 0.5, 0);
-                if (eye.distanceTo(top) > placeRange) {
-                    continue;
-                }
-                BlockHitResult hit = blockPlacementHit(world, cell, eye);
-                if (hit == null) {
-                    continue;
-                }
-                Vec3d blast = Vec3d.ofBottomCenter(crystal);
-                double selfDmg = dev.zephyr.core.combat.DamageCalculator.crystalDamage(world, blast, self);
-                if (selfDmg > maxSelfDamage) {
-                    continue;
-                }
-                double targetDmg = dev.zephyr.core.combat.DamageCalculator.crystalDamage(world, blast, target);
-                double yaw = dev.zephyr.core.util.MathUtil.yawTo(eye, top);
-                double pitch = dev.zephyr.core.util.MathUtil.pitchTo(eye, top);
-                double turn = Math.hypot(dev.zephyr.core.util.MathUtil.angleDelta(refYaw, yaw), pitch - refPitch);
-                // Least camera movement first, then closer to us, then more damage.
-                double score = turn + eye.distanceTo(top) * 6.0 - targetDmg * 0.5 + selfDmg;
-                if (score < bestScore) {
-                    bestScore = score;
-                    best = new Spot(crystal, cell, cell, targetDmg, selfDmg, hit);
-                }
+    public static Vec3d predictFeet(ClientWorld world, Entity target, int ticks) {
+        double x = target.getX(), y = target.getY(), z = target.getZ();
+        double vx = x - target.lastX, vy = y - target.lastY, vz = z - target.lastZ;
+        double floor = floorUnder(world, target);
+        boolean airborne = y - floor > 0.05;
+        for (int i = 0; i < ticks; i++) {
+            x += vx;
+            z += vz;
+            if (airborne) {
+                y = Math.max(floor, y + vy);
+                vy = (vy - 0.08) * 0.98;
+                vx *= 0.91;
+                vz *= 0.91;
             }
         }
-        return best;
+        return new Vec3d(x, y, z);
+    }
+
+    /** Top of the first solid block under the entity (searched 12 blocks down). */
+    public static double floorUnder(ClientWorld world, Entity target) {
+        BlockPos at = target.getBlockPos();
+        for (int i = 0; i <= 12; i++) {
+            BlockPos below = at.down(i + 1);
+            if (!world.getBlockState(below).getCollisionShape(world, below).isEmpty()) {
+                return below.getY() + 1;
+            }
+        }
+        return target.getY() - 12;
+    }
+
+    /** How much a point of damage to us counts against a point of damage to them. */
+    public static double selfWeight = 0.8;
+
+    /** Extra weight on our own damage for each block we stand above the target (up to two). */
+    public static double heightPenalty = 1.0;
+
+    /** What a crystal on one particular base is worth, and the spot itself. */
+    public record Rated(Spot spot, double value) {
+    }
+
+    /**
+     * Rates one base block: damage to them where they will be, minus most of the damage to
+     * us, minus the time a missing block costs. Null when it cannot be used or breaks a limit.
+     */
+    public static Rated rate(ClientWorld world, Entity self, LivingEntity target, BlockPos base,
+                             double placeRange, double minTargetDamage, double maxSelfDamage,
+                             java.util.function.Predicate<BlockPos> breakable) {
+        Search search = new Search(world, self, target, placeRange, minTargetDamage, maxSelfDamage, breakable);
+        Option option = search.screen(base);
+        return option == null ? null : search.rate(option, Double.NEGATIVE_INFINITY);
+    }
+
+    /** A block that passed the cheap checks, and the most it could possibly be worth. */
+    private record Option(BlockPos base, boolean existing, boolean occupied, Vec3d feet, double limit) {
+    }
+
+    /**
+     * One search. What every block shares (where the target will be, which cells hold a
+     * crystal) is worked out once; each block is then screened without raycasts, and only
+     * those whose best case still beats the current pick are calculated in full.
+     */
+    private static final class Search {
+        private final ClientWorld world;
+        private final Entity self;
+        private final LivingEntity target;
+        private final double placeRange;
+        private final double minTargetDamage;
+        private final double maxSelfDamage;
+        private final java.util.function.Predicate<BlockPos> breakable;
+        private final Vec3d eye;
+        private final Vec3d selfFeet;
+        private final double weight;
+        private final Vec3d[] future = new Vec3d[6];
+        private final java.util.Set<BlockPos> crystals = new java.util.HashSet<>();
+
+        Search(ClientWorld world, Entity self, LivingEntity target, double placeRange,
+               double minTargetDamage, double maxSelfDamage, java.util.function.Predicate<BlockPos> breakable) {
+            this.world = world;
+            this.self = self;
+            this.target = target;
+            this.placeRange = placeRange;
+            this.minTargetDamage = minTargetDamage;
+            this.maxSelfDamage = maxSelfDamage;
+            this.breakable = breakable;
+            this.eye = self.getEyePos();
+            this.selfFeet = new Vec3d(self.getX(), self.getY(), self.getZ());
+            this.weight = selfWeight * (1.0 + heightPenalty
+                    * Math.max(0.0, Math.min(2.0, self.getY() - target.getY())));
+            Box around = self.getBoundingBox().expand(placeRange + 2.0);
+            for (EndCrystalEntity crystal : world.getEntitiesByClass(EndCrystalEntity.class, around, Entity::isAlive)) {
+                crystals.add(crystal.getBlockPos());
+            }
+        }
+
+        Option screen(BlockPos base) {
+            BlockPos cell = base.up();
+            if (!breakable.test(cell) || eye.distanceTo(Vec3d.ofCenter(base).add(0, 0.5, 0)) > placeRange) {
+                return null;
+            }
+            BlockState state = world.getBlockState(base);
+            boolean existing = state.isOf(Blocks.OBSIDIAN) || state.isOf(Blocks.BEDROCK);
+            if (!existing && !state.isAir()) {
+                return null;
+            }
+            boolean occupied = crystals.contains(cell);
+            // Ticks until it goes off: break an existing crystal now, place and break, or build first.
+            int ticks = occupied ? 1 : existing ? 3 : 5;
+            if (future[ticks] == null) {
+                future[ticks] = predictFeet(world, target, ticks);
+            }
+            double limit = DamageCalculator.crystalDamageLimit(world, Vec3d.ofBottomCenter(cell), target,
+                    future[ticks], !existing);
+            if (limit < minTargetDamage) {
+                return null;
+            }
+            return new Option(base.toImmutable(), existing, occupied, future[ticks],
+                    limit - (existing ? 0.0 : 0.75));
+        }
+
+        /** Full calculation; null when unusable or when it cannot be worth more than {@code beat}. */
+        Rated rate(Option option, double beat) {
+            BlockPos base = option.base();
+            BlockPos cell = base.up();
+            double cost = option.existing() ? 0.0 : 0.75;
+            Vec3d blast = Vec3d.ofBottomCenter(cell);
+            // Their damage first: it alone often shows this block cannot win.
+            double theirs = DamageCalculator.crystalDamageAt(world, blast, target, option.feet(), !option.existing());
+            if (theirs < minTargetDamage || theirs - cost <= beat) {
+                return null;
+            }
+            double ours = DamageCalculator.crystalDamageAt(world, blast, self, selfFeet, !option.existing());
+            double value = theirs - weight * ours - cost;
+            if (ours > maxSelfDamage || value <= beat) {
+                return null;
+            }
+            if (!option.occupied() && (!crystalCellLegal(world, cell, self) || self.getBoundingBox().intersects(
+                    new Box(cell.getX(), cell.getY(), cell.getZ(), cell.getX() + 1, cell.getY() + 2, cell.getZ() + 1)))) {
+                return null;
+            }
+            BlockHitResult hit = null;
+            if (!option.existing()) {
+                if (!blockCellPlaceable(world, base, self)) {
+                    return null;
+                }
+                hit = blockPlacementHit(world, base, eye);
+                if (hit == null) {
+                    return null;
+                }
+            }
+            return new Rated(new Spot(cell, base, option.existing() ? null : base, theirs, ours, hit), value);
+        }
+
+        /** The best of the screened blocks: most promising first, stop when none can win. */
+        Rated best(List<Option> options) {
+            options.sort((a, b) -> Double.compare(b.limit(), a.limit()));
+            Rated best = null;
+            for (Option option : options) {
+                if (best != null && option.limit() <= best.value()) {
+                    break;
+                }
+                Rated rated = rate(option, best == null ? Double.NEGATIVE_INFINITY : best.value());
+                if (rated != null) {
+                    best = rated;
+                }
+            }
+            return best;
+        }
+    }
+
+    /**
+     * Searches every block in reach for the best base, existing or to be built.
+     * {@code newOnly}: only cells that still need obsidian (the block owed after a hit).
+     */
+    public static Rated findOptimalSpot(ClientWorld world, Entity self, LivingEntity target,
+                                        double placeRange, double minTargetDamage, double maxSelfDamage,
+                                        boolean allowBuild, boolean newOnly,
+                                        java.util.function.Predicate<BlockPos> breakable) {
+        Search search = new Search(world, self, target, placeRange, minTargetDamage, maxSelfDamage, breakable);
+        // Ledge: they stand higher than us. A crystal level with their feet hits them in
+        // full while the ledge shields us. Its own obsidian first; else build beside it.
+        if (onLedge(world, self, target)) {
+            Rated ledge = searchLedge(search, true);
+            if (ledge == null && allowBuild) {
+                ledge = searchLedge(search, false);
+            }
+            if (ledge != null) {
+                return ledge;
+            }
+        }
+        BlockPos me = self.getBlockPos();
+        int r = (int) Math.ceil(placeRange);
+        // From under our feet up to the target's: a high target is reached by building on blocks.
+        int top = Math.max(me.getY() + 2, target.getBlockY());
+        List<Option> options = new ArrayList<>();
+        for (BlockPos p : BlockPos.iterate(me.getX() - r, me.getY() - 3, me.getZ() - r,
+                me.getX() + r, top, me.getZ() + r)) {
+            BlockState state = world.getBlockState(p);
+            boolean existing = state.isOf(Blocks.OBSIDIAN) || state.isOf(Blocks.BEDROCK);
+            if (existing ? newOnly : !(allowBuild && state.isAir())) {
+                continue;
+            }
+            Option option = search.screen(p);
+            if (option != null && (existing || hasNeighbour(world, p))) {
+                options.add(option);
+            }
+        }
+        return search.best(options);
+    }
+
+    /** True while the target is standing on something about a block or more above our feet. */
+    public static boolean onLedge(ClientWorld world, Entity self, Entity target) {
+        return target.isOnGround() && floorUnder(world, target) - self.getY() >= 0.9;
+    }
+
+    /** Best base in the ledge layer (top level with the target's feet) within two of them. */
+    private static Rated searchLedge(Search search, boolean existingBlocks) {
+        Entity target = search.target;
+        BlockPos under = BlockPos.ofFloored(target.getX(), target.getY() - 0.5, target.getZ());
+        List<Option> options = new ArrayList<>();
+        for (BlockPos p : BlockPos.iterate(under.add(-2, 0, -2), under.add(2, 0, 2))) {
+            BlockState state = search.world.getBlockState(p);
+            boolean existing = state.isOf(Blocks.OBSIDIAN) || state.isOf(Blocks.BEDROCK);
+            // A new block has to go against the side of the ledge.
+            if (existingBlocks ? !existing : !(state.isAir() && besideSolid(search.world, p))) {
+                continue;
+            }
+            Option option = search.screen(p);
+            if (option != null) {
+                options.add(option);
+            }
+        }
+        return search.best(options);
+    }
+
+    private static boolean besideSolid(ClientWorld world, BlockPos p) {
+        for (Direction d : Direction.Type.HORIZONTAL) {
+            BlockState n = world.getBlockState(p.offset(d));
+            if (!n.isAir() && !n.isReplaceable()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean hasNeighbour(ClientWorld world, BlockPos p) {
+        for (Direction d : Direction.values()) {
+            BlockState n = world.getBlockState(p.offset(d));
+            if (!n.isAir() && !n.isReplaceable()) {
+                return true;
+            }
+        }
+        return false;
     }
 
     public static Spot findBestObsidianPlan(ClientWorld world, Entity self, LivingEntity target,

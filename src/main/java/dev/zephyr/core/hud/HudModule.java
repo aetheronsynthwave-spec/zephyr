@@ -9,7 +9,6 @@ import dev.zephyr.gui.render.Ui;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.DrawContext;
 
-import java.awt.Color;
 import java.util.List;
 
 /**
@@ -21,8 +20,8 @@ import java.util.List;
  *       ({@code anchor} says which corner or the centre of the element sits there). The
  *       element is always clamped fully on-screen.</li>
  *   <li><b>Look:</b> {@code scale}, {@code opacity}, {@code bgAlpha}, {@code radius},
- *       {@code shadow}, {@code accentBar}, {@code padding}, the accent colour
- *       ({@code accentHue}/{@code accentSat}) and the text colour ({@code textBrightness},
+ *       {@code shadow}, {@code accentBar}, {@code padding}
+ *       and the text colour ({@code textBrightness},
  *       {@code textShadow}).</li>
  * </ul>
  *
@@ -56,15 +55,10 @@ public abstract class HudModule extends Module {
     private final NumberSetting radiusSetting;
     private final BooleanSetting shadowSetting;
     private final BooleanSetting accentBarSetting;
-    private final NumberSetting hueSetting;
-    private final NumberSetting satSetting;
     private final NumberSetting brightnessSetting;
     private final BooleanSetting textShadowSetting;
     private final NumberSetting paddingSetting;
 
-    private float accentH = Float.NaN;
-    private float accentS = Float.NaN;
-    private int accentRgb;
 
     private boolean boundsValid;
     private float bx;
@@ -93,8 +87,6 @@ public abstract class HudModule extends Module {
         radiusSetting = num("radius", "Corner radius", 0, 12, 0.5, 6);
         shadowSetting = bool("shadow", "Shadow", true);
         accentBarSetting = bool("accentBar", "Accent bar", false);
-        hueSetting = num("accentHue", "Accent hue", 0, 360, 1, 195);
-        satSetting = num("accentSat", "Accent saturation", 0, 1, 0.01, 0.58);
         brightnessSetting = num("textBrightness", "Text brightness", 0.5, 1.0, 0.05, 1.0);
         textShadowSetting = bool("textShadow", "Text shadow", false);
         paddingSetting = num("padding", "Padding", 2, 12, 1, 6);
@@ -150,6 +142,7 @@ public abstract class HudModule extends Module {
             Ui.shadow(ctx, x, y, w, h, radius, 6f, Ui.alpha(0xFF000000, 0.55f * alpha));
         }
         Ui.roundRect(ctx, x, y, w, h, radius, Ui.alpha(Ui.BG, bgAlpha() * alpha));
+        Ui.outline(ctx, x, y, w, h, radius, Ui.alpha(0x38FFFFFF, bgAlpha() * alpha));
     }
 
     /** Draws text in the Ui font with the shared shadow option. Returns the advance width. */
@@ -173,16 +166,9 @@ public abstract class HudModule extends Module {
         return drawText(ctx, s, cx - Ui.textWidth(s, size, bold) / 2f, y, size, color, bold, alpha);
     }
 
-    /** Accent colour (opaque ARGB) from accentHue / accentSat. Cheap: recomputed only on change. */
+    /** Accent colour: always white in the black and white theme. */
     public final int accent() {
-        float h = (float) hueSetting.get().doubleValue();
-        float s = (float) satSetting.get().doubleValue();
-        if (h != accentH || s != accentS) {
-            accentH = h;
-            accentS = s;
-            accentRgb = Color.HSBtoRGB(h / 360f, s, 1f);
-        }
-        return accentRgb;
+        return Ui.ACCENT;
     }
 
     /** Primary text colour (opaque), scaled by textBrightness. */

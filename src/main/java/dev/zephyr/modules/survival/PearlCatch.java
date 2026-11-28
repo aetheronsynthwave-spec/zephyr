@@ -15,7 +15,6 @@ import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.entity.projectile.thrown.EnderPearlEntity;
 import net.minecraft.item.ItemStack;
 import net.minecraft.util.ActionResult;
-import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.Vec3d;
 import org.lwjgl.glfw.GLFW;
 
@@ -75,10 +74,6 @@ import org.lwjgl.glfw.GLFW;
  */
 public final class PearlCatch extends Module {
 
-    private static final double PEARL_DRAG = 0.99;
-    private static final double PEARL_GRAVITY = 0.03;
-    private static final double WIND_SPEED = 1.5;
-    private static final int HORIZON = 80;
     /** Longer than the pearl's 20-tick useCooldown(1.0): a re-press inside the window waits. */
     private static final int PEARL_TIMEOUT = 24;
     /** Longer than the wind charge's 10-tick cooldown plus the pearl's flight time. */
@@ -99,9 +94,6 @@ public final class PearlCatch extends Module {
     private int returnSlot = -1;
     private int stageTicks;
     private int restoreTicks;
-    private final double[] px = new double[HORIZON + 2];
-    private final double[] py = new double[HORIZON + 2];
-    private final double[] pz = new double[HORIZON + 2];
     private float aimYaw;
     private float aimPitch;
 
@@ -214,43 +206,13 @@ public final class PearlCatch extends Module {
 
     /** Fills aimYaw/aimPitch with the interception direction; false if none in range. */
     private boolean solve(ClientPlayerEntity self, EnderPearlEntity pearl, int lead) {
-        Vec3d p = pearl.getEntityPos();
-        Vec3d v = pearl.getVelocity();
-        double x = p.x, y = p.y, z = p.z, vx = v.x, vy = v.y, vz = v.z;
-        for (int m = 0; m <= HORIZON + 1; m++) {
-            px[m] = x;
-            py[m] = y;
-            pz[m] = z;
-            x += vx;
-            y += vy;
-            z += vz;
-            vx *= PEARL_DRAG;
-            vy = vy * PEARL_DRAG - PEARL_GRAVITY;
-            vz *= PEARL_DRAG;
+        float[] aim = dev.zephyr.core.combat.PearlIntercept.solve(self, pearl, lead);
+        if (aim == null) {
+            return false;
         }
-        Vec3d eye = self.getEyePos();
-        Vec3d mv = self.getVelocity();
-        double mx = mv.x, my = self.isOnGround() ? 0.0 : mv.y, mz = mv.z;
-        double prevF = Double.NaN;
-        for (int k = 0; k + lead <= HORIZON + 1; k++) {
-            int i = k + lead;
-            double rx = px[i] - eye.x - mx * k, ry = py[i] - eye.y - my * k, rz = pz[i] - eye.z - mz * k;
-            double f = Math.sqrt(rx * rx + ry * ry + rz * rz) - WIND_SPEED * k;
-            if (k > 0 && prevF > 0 && f <= 0) {
-                double t = prevF / (prevF - f); // fraction between tick k-1 and k
-                double kk = k - 1 + t;
-                int j = i - 1;
-                double ax = px[j] + (px[i] - px[j]) * t - eye.x - mx * kk;
-                double ay = py[j] + (py[i] - py[j]) * t - eye.y - my * kk;
-                double az = pz[j] + (pz[i] - pz[j]) * t - eye.z - mz * kk;
-                double h = Math.sqrt(ax * ax + az * az);
-                aimYaw = (float) (MathHelper.atan2(az, ax) * MathHelper.DEGREES_PER_RADIAN) - 90f;
-                aimPitch = (float) -(MathHelper.atan2(ay, h) * MathHelper.DEGREES_PER_RADIAN);
-                return true;
-            }
-            prevF = f;
-        }
-        return false;
+        aimYaw = aim[0];
+        aimPitch = aim[1];
+        return true;
     }
 
     private void restoreStage(MinecraftClient client) {

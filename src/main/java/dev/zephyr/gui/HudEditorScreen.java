@@ -83,15 +83,16 @@ public final class HudEditorScreen extends Screen {
             float y = b[1] - 2f;
             float w = b[2] + 4f;
             float h = b[3] + 4f;
-            Ui.rect(ctx, x, y, w, 1.5f, accent);
-            Ui.rect(ctx, x, y + h - 1.5f, w, 1.5f, accent);
-            Ui.rect(ctx, x, y, 1.5f, h, accent);
-            Ui.rect(ctx, x + w - 1.5f, y, 1.5f, h, accent);
+            Ui.outline(ctx, x, y, w, h, 5f, accent);
+            if (hud == dragging) { // centre guides while moving an element
+                Ui.rect(ctx, this.width / 2f - 0.5f, 0, 1f, this.height, Ui.alpha(0x40FFFFFF, ease));
+                Ui.rect(ctx, 0, this.height / 2f - 0.5f, this.width, 1f, Ui.alpha(0x40FFFFFF, ease));
+            }
 
             String label = hud.name();
             float tagW = Ui.textWidth(label, LABEL_SIZE, true) + 10f;
             float tagY = y - 13f >= 2f ? y - 13f : y + h + 2f;
-            Ui.roundRect(ctx, x, tagY, tagW, 11f, 5f, Ui.alpha(Ui.BG_2, ease));
+            Ui.surface(ctx, x, tagY, tagW, 11f, 5f, Ui.BG_2, ease);
             Ui.text(ctx, label, x + 5f, tagY + 1.5f, LABEL_SIZE, Ui.alpha(Ui.TEXT, ease), true);
         }
 
@@ -108,8 +109,7 @@ public final class HudEditorScreen extends Screen {
         float hintW = Ui.textWidth(hint, HINT_SIZE, false) + 28f;
         float hintX = (this.width - hintW) / 2f;
         float hintY = this.height - 30f;
-        Ui.shadow(ctx, hintX, hintY, hintW, 20f, 10f, 10f, Ui.alpha(0x99000000, ease));
-        Ui.pill(ctx, hintX, hintY, hintW, 20f, Ui.alpha(Ui.BG_2, ease));
+        Ui.panel(ctx, hintX, hintY, hintW, 20f, 10f, Ui.BG_2, ease);
         Ui.textCentered(ctx, hint, this.width / 2f, hintY + 6f, HINT_SIZE, Ui.alpha(Ui.TEXT_DIM, ease), false);
     }
 

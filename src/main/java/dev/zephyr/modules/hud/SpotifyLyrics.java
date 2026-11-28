@@ -73,7 +73,11 @@ public final class SpotifyLyrics extends HudModule implements WorldRenderPartici
     private final NumberSetting worldDist = num("worldDist", "Distance ahead (3D)", 2, 24, 0.5, 7);
     private final NumberSetting depth = num("depth", "3D depth layers", 1, 14, 1, 6);
     private final BooleanSetting lockDir = bool("lockDir", "Lock direction (set when enabled)", true);
-    private final BooleanSetting seeThrough = bool("throughWalls", "World text through walls", false);
+    private final BooleanSetting seeThrough = bool("throughWalls", "World text through walls", true);
+    private final NumberSetting skyAngle = num("skyAngle", "Sky height (degrees up)", 20, 85, 1, 55);
+    private final NumberSetting skySize = num("skySize", "Sky text size", 0.5, 3.0, 0.05, 1.5);
+    private final NumberSetting worldHeight = num("worldHeight", "Height above eyes (3D)", -1.0, 6.0, 0.1, 1.2);
+    private final NumberSetting worldPlate = num("worldPlate", "World backdrop strength", 0.0, 1.0, 0.05, 0.85);
 
     private static final Pattern LRC = Pattern.compile("\\[(\\d+):(\\d+)(?:[.:](\\d+))?]\\s*(.*)");
     private static final HttpClient HTTP = HttpClient.newBuilder()
@@ -95,6 +99,15 @@ public final class SpotifyLyrics extends HudModule implements WorldRenderPartici
     private java.util.concurrent.ExecutorService fetcher;
     private ScheduledFuture<?> task;
     private String lastTitleTrack;
+
+    /** Shows made-up lines without Spotify, for the in-game feature check. */
+    public void showSample(String title, String... lines) {
+        long[] times = new long[lines.length];
+        for (int i = 0; i < times.length; i++) {
+            times[i] = i * 4000L;
+        }
+        state = new State(title, "", times, lines, true, System.currentTimeMillis() - 4500L, 0, 0);
+    }
 
     public SpotifyLyrics() {
         super("SpotifyLyrics", ModuleCategory.RENDER, 50, 5, "CENTER");
@@ -547,7 +560,8 @@ public final class SpotifyLyrics extends HudModule implements WorldRenderPartici
     private static final float CUR_MUL = 1.6f;
     private static final float NEXT_Y = 10f;
     private static final float LAYER_STEP = 0.45f;
-    private static final double SKY_DISTANCE = 80.0;
+    /** Close enough that fog does not wash the letters out; the size on screen is set by angle. */
+    private static final double SKY_DISTANCE = 40.0;
 
     @Override
     public void onWorldRender(WorldRenderContext wctx) {
@@ -581,21 +595,21 @@ public final class SpotifyLyrics extends HudModule implements WorldRenderPartici
 
         m.push();
         if (sky) {
-            double el = Math.toRadians(32.0);
+            double el = Math.toRadians(skyAngle.get());
             double px = fx * Math.cos(el) * SKY_DISTANCE;
             double pz = fz * Math.cos(el) * SKY_DISTANCE;
-            double py = Math.sin(el) * SKY_DISTANCE + Math.sin(t * 0.7f) * 0.6;
+            double py = Math.sin(el) * SKY_DISTANCE + Math.sin(t * 0.7f) * 0.3;
             m.translate(px, py, pz);
-            var camera = client.gameRenderer.getCamera();
-            m.multiply(RotationAxis.POSITIVE_Y.rotationDegrees(180f - camera.getYaw()));
-            m.multiply(RotationAxis.POSITIVE_X.rotationDegrees(-camera.getPitch()));
-            float sc = 0.003f * (float) SKY_DISTANCE * scale;
+            // Fixed in the sky: it faces the spot you stand on, not wherever the camera turns.
+            m.multiply(RotationAxis.POSITIVE_Y.rotationDegrees(180f - yaw));
+            m.multiply(RotationAxis.POSITIVE_X.rotationDegrees(skyAngle.get().floatValue()));
+            float sc = 0.003f * (float) SKY_DISTANCE * skySize.get().floatValue() * scale;
             m.scale(sc, -sc, sc);
         } else {
             double d = worldDist.get();
             double px = fx * d;
             double pz = fz * d;
-            double py = 0.35 + Math.sin(t * 1.4f) * 0.05; // relative to the camera
+            double py = worldHeight.get() + Math.sin(t * 1.4f) * 0.05; // relative to the camera
             m.translate(px, py, pz);
             // A slow sway shows off the extrusion without ever turning the text hard to read.
             m.multiply(RotationAxis.POSITIVE_Y.rotationDegrees(180f - yaw + (float) Math.sin(t * 0.9f) * 10f));
@@ -610,7 +624,7 @@ public final class SpotifyLyrics extends HudModule implements WorldRenderPartici
         float ease = lineEase();
         float out = 1f - ease;
         int accent = accent();
-        float plate = 0.65f * bgAlpha();
+        float plate = worldPlate.get().floatValue();
 
         if (track != null) {
             drawWorldRow(m, consumers, track, TRACK_Y, TRACK_MUL, 0f, accent, true,

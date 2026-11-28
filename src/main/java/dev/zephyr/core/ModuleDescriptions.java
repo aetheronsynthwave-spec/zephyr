@@ -27,14 +27,23 @@ public final class ModuleDescriptions {
         d("ElytraMaceBot", "Elytra mace bot: gets over the target, looks straight down, rockets, takes the elytra off and mace smashes from above, then chains off the Wind Burst bounce.");
         d("SmartMaceBot", "No-elytra mace bot: weighs height, fall, reach and weapons to launch (wind charge), drop-smash, melee or approach.");
         d("BreachSwap", "Swaps every melee hit to your Breach mace for that hit, then back to your sword.");
-        d("JumpReset", "Jumps in the same tick you take a hit to reduce knockback.");
+        d("JumpReset", "Jumps as a melee hit knocks you back, to be dragged less far.");
+        d("WalkInventory", "Keep walking and sprinting with an inventory or chest open.");
+        d("CustomSky", "Replaces the sky with an animated aurora, nebula, galaxy or ink-wind sky.");
+        d("HandChams", "Recolours your first-person arms: tinted, solid or glowing.");
+        d("Cosmetics", "Halo, hat and wings on your own character, seen in third person.");
+        d("AuctionFlipper", "Marks underpriced listings in an auction window. Never buys for you.");
+        d("AmethystFinder", "Finds amethyst geodes in loaded chunks and shows them through walls.");
+        d("StorageESP", "Outlines chests, shulkers and other storage through walls.");
+        d("AutoCrystalPvP", "Runs the crystal and anchor modules as one bot that also moves and chases.");
+        d("XRay", "Shows only ores and other chosen blocks through the ground.");
         d("LegitAura", "Attacks a visible nearby target with smooth rotations and full-charge timing.");
         d("LungeMacro", "Press the bind to swap to your spear, jab (fires Lunge), and swap back.");
         d("STap", "Briefly taps back or releases forward after a sprint hit to keep combos going.");
         d("ShieldBreaker", "Axe-hits a raised shield to disable it, then swaps back. With AutoMace: stun slam.");
         d("TriggerBot", "Attacks when your crosshair is on an enemy and your weapon is charged. Holds off for AutoMace and ShieldBreaker.");
         // Crystal
-        d("AnchorMacro", "Places, charges and detonates respawn anchors near your target.");
+        d("AnchorMacro", "Places, charges and detonates respawn anchors; takes turns with AutoHitCrystal.");
         d("AutoCrystal", "Places and breaks end crystals at the best damage spot near your target.");
         d("AutoHitCrystal", "Melee hit, then a crystal place/break chain, then back to your sword. Repeats.");
         d("SafeAnchor", "Anchor macro that places a glowstone shield between you and the anchor first.");
