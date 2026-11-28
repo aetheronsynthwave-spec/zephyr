@@ -247,6 +247,28 @@ public abstract class Module {
         return Collections.unmodifiableList(settings);
     }
 
+    /** Settings shown straight away (see {@link SettingLayout}). */
+    public List<Setting<?>> basicSettings() {
+        return layout(0);
+    }
+
+    /** Settings in the Advanced section. */
+    public List<Setting<?>> advancedSettings() {
+        return layout(1);
+    }
+
+    private List<Setting<?>> layout(int part) {
+        List<String> ids = new ArrayList<>();
+        for (Setting<?> st : settings) {
+            ids.add(st.id());
+        }
+        List<Setting<?>> out = new ArrayList<>();
+        for (String id : SettingLayout.split(name, ids).get(part)) {
+            out.add(setting(id));
+        }
+        return out;
+    }
+
     public Setting<?> setting(String id) {
         for (Setting<?> s : settings) {
             if (s.id().equalsIgnoreCase(id)) {

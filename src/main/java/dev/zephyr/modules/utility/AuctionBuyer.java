@@ -6,10 +6,11 @@ import java.util.Locale;
 import java.util.Map;
 
 /**
- * Decides, once per tick, which auction slot to click. A purchase is: click the best deal,
- * wait for the learned confirm window, check it shows the same item and price, click confirm
- * once. Anything that does not match ends the attempt with no further click. Free of game
- * classes.
+ * Decides, once per tick, which auction slot to click. A purchase is: pick the best deal,
+ * ask you (unless askFirst is off), click it, wait for the confirm window, check it shows
+ * the same item and price, click confirm once. With no learned confirm button you click it
+ * yourself. Anything that does not match ends the attempt with no further click. Free of
+ * game classes.
  */
 public final class AuctionBuyer {
 
@@ -26,19 +27,27 @@ public final class AuctionBuyer {
             return slot >= 0 && !title.isEmpty() && !itemId.isEmpty();
         }
 
+        /** Numbers in titles (page numbers, prices) are not compared. */
+        public static String normalize(String title) {
+            return title.replaceAll("[0-9][0-9.,]*[kKmMbBtT]?", "#");
+        }
+
         boolean on(ScreenView view) {
-            return set() && view.title().equals(title) && view.slots().stream()
+            return set() && normalize(view.title()).equals(normalize(title)) && view.slots().stream()
                     .anyMatch(s -> s.slot() == slot && s.itemId().equals(itemId));
         }
     }
 
     public static final class Options {
         public boolean autoBuy = true;
+        public boolean askFirst = true;
         /** The server buys on the first click: no confirm window. */
         public boolean oneClick = false;
         public boolean confirmPrice = true;
         public boolean refresh = false;
-        /** Spending limits. Zero means unset, and nothing is bought. */
+        /** A sent buy still has no chat reply: start nothing new. */
+        public boolean awaitingReply = false;
+        /** Spending limits. Zero is no limit when asking first, and blocks buying otherwise. */
         public double maxPrice = 0;
         public double budget = 0;
         public int maxBuys = 10;
@@ -49,19 +58,23 @@ public final class AuctionBuyer {
         public int cooldownTicks = 20;
         public int retryTicks = 1200;
         public int refreshTicks = 40;
+        public int promptTicks = 200;
+        /** A key press this soon after a question appears is ignored. */
+        public int armTicks = 8;
         /** Part of the browse window title; blank accepts "auction" or "ah". */
         public String auctionTitle = "";
     }
 
     public enum Kind { LISTING, CONFIRM, REFRESH }
 
-    public record Click(int slot, Kind kind) {
+    /** {@code buys} is set on the click that spends the money. */
+    public record Click(int slot, Kind kind, AuctionDeals.Deal buys) {
     }
 
-    private enum State { SCAN, AWAIT_CONFIRM, COOLDOWN }
+    private enum State { SCAN, PROMPT, AWAIT_CONFIRM, COOLDOWN }
 
     private final AuctionDeals deals = new AuctionDeals();
-    /** Listing identity -> tick it was last tried. */
+    /** Listing identity -> tick it was last tried or declined. */
     private final Map<String, Long> attempted = new HashMap<>();
     private State state = State.SCAN;
     private long stateSince;
@@ -69,8 +82,10 @@ public final class AuctionBuyer {
     private long confirmSeen = -1;
     private String pageSignature = "";
     private AuctionDeals.Deal pending;
+    private boolean manual;
+    private Boolean answer;
     private List<AuctionDeals.Deal> marks = List.of();
-    private double spent;
+    private double committed;
     private int buys;
     private String status = "waiting for an auction window";
 
@@ -78,8 +93,9 @@ public final class AuctionBuyer {
         return marks;
     }
 
-    public double spent() {
-        return spent;
+    /** Money spent or held for sent buy clicks, counted against the budget. */
+    public double committed() {
+        return committed;
     }
 
     public int buys() {
@@ -90,10 +106,47 @@ public final class AuctionBuyer {
         return status;
     }
 
+    /** The deal you are being asked about, or null. */
+    public AuctionDeals.Deal question() {
+        return state == State.PROMPT ? pending : null;
+    }
+
+    /** The deal being bought: clicked, waiting for the confirm window. */
+    public AuctionDeals.Deal opening() {
+        return state == State.AWAIT_CONFIRM ? pending : null;
+    }
+
+    /** True while the confirm window is yours to click. */
+    public boolean awaitingManualConfirm() {
+        return state == State.AWAIT_CONFIRM && manual;
+    }
+
+    public void answer(boolean yes) {
+        if (state == State.PROMPT) {
+            answer = yes;
+        }
+    }
+
+    /** The chat line confirmed a purchase you finished by hand. */
+    public void manualBought(double paid, long now) {
+        if (awaitingManualConfirm()) {
+            committed += paid;
+            buys++;
+            end(now, "bought " + pending.view().name() + " for " + PriceText.shorten(paid));
+        }
+    }
+
+    /** The chat line priced a sent buy differently from the listing. */
+    public void adjust(double listed, double paid) {
+        committed = Math.max(0, committed + paid - listed);
+    }
+
     /** Drops the purchase in progress; spending totals and price history stay. */
     public void abort() {
         state = State.SCAN;
         pending = null;
+        answer = null;
+        manual = false;
         confirmSeen = -1;
         pageSignature = "";
         marks = List.of();
@@ -104,7 +157,7 @@ public final class AuctionBuyer {
         abort();
         deals.clear();
         attempted.clear();
-        spent = 0;
+        committed = 0;
         buys = 0;
         status = "session reset";
     }
@@ -125,11 +178,17 @@ public final class AuctionBuyer {
         }
         if (view == null || confirm.on(view) || !isAuctionTitle(view.title(), o.auctionTitle)) {
             // A confirm window with no purchase of ours pending is yours: never touched.
+            if (state == State.PROMPT) {
+                end(now, "window closed, not bought");
+            }
             marks = List.of();
             pageSignature = "";
             return null;
         }
         marks = deals.evaluate(view.slots(), f, rules, now);
+        if (state == State.PROMPT) {
+            return prompt(now, o, confirm);
+        }
         String signature = signature(view);
         if (!signature.equals(pageSignature)) {
             pageSignature = signature;
@@ -149,37 +208,89 @@ public final class AuctionBuyer {
             status = blocked;
             return null;
         }
+        if (o.awaitingReply) {
+            status = "waiting for the server's reply";
+            return null;
+        }
         attempted.values().removeIf(t -> now - t >= o.retryTicks);
         for (AuctionDeals.Deal d : marks) {
-            if (d.price() > o.maxPrice || spent + d.price() > o.budget || attempted.containsKey(d.identity())) {
+            if (overLimit(o, d) || attempted.containsKey(d.identity())) {
                 continue;
             }
             if (now - stableSince < (long) o.settleTicks + o.buyDelayTicks) {
                 return null; // wait for the best one rather than taking a lesser one
             }
-            attempted.put(d.identity(), now);
-            if (o.oneClick) {
-                charge(d);
-                enter(State.COOLDOWN, now);
-            } else {
-                pending = d;
-                confirmSeen = -1;
-                enter(State.AWAIT_CONFIRM, now);
-                status = "opening " + d.view().name() + " for " + PriceText.shorten(d.price());
+            pending = d;
+            if (o.askFirst) {
+                answer = null;
+                enter(State.PROMPT, now);
+                status = "buy " + d.view().count() + "x " + d.view().name() + " for "
+                        + PriceText.shorten(d.price()) + "?";
+                return null;
             }
-            return new Click(d.view().slot(), Kind.LISTING);
+            return open(now, o, confirm);
         }
-        status = marks.isEmpty() ? "no deal on this page" : "deals shown are over your limits or already tried";
+        status = marks.isEmpty() ? "no deal on this page" : "deals shown are over your limits or already seen";
         if (o.refresh && refresh.on(view) && now - stableSince >= o.refreshTicks) {
             stableSince = now;
-            return new Click(refresh.slot, Kind.REFRESH);
+            return new Click(refresh.slot, Kind.REFRESH, null);
         }
         return null;
     }
 
+    private Click prompt(long now, Options o, Button confirm) {
+        AuctionDeals.Deal asked = pending;
+        // The very same listing must still be in the very same slot.
+        boolean there = marks.stream().anyMatch(d -> d.identity().equals(asked.identity())
+                && d.view().slot() == asked.view().slot() && d.price() == asked.price());
+        if (!there) {
+            return end(now, "listing changed, not bought");
+        }
+        if (now - stateSince < o.armTicks) {
+            answer = null;
+            return null;
+        }
+        if (Boolean.FALSE.equals(answer) || now - stateSince > o.promptTicks) {
+            attempted.put(asked.identity(), now);
+            return end(now, "skipped " + asked.view().name());
+        }
+        if (!Boolean.TRUE.equals(answer)) {
+            return null;
+        }
+        answer = null;
+        if (blocked(o, confirm) != null || overLimit(o, asked)) {
+            return end(now, "limits changed, not bought");
+        }
+        return open(now, o, confirm);
+    }
+
+    /** Clicks the listing in {@code pending}. */
+    private Click open(long now, Options o, Button confirm) {
+        AuctionDeals.Deal d = pending;
+        attempted.put(d.identity(), now);
+        if (o.oneClick) {
+            send(d);
+            pending = null;
+            enter(State.COOLDOWN, now);
+            return new Click(d.view().slot(), Kind.LISTING, d);
+        }
+        manual = !confirm.set();
+        confirmSeen = -1;
+        enter(State.AWAIT_CONFIRM, now);
+        status = manual ? "click confirm yourself (it will be remembered)"
+                : "opening " + d.view().name() + " for " + PriceText.shorten(d.price());
+        return new Click(d.view().slot(), Kind.LISTING, null);
+    }
+
     private Click awaitConfirm(ScreenView view, long now, Options o, Button confirm) {
+        if (manual) {
+            if (now - stateSince > o.promptTicks) {
+                return end(now, "no purchase seen in chat");
+            }
+            return null;
+        }
         if (now - stateSince > o.timeoutTicks) {
-            return end(now, "no confirm window: listing gone, or learn the button again");
+            return end(now, "no confirm window: listing gone, or run /zephyr ah forget");
         }
         if (view == null || !confirm.on(view)) {
             confirmSeen = -1;
@@ -191,7 +302,7 @@ public final class AuctionBuyer {
         if (now - confirmSeen < o.confirmDelayTicks) {
             return null;
         }
-        if (blocked(o, confirm) != null || pending.price() > o.maxPrice || spent + pending.price() > o.budget) {
+        if (blocked(o, confirm) != null || overLimit(o, pending)) {
             return end(now, "limits changed, not confirmed");
         }
         boolean itemShown = false;
@@ -207,8 +318,8 @@ public final class AuctionBuyer {
             itemShown |= same && (!o.confirmPrice || shown == pending.price());
         }
         if (!itemShown) {
-            return end(now, o.confirmPrice ? "confirm window does not show that item at that price"
-                    : "confirm window does not show that item");
+            return end(now, o.confirmPrice ? "confirm window does not show that item at that price, not confirmed"
+                    : "confirm window does not show that item, not confirmed");
         }
         // A price written on the confirm button itself must agree too.
         for (AuctionDeals.SlotView s : view.slots()) {
@@ -217,21 +328,26 @@ public final class AuctionBuyer {
                 return end(now, "confirm button shows another price, not confirmed");
             }
         }
-        charge(pending);
+        AuctionDeals.Deal d = pending;
+        send(d);
         pending = null;
         enter(State.COOLDOWN, now);
-        return new Click(confirm.slot, Kind.CONFIRM);
+        return new Click(confirm.slot, Kind.CONFIRM, d);
+    }
+
+    private boolean overLimit(Options o, AuctionDeals.Deal d) {
+        return o.maxPrice > 0 && d.price() > o.maxPrice || o.budget > 0 && committed + d.price() > o.budget;
     }
 
     private String blocked(Options o, Button confirm) {
         if (!o.autoBuy) {
             return "autoBuy is off";
         }
-        if (!o.oneClick && !confirm.set()) {
-            return "confirm button unset: run /zephyr ah learn confirm";
+        if (!o.askFirst && !o.oneClick && !confirm.set()) {
+            return "confirm button not learned: buy once with askFirst on";
         }
-        if (!(o.maxPrice > 0) || !(o.budget > 0)) {
-            return "set maxPrice and budget above 0";
+        if (!o.askFirst && (!(o.maxPrice > 0) || !(o.budget > 0))) {
+            return "set maxPrice and budget, or turn askFirst on";
         }
         if (buys >= o.maxBuys) {
             return "maxBuys reached (/zephyr ah reset)";
@@ -239,9 +355,9 @@ public final class AuctionBuyer {
         return null;
     }
 
-    /** Counted when the buying click is sent: the server's answer is not read. */
-    private void charge(AuctionDeals.Deal d) {
-        spent += d.price();
+    /** Holds the money when the buying click is sent; the chat line confirms it. */
+    private void send(AuctionDeals.Deal d) {
+        committed += d.price();
         buys++;
         status = "sent buy: " + d.view().name() + " for " + PriceText.shorten(d.price());
     }
@@ -249,6 +365,8 @@ public final class AuctionBuyer {
     private Click end(long now, String why) {
         status = why;
         pending = null;
+        answer = null;
+        manual = false;
         enter(State.COOLDOWN, now);
         return null;
     }

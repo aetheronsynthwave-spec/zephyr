@@ -1,17 +1,20 @@
-AuctionFlipper update (after v1.18.0)
-  - Buys the best deal on the open auction page that fits your limits, then confirms it.
-  - Setup: /zephyr set AuctionFlipper maxPrice 500  and  budget 2000  (thousands),
-    /zephyr ah learn confirm  (then click a listing and confirm: that one really buys),
-    optionally /zephyr ah learn refresh, enable the module and open /ah.
-  - Nothing is bought while maxPrice or budget is 0, or the confirm button is unlearned.
-  - Item whitelist, blacklist, per-item price caps and resale prices, and a custom auction
-    window title: config/zephyr/auction.json, then /zephyr ah reload. Example:
+v1.18.1 - Menus and AuctionFlipper update
+  - Every module menu shows a few basic settings; the rest are under "Advanced".
+  - AuctionFlipper asks before buying: [Y] buys, [N] skips (askFirst off = no question,
+    and then maxPrice and budget must both be above 0).
+  - The first time, click confirm yourself in the window the server opens. The button is
+    remembered once chat says "You bought ...". The first /ah sell works the same way:
+    click confirm yourself; it is remembered once the item has left your inventory.
+  - /zephyr ah log (or bind ledgerKey): bought and sold list, sale prices, Sell buttons.
+  - autoSell relists bought stacks with /ah sell <price> once all windows are closed.
+  - "Sold" entries: no sale message is known yet. Use the Sold button, or turn on logChat,
+    copy the sale line into soldMessage in config/zephyr/auction.json using {item},
+    {price} and optionally {count}, {player}, {any}, then /zephyr ah reload.
+  - Item rules also live in auction.json:
       "rules": { "blacklist": ["minecraft:dirt"], "whitelist": [],
                  "maxUnitPrice": {"minecraft:diamond": 900},
                  "resaleUnitPrice": {"Netherite Ingot": 450000} }
-  - /zephyr ah status | reset | learn cancel. Bind dumpKey to write the open window's
-    title, slots and lore to config/zephyr/ for troubleshooting.
-  - "Spent" counts buy clicks sent; the server's reply is not read.
+  - /zephyr ah status | forget | reset | learn confirm | learn refresh | learn cancel.
 
 v1.18.0
   - New: AutoCrystalPvP (crystal and anchor modules as one bot, flat pearl chase under a

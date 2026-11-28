@@ -32,7 +32,7 @@ public final class ModuleDescriptions {
         d("CustomSky", "Replaces the sky with an animated aurora, nebula, galaxy or ink-wind sky.");
         d("HandChams", "Recolours your first-person arms: tinted, solid or glowing.");
         d("Cosmetics", "Halo, hat and wings on your own character, seen in third person.");
-        d("AuctionFlipper", "Finds underpriced auction listings and buys the best one within your limits.");
+        d("AuctionFlipper", "Buys underpriced auction listings (asks first), tracks sales and relists with /ah sell.");
         d("AmethystFinder", "Finds amethyst geodes in loaded chunks and shows them through walls.");
         d("StorageESP", "Outlines chests, shulkers and other storage through walls.");
         d("AutoCrystalPvP", "Runs the crystal and anchor modules as one bot that also moves and chases.");

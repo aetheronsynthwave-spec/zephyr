@@ -57,6 +57,8 @@ public final class ClickGuiScreen extends Screen {
 
     private static final Map<String, int[]> LAYOUT = new HashMap<>();
     private static final Map<Module, Boolean> EXPANDED = new HashMap<>();
+    /** Modules whose Advanced section is open. */
+    private static final Map<Module, Boolean> ADVANCED = new HashMap<>();
     /** Animated values (0..1) per module: toggle knob, hover, expand. */
     private static final Map<Object, Float> ANIM = new HashMap<>();
 
@@ -167,8 +169,9 @@ public final class ClickGuiScreen extends Screen {
         }
     }
 
+    /** {@code advanced} marks the row that opens a module's Advanced section. */
     private record Row(Column column, Module module, Setting<?> setting,
-                       int x, int y, int w, int h, boolean header) {
+                       int x, int y, int w, int h, boolean header, boolean advanced) {
         boolean inside(double mx, double my) {
             return mx >= x && mx < x + w && my >= y && my < y + h;
         }
@@ -178,22 +181,49 @@ public final class ClickGuiScreen extends Screen {
         return s instanceof NumberSetting ? SLIDER_H : SETTING_H;
     }
 
+    private static boolean advancedOpen(Module m) {
+        if (Boolean.TRUE.equals(ADVANCED.get(m))) {
+            return true;
+        }
+        // A search for an advanced setting shows it.
+        String q = search.toLowerCase();
+        return !q.isEmpty() && m.advancedSettings().stream().anyMatch(s -> s.label().toLowerCase().contains(q));
+    }
+
+    /** The rows under an open module: basic settings, the Advanced row (null), then the rest. */
+    private static List<Setting<?>> settingRows(Module m) {
+        List<Setting<?>> out = new ArrayList<>(m.basicSettings());
+        out.add(null);
+        if (advancedOpen(m)) {
+            out.addAll(m.advancedSettings());
+        }
+        return out;
+    }
+
+    private static int settingsHeight(Module m) {
+        int h = 0;
+        for (Setting<?> s : settingRows(m)) {
+            h += settingHeight(s);
+        }
+        return h;
+    }
+
     private void buildLayout() {
         rows.clear();
         for (Column col : columns) {
             int y = col.y;
-            rows.add(new Row(col, null, null, col.x, y, COL_W, HEADER_H, true));
+            rows.add(new Row(col, null, null, col.x, y, COL_W, HEADER_H, true, false));
             y += HEADER_H - col.scroll;
             if (visible(col).isEmpty()) {
                 continue;
             }
             for (Module m : visible(col)) {
-                rows.add(new Row(col, m, null, col.x, y, COL_W, ROW_H, false));
+                rows.add(new Row(col, m, null, col.x, y, COL_W, ROW_H, false, false));
                 y += ROW_H;
                 if (isExpanded(m)) {
-                    for (Setting<?> s : m.settings()) {
+                    for (Setting<?> s : settingRows(m)) {
                         int h = settingHeight(s);
-                        rows.add(new Row(col, m, s, col.x, y, COL_W, h, false));
+                        rows.add(new Row(col, m, s, col.x, y, COL_W, h, false, s == null));
                         y += h;
                     }
                     y += 4;
@@ -246,10 +276,7 @@ public final class ClickGuiScreen extends Screen {
         for (Module m : visible(col)) {
             h += ROW_H;
             if (isExpanded(m)) {
-                for (Setting<?> s : m.settings()) {
-                    h += settingHeight(s);
-                }
-                h += 4;
+                h += settingsHeight(m) + 4;
             }
         }
         return h + 6;
@@ -408,7 +435,7 @@ public final class ClickGuiScreen extends Screen {
         }
         Module hovered = null;
         for (Row row : rows) {
-            if (row.header || row.setting != null || row.module == null
+            if (row.header || row.advanced || row.setting != null || row.module == null
                     || !row.inside(lastMouseGuiX, lastMouseGuiY)) {
                 continue;
             }
@@ -526,7 +553,9 @@ public final class ClickGuiScreen extends Screen {
                 if (row.y + row.h < y + HEADER_H || row.y > y + HEADER_H + body) {
                     continue;
                 }
-                if (row.setting == null) {
+                if (row.advanced) {
+                    renderAdvancedRow(ctx, row, ease);
+                } else if (row.setting == null) {
                     renderModuleRow(ctx, row, ease);
                 } else {
                     renderSettingRow(ctx, row, ease);
@@ -552,11 +581,7 @@ public final class ClickGuiScreen extends Screen {
             Ui.roundRect(ctx, x, row.y + 1, w, row.h - 2, 6, Ui.alpha(0x12FFFFFF, hov * ease));
         }
         if (isExpanded(m)) {
-            int h = 0;
-            for (Setting<?> s : m.settings()) {
-                h += settingHeight(s);
-            }
-            Ui.surface(ctx, x, row.y + row.h - 2, w, h + 4, 6, 0x50000000, ease);
+            Ui.surface(ctx, x, row.y + row.h - 2, w, settingsHeight(m) + 4, 6, 0x50000000, ease);
         }
         int textColor = Ui.mix(Ui.TEXT_DIM, Ui.TEXT, Math.max(on, hov * 0.6f));
         Ui.text(ctx, m.name(), x + 8 + 3 * on, row.y + 7, TEXT, Ui.alpha(textColor, ease), on > 0.5f);
@@ -580,6 +605,18 @@ public final class ClickGuiScreen extends Screen {
                 Ui.circle(ctx, tx - 14 + dot * 4, row.y + row.h / 2f, 1f, Ui.alpha(Ui.TEXT_DIM, hov * ease));
             }
         }
+    }
+
+    private void renderAdvancedRow(DrawContext ctx, Row row, float ease) {
+        boolean open = advancedOpen(row.module);
+        boolean hover = row.inside(lastMouseGuiX, lastMouseGuiY);
+        float x = row.x + 14;
+        float right = row.x + row.w - 12;
+        Ui.rect(ctx, x, row.y + 2, right - x, 1, Ui.alpha(0x24FFFFFF, ease));
+        int color = Ui.alpha(hover ? Ui.TEXT : Ui.TEXT_FAINT, ease);
+        Ui.text(ctx, "Advanced", x, row.y + 7, TEXT_SMALL, color, true);
+        Ui.textRight(ctx, open ? "hide" : "show " + row.module.advancedSettings().size(), right, row.y + 7,
+                TEXT_SMALL, color, false);
     }
 
     private void renderSettingRow(DrawContext ctx, Row row, float ease) {
@@ -706,6 +743,12 @@ public final class ClickGuiScreen extends Screen {
                 dragColumn = row.column;
                 dragOffX = (int) mx - row.column.x;
                 dragOffY = (int) my - row.column.y;
+                return true;
+            }
+            if (row.advanced) {
+                if (button == 0) {
+                    ADVANCED.put(row.module, !Boolean.TRUE.equals(ADVANCED.get(row.module)));
+                }
                 return true;
             }
             if (row.setting != null) {

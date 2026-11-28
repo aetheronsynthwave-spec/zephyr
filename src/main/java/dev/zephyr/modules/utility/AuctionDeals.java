@@ -23,7 +23,12 @@ public final class AuctionDeals {
     }
 
     /** A listing that passed the deal filters. Money is in server currency units. */
-    public record Deal(SlotView view, String identity, double price, double profit, double roi, double discount) {
+    public record Deal(SlotView view, String identity, double price, double profit, double roi, double discount,
+                       double reference) {
+    }
+
+    /** A priced listing and the identity it has on this page. */
+    private record Listed(SlotView view, String identity, double price) {
     }
 
     /** Hand-written rules from the JSON file. Entries are item ids or parts of item names. */
@@ -48,6 +53,8 @@ public final class AuctionDeals {
         public long historyTicks = 20L * 60 * 30;
         public boolean skipContainers = true;
         public boolean whitelistOnly = false;
+        /** Slots below this index are listings, the rest are buttons. Zero reads every slot. */
+        public int listingSlots = 0;
     }
 
     private static final int HISTORY = 120;
@@ -76,13 +83,19 @@ public final class AuctionDeals {
 
     /** Records every priced listing, then returns the deals among them, best first. */
     public List<Deal> evaluate(List<SlotView> slots, Filter f, Rules rules, long now) {
+        List<Listed> page = new ArrayList<>();
+        // Listings that read the same (no seller or time line) are told apart by how many
+        // of them are on the page, so each counts, and a redraw does not add more.
+        Map<String, Integer> twins = new HashMap<>();
         for (SlotView v : slots) {
             double price = PriceText.price(v.lore());
-            if (!usable(price) || v.count() <= 0) {
+            if (!usable(price) || v.count() <= 0 || f.listingSlots > 0 && v.slot() >= f.listingSlots) {
                 continue;
             }
+            String base = identity(v, price);
+            String id = base + "#" + twins.merge(base, 1, Integer::sum);
+            page.add(new Listed(v, id, price));
             LinkedHashMap<String, Sample> samples = history.computeIfAbsent(v.key(), k -> new LinkedHashMap<>());
-            String id = identity(v, price);
             samples.remove(id); // re-inserting keeps the newest last
             samples.put(id, new Sample(price / v.count(), now));
             if (samples.size() > HISTORY) {
@@ -90,8 +103,8 @@ public final class AuctionDeals {
             }
         }
         List<Deal> deals = new ArrayList<>();
-        for (SlotView v : slots) {
-            Deal d = judge(v, f, rules, now);
+        for (Listed listed : page) {
+            Deal d = judge(listed, f, rules, now);
             if (d != null) {
                 deals.add(d);
             }
@@ -100,9 +113,10 @@ public final class AuctionDeals {
         return deals;
     }
 
-    private Deal judge(SlotView v, Filter f, Rules rules, long now) {
-        double price = PriceText.price(v.lore());
-        if (!usable(price) || v.count() <= 0 || price < f.minPrice
+    private Deal judge(Listed listed, Filter f, Rules rules, long now) {
+        SlotView v = listed.view();
+        double price = listed.price();
+        if (price < f.minPrice
                 || f.skipContainers && v.container()
                 || matches(rules.blacklist, v)
                 || f.whitelistOnly && !matches(rules.whitelist, v)) {
@@ -113,7 +127,7 @@ public final class AuctionDeals {
         if (cap != null && unit > cap) {
             return null;
         }
-        String id = identity(v, price);
+        String id = listed.identity();
         Double fixed = lookup(rules.resaleUnitPrice, v);
         double reference;
         if (fixed != null) {
@@ -141,7 +155,7 @@ public final class AuctionDeals {
         if (discount < f.minDiscount || profit <= 0 || profit < f.minProfit || roi < f.minRoi) {
             return null;
         }
-        return new Deal(v, id, price, profit, roi, discount);
+        return new Deal(v, id, price, profit, roi, discount, reference);
     }
 
     static double reference(List<Double> prices, Reference mode) {

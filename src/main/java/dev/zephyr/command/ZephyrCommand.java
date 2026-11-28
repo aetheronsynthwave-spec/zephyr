@@ -55,6 +55,10 @@ public final class ZephyrCommand {
                                         a -> a.learn(dev.zephyr.modules.utility.AuctionBuyer.Kind.REFRESH))))
                                 .then(ClientCommandManager.literal("cancel").executes(ctx -> auction(ctx,
                                         dev.zephyr.modules.utility.AuctionFlipper::cancelLearning))))
+                        .then(ClientCommandManager.literal("log").executes(ctx -> auction(ctx,
+                                dev.zephyr.modules.utility.AuctionFlipper::openLedger)))
+                        .then(ClientCommandManager.literal("forget").executes(ctx -> auction(ctx,
+                                dev.zephyr.modules.utility.AuctionFlipper::forget)))
                         .then(ClientCommandManager.literal("status").executes(ctx -> auction(ctx,
                                 a -> reply(ctx, a.summary()))))
                         .then(ClientCommandManager.literal("reload").executes(ctx -> auction(ctx, a -> {
@@ -184,15 +188,15 @@ public final class ZephyrCommand {
                 + " (" + m.category().label() + ", " + state + Formatting.RESET + ")"));
         String d = m.description();
         ctx.getSource().sendFeedback(Text.literal(d.isEmpty() ? "No description." : d).formatted(Formatting.GRAY));
-        StringBuilder settings = new StringBuilder();
-        for (Setting<?> s : m.settings()) {
-            if (settings.length() > 0) {
-                settings.append(", ");
-            }
-            settings.append(s.id());
-        }
-        ctx.getSource().sendFeedback(Text.literal("Settings: " + settings).formatted(Formatting.DARK_GRAY));
+        ctx.getSource().sendFeedback(Text.literal("Settings: " + ids(m.basicSettings()))
+                .formatted(Formatting.GRAY));
+        ctx.getSource().sendFeedback(Text.literal("Advanced: " + ids(m.advancedSettings()))
+                .formatted(Formatting.DARK_GRAY));
         return 1;
+    }
+
+    private static String ids(java.util.List<Setting<?>> settings) {
+        return settings.stream().map(Setting::id).collect(java.util.stream.Collectors.joining(", "));
     }
 
     /** Copies "x y z" of your block position to the clipboard. */
